@@ -58,38 +58,46 @@ def test_series_cfg_prefers_per_series_lexicon(tmp_path):
     assert cfg.general.lexicon == ""                          # original untouched
 
 
-class _FakeClient:
-    def __init__(self, fiction_html):
-        self.fiction_html = fiction_html
-        self.hits = []
-
-    def html(self, url):
-        self.hits.append(url)
-        return self.fiction_html if "/chapter/" not in url else CHAPTER_STUB
-
-    def close(self):
-        pass
-
-
 def test_add_and_sync_offline(tmp_path, monkeypatch):
+    from webnovel_audio import providers
+
     if not os.path.exists(FICTION_FIXTURE):
         return
     fiction_html = open(FICTION_FIXTURE, encoding="utf-8").read()
-    monkeypatch.setattr(sync, "_client", lambda cfg: _FakeClient(fiction_html))
+    # intercept the RoyalRoad provider's only network method
+    monkeypatch.setattr(
+        providers.RoyalRoadProvider, "raw",
+        lambda self, url, *, cfg: fiction_html if "/chapter/" not in url else CHAPTER_STUB,
+    )
+    monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
 
     cfg = Config()
     cfg.royalroad.state_db = str(tmp_path / "state.db")
     cfg.royalroad.library_dir = str(tmp_path / "lib")
 
-    sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run", start="4")
+    info = sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run",
+                           start="4", log=lambda *_: None)
+    assert info["provider"] == "royalroad" and info["pending"] == 2
     db = DB(cfg.royalroad.state_db)
     s = db.get_series("424242")
     assert s["progress_order"] == 3
     assert len(db.pending(s["id"])) == 2                    # chapters 5, 6
+
+    summ = db.summary()[0]
+    assert summ["slug"] == "salvage-run" and summ["provider"] == "royalroad"
+    assert summ["pending"] == 2 and summ["progress"] == 4
+    assert summ["next"]["number"] == 5
     db.close()
 
-    res = sync.run_sync(cfg, limit=1, backend="null", log=lambda *_: None)
+    events = []
+    res = sync.run_sync(cfg, limit=1, backend="null", log=lambda *_: None,
+                        emit=events.append)
     assert res.rendered == 1 and res.errors == 0
+    kinds = [e["event"] for e in events]
+    assert kinds[0] == "start" and kinds[-1] == "done"
+    assert "chapter_begin" in kinds
+    ch = next(e for e in events if e["event"] == "chapter" and e.get("result") == "rendered")
+    assert ch["number"] == 5 and "path" in ch and ch["audio_seconds"] >= 0
 
     db = DB(cfg.royalroad.state_db)
     s = db.get_series("424242")

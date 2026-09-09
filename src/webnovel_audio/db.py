@@ -8,7 +8,8 @@ import time
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS series (
     id             INTEGER PRIMARY KEY,
-    rr_id          TEXT UNIQUE NOT NULL,
+    rr_id          TEXT UNIQUE NOT NULL,   -- provider-native id
+    provider       TEXT DEFAULT 'royalroad',
     slug           TEXT,
     title          TEXT,
     author         TEXT,
@@ -41,9 +42,11 @@ class DB:
     def __init__(self, path: str):
         path = os.path.expanduser(path)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        self.con = sqlite3.connect(path)
+        self.con = sqlite3.connect(path, timeout=10.0)
         self.con.row_factory = sqlite3.Row
         self.con.execute("PRAGMA foreign_keys = ON")
+        self.con.execute("PRAGMA journal_mode = WAL")   # UI can read while sync writes
+        self.con.execute("PRAGMA busy_timeout = 10000")
         self.con.executescript(_SCHEMA)
         self._migrate()
         self.con.commit()
@@ -52,17 +55,21 @@ class DB:
         cols = {r["name"] for r in self.con.execute("PRAGMA table_info(chapters)")}
         if "duration_s" not in cols:
             self.con.execute("ALTER TABLE chapters ADD COLUMN duration_s REAL")
+        scols = {r["name"] for r in self.con.execute("PRAGMA table_info(series)")}
+        if "provider" not in scols:
+            self.con.execute("ALTER TABLE series ADD COLUMN provider TEXT DEFAULT 'royalroad'")
 
     # -- series ------------------------------------------------------------
     def upsert_series(self, fi) -> int:
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
         cur = self.con.execute(
-            """INSERT INTO series (rr_id, slug, title, author, url, cover_url, added_at)
-               VALUES (?,?,?,?,?,?,?)
+            """INSERT INTO series (rr_id, provider, slug, title, author, url, cover_url, added_at)
+               VALUES (?,?,?,?,?,?,?,?)
                ON CONFLICT(rr_id) DO UPDATE SET
-                 slug=excluded.slug, title=excluded.title, author=excluded.author,
-                 url=excluded.url, cover_url=excluded.cover_url""",
-            (fi.rr_id, fi.slug, fi.title, fi.author, fi.url, fi.cover_url, now),
+                 provider=excluded.provider, slug=excluded.slug, title=excluded.title,
+                 author=excluded.author, url=excluded.url, cover_url=excluded.cover_url""",
+            (fi.rr_id, getattr(fi, "provider", "royalroad"), fi.slug, fi.title,
+             fi.author, fi.url, fi.cover_url, now),
         )
         self.con.commit()
         row = self.get_series(fi.rr_id)
@@ -84,6 +91,29 @@ class DB:
 
     def list_series(self) -> list[sqlite3.Row]:
         return self.con.execute("SELECT * FROM series ORDER BY title").fetchall()
+
+    def summary(self) -> list[dict]:
+        """One dict per tracked series: counts, progress, next/last chapter."""
+        out: list[dict] = []
+        for s in self.list_series():
+            chs = self.chapters(s["id"])
+            rendered = [c for c in chs if c["status"] == "rendered"]
+            pending = self.pending(s["id"])
+            nxt = pending[0] if pending else None
+            last = rendered[-1] if rendered else None
+            out.append({
+                "slug": s["slug"], "title": s["title"], "author": s["author"],
+                "url": s["url"], "rr_id": s["rr_id"],
+                "provider": s["provider"] if "provider" in s.keys() else "royalroad",
+                "chapters": len(chs), "rendered": len(rendered),
+                "pending": len(pending), "errors": sum(1 for c in chs if c["status"] == "error"),
+                "progress": s["progress_order"] + 1,
+                "next": {"number": nxt["ord"] + 1, "title": nxt["title"]} if nxt else None,
+                "last_rendered": {"number": last["ord"] + 1, "title": last["title"],
+                                  "at": last["rendered_at"]} if last else None,
+                "added_at": s["added_at"],
+            })
+        return out
 
     def set_progress(self, series_id: int, order: int) -> None:
         self.con.execute(

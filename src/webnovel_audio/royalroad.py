@@ -45,6 +45,7 @@ class FictionInfo:
     cover_url: str = ""
     url: str = ""
     chapters: list[ChapterRef] = field(default_factory=list)
+    provider: str = "royalroad"
 
 
 @dataclass

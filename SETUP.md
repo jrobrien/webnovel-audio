@@ -33,7 +33,7 @@ Verify:
 
 ```sh
 uv run webnovel-audio --version
-uv run pytest -q                 # ~58 tests, all offline
+uv run pytest -q                 # ~61 tests, all offline
 ```
 
 Every command below is `uv run webnovel-audio …`. If you'd rather type
@@ -146,7 +146,24 @@ uv run webnovel-audio book <series-slug> --from 1 --to 3 -o out/arc1.m4b
 Produces a single AAC `.m4b` with a chapter marker + title per chapter and the
 cover embedded — for any audiobook player.
 
-## 8. Automate (nightly sync)
+## 8. Run it: control UI or systemd timer
+
+### Option A — the Tcl/Tk control UI
+
+```sh
+sudo pacman -S tk        # once, if not installed
+wish ui/control.tcl      # from the project root
+```
+
+Add series, run `sync` on demand (all / selected, with a chapter limit), or turn
+on **Auto-sync** (every N minutes, or daily at a time) and leave the window open
+— it becomes the thing that launches your batch runs, with a live log. Settings
+persist to `~/.config/webnovel-audio/ui.conf`. If the CLI isn't found, launch
+with `WEBNOVEL_AUDIO=$(pwd)/.venv/bin/webnovel-audio wish ui/control.tcl`.
+
+### Option B — a systemd-user timer (unattended, headless)
+
+### the timer
 
 ```sh
 uv run webnovel-audio schedule --install     # writes ~/.config/systemd/user/*

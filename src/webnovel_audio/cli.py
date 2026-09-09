@@ -213,57 +213,113 @@ def _cmd_fetch_models(args) -> int:
 
 # --- Phase 4: Royal Road library -------------------------------------------
 
+def _jprint(obj) -> None:
+    import json as _json
+
+    print(_json.dumps(obj, ensure_ascii=False))
+
+
 def _cmd_series(args) -> int:
     from . import sync
     from .db import DB
 
     cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
+
     if args.action == "add":
-        sync.add_series(cfg, args.url, start=args.frm)
+        info = sync.add_series(cfg, args.url, start=args.frm,
+                               log=(lambda *_: None) if want_json else print)
+        if want_json:
+            _jprint({"ok": True, **(info or {})})
         return 0
+
     if args.action == "refresh":
-        sync.refresh(cfg, args.key)
+        results = sync.refresh(cfg, args.key,
+                               log=(lambda *_: None) if want_json else print)
+        if want_json:
+            _jprint({"ok": True, "series": results or []})
         return 0
+
     if args.action == "set":
         db = DB(cfg.royalroad.state_db)
         s = db.get_series(args.key)
         if not s:
-            print(f"no tracked series matching {args.key!r}")
+            (_jprint if want_json else print)(
+                {"ok": False, "error": f"no series matching {args.key!r}"}
+                if want_json else f"no tracked series matching {args.key!r}")
+            db.close()
             return 1
         order = sync._resolve_start(db.chapters(s["id"]), args.position)
         db.force_progress(s["id"], order)
-        print(f"{s['title']}: progress set to #{order + 1} "
-              f"({len(db.pending(s['id']))} chapters pending)")
+        pend = len(db.pending(s["id"]))
+        if want_json:
+            _jprint({"ok": True, "slug": s["slug"], "progress": order + 1, "pending": pend})
+        else:
+            print(f"{s['title']}: progress set to #{order + 1} ({pend} chapters pending)")
         db.close()
         return 0
 
     # default: list
     db = DB(cfg.royalroad.state_db)
-    rows = db.list_series()
+    rows = db.summary()
+    db.close()
+    if want_json:
+        _jprint({"series": rows})
+        return 0
     if not rows:
         print("no tracked series. add one:  webnovel-audio series add <fiction-url>")
-    for s in rows:
-        chs = db.chapters(s["id"])
-        pend = len(db.pending(s["id"]))
-        print(f"{s['title']}")
-        print(f"  {len(chs)} chapters, at #{s['progress_order'] + 1}, {pend} pending"
-              f"   [{s['slug']}]  {s['url']}")
-    db.close()
+    for r in rows:
+        print(f"{r['title']}")
+        extra = f", {r['errors']} error(s)" if r["errors"] else ""
+        print(f"  {r['chapters']} chapters, at #{r['progress']}, {r['pending']} pending{extra}"
+              f"   [{r['slug']}]  {r['url']}")
     return 0
 
 
 def _cmd_sync(args) -> int:
+    import json as _json
+
     from . import sync
 
     cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
+    emit = (lambda d: print(_json.dumps(d, ensure_ascii=False))) if want_json else None
     res = sync.run_sync(cfg, args.key, limit=args.limit, dry_run=args.dry_run,
                         backend=args.backend or cfg.synth.backend,
-                        refresh_first=not args.no_refresh)
-    if args.dry_run:
-        print(f"\nsync (dry run): {res.skipped} chapter(s) would render")
-    else:
-        print(f"\nsync: {res.rendered} rendered, {res.errors} error(s)")
+                        refresh_first=not args.no_refresh,
+                        log=(lambda *_: None) if want_json else print, emit=emit)
+    if not want_json:
+        if args.dry_run:
+            print(f"\nsync (dry run): {res.skipped} chapter(s) would render")
+        else:
+            print(f"\nsync: {res.rendered} rendered, {res.errors} error(s)")
     return 1 if res.errors else 0
+
+
+def _cmd_config(args) -> int:
+    import shutil
+
+    cfg = Config.load(args.config)
+    project = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    venv_bin = os.path.join(project, ".venv", "bin", "webnovel-audio")
+    info = {
+        "config_path": args.config if os.path.exists(args.config) else None,
+        "executable": venv_bin if os.path.exists(venv_bin)
+        else (shutil.which("webnovel-audio") or "webnovel-audio"),
+        "project_dir": project,
+        "state_db": os.path.abspath(os.path.expanduser(cfg.royalroad.state_db)),
+        "library_dir": os.path.abspath(os.path.expanduser(cfg.royalroad.library_dir)),
+        "models_dir": cfg.general.models_dir,
+        "request_delay": cfg.royalroad.request_delay,
+        "backend": cfg.synth.backend,
+        "serve_port": cfg.serve.port,
+    }
+    if getattr(args, "json", False):
+        _jprint(info)
+    else:
+        for k, v in info.items():
+            print(f"{k:14} {v}")
+    return 0
 
 
 def _cmd_login(args) -> int:
@@ -407,33 +463,41 @@ def main(argv=None) -> int:
     fm.add_argument("--cache-dir")
     fm.set_defaults(func=_cmd_fetch_models)
 
+    def _cfg_json(p):
+        p.add_argument("-c", "--config", default=_default_config())
+        p.add_argument("--json", action="store_true", help="machine-readable output")
+
     se = sub.add_parser("series", help="track Royal Road series in the library DB")
     se_sub = se.add_subparsers(dest="action")
     se_add = se_sub.add_parser("add", help="start tracking a fiction")
     se_add.add_argument("url", help="fiction page URL or id")
     se_add.add_argument("--from", dest="frm", default="latest",
                         help="latest (default) | start | <N> | <chapter-url>")
-    se_add.add_argument("-c", "--config", default=_default_config())
+    _cfg_json(se_add)
     se_set = se_sub.add_parser("set", help="set how far you've listened / read")
     se_set.add_argument("key", help="series slug / id / title substring")
     se_set.add_argument("position", help="latest | start | <N> | <chapter-url>")
-    se_set.add_argument("-c", "--config", default=_default_config())
+    _cfg_json(se_set)
     se_ref = se_sub.add_parser("refresh", help="re-fetch chapter lists")
     se_ref.add_argument("key", nargs="?", help="one series, or all if omitted")
-    se_ref.add_argument("-c", "--config", default=_default_config())
+    _cfg_json(se_ref)
     se_list = se_sub.add_parser("list", help="show tracked series")
-    se_list.add_argument("-c", "--config", default=_default_config())
-    se.add_argument("-c", "--config", default=_default_config())
+    _cfg_json(se_list)
+    _cfg_json(se)
     se.set_defaults(func=_cmd_series, action=None, frm="latest")
 
     sy = sub.add_parser("sync", help="render new chapters of tracked series into the library")
     sy.add_argument("key", nargs="?", help="one series, or all if omitted")
-    sy.add_argument("-c", "--config", default=_default_config())
     sy.add_argument("--limit", type=int, help="max chapters per series this run")
     sy.add_argument("--backend", choices=["kokoro", "null"])
     sy.add_argument("--dry-run", action="store_true", help="list what would render")
     sy.add_argument("--no-refresh", action="store_true", help="skip re-fetching chapter lists")
+    _cfg_json(sy)
     sy.set_defaults(func=_cmd_sync)
+
+    co = sub.add_parser("config", help="show resolved paths (config, state DB, library, …)")
+    _cfg_json(co)
+    co.set_defaults(func=_cmd_config)
 
     lg = sub.add_parser("login", help="store a royalroad.com session cookie")
     lg.add_argument("--cookie", help='Cookie header string: "name=value; name2=value2"')

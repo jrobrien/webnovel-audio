@@ -4,20 +4,24 @@ from __future__ import annotations
 import copy
 import os
 import re
+import time
 from dataclasses import dataclass
 
-from . import pipeline
+from . import pipeline, providers
 from .config import Config
 from .db import DB
-from .royalroad import RRClient, _safe_slug, fetch_asset, parse_fiction
+from .royalroad import _safe_slug, fetch_asset
 
 
 def _db(cfg: Config) -> DB:
     return DB(cfg.royalroad.state_db)
 
 
-def _client(cfg: Config) -> RRClient:
-    return RRClient(delay=cfg.royalroad.request_delay)
+def _series_provider(source: str) -> providers.Provider:
+    prov = providers.resolve_series(source)
+    if prov is None:
+        raise SystemExit(f"no content provider handles {source!r}")
+    return prov
 
 
 def _slugify(s: str) -> str:
@@ -88,10 +92,11 @@ class SyncResult:
     skipped: int = 0
 
 
-def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> None:
-    db, client = _db(cfg), _client(cfg)
+def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
+    prov = _series_provider(url)
+    db = _db(cfg)
     try:
-        fi = parse_fiction(client.html(url), url=url)
+        fi = prov.series(url, cfg=cfg)
         if not fi.rr_id or not fi.chapters:
             raise SystemExit(f"could not read a fiction + chapter list from {url}")
         sid = db.upsert_series(fi)
@@ -103,22 +108,27 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> None:
         log(f"added: {fi.title}")
         log(f"  {len(fi.chapters)} chapters ({new} new), progress at #{row['progress_order'] + 1}, "
             f"{pend} to render")
+        return {"slug": fi.slug, "title": fi.title, "provider": fi.provider,
+                "chapters": len(fi.chapters), "new": new,
+                "progress": row["progress_order"] + 1, "pending": pend}
     finally:
-        client.close()
         db.close()
 
 
-def refresh(cfg: Config, key: str | None = None, log=print) -> None:
-    db, client = _db(cfg), _client(cfg)
+def refresh(cfg: Config, key: str | None = None, log=print) -> list[dict]:
+    db = _db(cfg)
+    out: list[dict] = []
     try:
         targets = [db.get_series(key)] if key else db.list_series()
         for s in filter(None, targets):
-            fi = parse_fiction(client.html(s["url"]), url=s["url"])
+            fi = _series_provider(s["url"]).series(s["url"], cfg=cfg)
             new = db.replace_chapters(s["id"], fi.chapters)
             _cache_cover(cfg, fi.slug, fi.cover_url)
             log(f"{s['title']}: {len(fi.chapters)} chapters (+{new} new)")
+            out.append({"slug": fi.slug, "title": fi.title,
+                        "chapters": len(fi.chapters), "new": new})
+        return out
     finally:
-        client.close()
         db.close()
 
 
@@ -181,51 +191,68 @@ def write_feeds(cfg: Config, key: str | None = None, out_dir: str | None = None,
 
 def run_sync(cfg: Config, key: str | None = None, *, limit: int | None = None,
              dry_run: bool = False, backend: str = "kokoro", refresh_first: bool = True,
-             log=print) -> SyncResult:
-    db, client = _db(cfg), _client(cfg)
+             log=print, emit=None) -> SyncResult:
+    """`emit`, if given, is called with structured event dicts (for the UI / --json)."""
+    _emit = emit or (lambda _d: None)
+    db = _db(cfg)
     res = SyncResult()
     lib = os.path.expanduser(cfg.royalroad.library_dir)
     try:
-        targets = [db.get_series(key)] if key else db.list_series()
-        for s in filter(None, targets):
+        targets = list(filter(None, [db.get_series(key)] if key else db.list_series()))
+        _emit({"event": "start", "series": len(targets), "dry_run": dry_run})
+        for s in targets:
+            prov = _series_provider(s["url"])
             if refresh_first:
-                fi = parse_fiction(client.html(s["url"]), url=s["url"])
+                fi = prov.series(s["url"], cfg=cfg)
                 db.replace_chapters(s["id"], fi.chapters)
             pend = db.pending(s["id"], limit)
+            slug = _dir_slug(s)
+            _emit({"event": "series", "slug": slug, "title": s["title"], "pending": len(pend)})
             if not pend:
                 continue
             log(f"\n{s['title']}: {len(pend)} chapter(s) to render")
-            slug = _dir_slug(s)
             scfg = _series_cfg(cfg, slug)
             out_dir = os.path.join(lib, slug)
             raw_dir = os.path.join(out_dir, ".raw")
             for c in pend:
-                name = f"{c['ord'] + 1:03d}-{_safe_slug(c['slug'], c['rr_id'])}"
+                num = c["ord"] + 1
+                name = f"{num:03d}-{_safe_slug(c['slug'], c['rr_id'])}"
                 out_path = os.path.join(out_dir, name + ".opus")
                 if dry_run:
-                    log(f"  would render #{c['ord'] + 1} {c['title']}  -> {out_path}")
+                    log(f"  would render #{num} {c['title']}  -> {out_path}")
+                    _emit({"event": "chapter", "slug": slug, "number": num,
+                           "title": c["title"], "result": "would-render", "path": out_path})
                     res.skipped += 1
                     continue
+                _emit({"event": "chapter_begin", "slug": slug, "number": num, "title": c["title"]})
+                t0 = time.time()
                 try:
                     os.makedirs(raw_dir, exist_ok=True)
                     raw_path = os.path.join(raw_dir, f"{_safe_slug(c['rr_id'], 'chapter')}.html")
                     if not os.path.exists(raw_path):
                         with open(raw_path, "w", encoding="utf-8") as fh:
-                            fh.write(client.html(c["url"]))
-                    log(f"  #{c['ord'] + 1} {c['title']}")
+                            fh.write(prov.raw(c["url"], cfg=cfg))
+                    log(f"  #{num} {c['title']}")
                     rep = pipeline.render(raw_path, out_path, scfg, backend=backend,
-                                          md_meta={"chapter": c["ord"] + 1,
+                                          md_meta={"chapter": num,
                                                    "published": c["published_at"] or ""},
                                           log=lambda *_: None)
                     db.mark(c["id"], "rendered", audio_path=out_path,
                             duration_s=rep.audio_seconds or None)
                     db.set_progress(s["id"], c["ord"])
                     res.rendered += 1
+                    _emit({"event": "chapter", "slug": slug, "number": num, "title": c["title"],
+                           "result": "rendered", "path": out_path,
+                           "audio_seconds": round(rep.audio_seconds, 1),
+                           "elapsed_seconds": round(time.time() - t0, 1)})
                 except Exception as exc:  # noqa: BLE001 - keep the batch going
                     db.mark(c["id"], "error", error=str(exc)[:400])
                     res.errors += 1
                     log(f"    ! error: {exc}")
+                    _emit({"event": "chapter", "slug": slug, "number": num, "title": c["title"],
+                           "result": "error", "error": str(exc)[:400]})
+        _emit({"event": "done", "rendered": res.rendered, "errors": res.errors,
+               "skipped": res.skipped})
         return res
     finally:
-        client.close()
         db.close()

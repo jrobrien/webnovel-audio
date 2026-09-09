@@ -200,3 +200,25 @@ Residual / accepted (single-user desktop tool):
   or be a separate local GUI that calls the library functions directly.
 - `schedule --calendar` is interpolated into a unit file; it's the user's own CLI
   argument, not remote input.
+
+## Provider seam & the `--json` contract
+
+Content acquisition is a `providers.Provider` (see `docs/PROVIDERS.md`): given a
+source, produce an `ingest.Document`. `pipeline.load_document` and every `sync`
+entry point resolve through `providers.resolve` / `resolve_series`, so Royal Road
+and local `.html` are just the two shipped implementations; `.txt` bypasses the
+registry (it's already the artifact). `textout.render_markdown(doc)` is the
+canonical serialised form — the `library/<slug>/NNN-*.md` files — and the reason
+the Markdown output exists: it's the stable boundary a future webnovel.com or
+mbox provider only has to reach.
+
+`series list|add|set|refresh`, `sync`, and `config` accept `--json`. `sync --json`
+emits newline-delimited events (`start` / `series` / `chapter_begin` / `chapter` /
+`done`) via `run_sync(emit=…)`. `config --json` reports resolved paths so a
+front end is self-configuring. `ui/control.tcl` is exactly that: a Tcl/Tk app
+that shells the CLI, parses the JSON (bundled `ui/json.tcl`), streams `sync`, and
+carries its own interval/daily scheduler (`after`-based) as an alternative to the
+systemd timer. It needs no `sqlite3`/`json`/`tls` Tcl packages — just `tk`.
+
+The DB opens WAL + a busy timeout so a reader (a second CLI, a future native UI)
+never blocks the `sync` writer.

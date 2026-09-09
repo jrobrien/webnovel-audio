@@ -31,32 +31,18 @@ class Report:
     size_bytes: int = 0
 
 
-def _is_url(s: str) -> bool:
-    return s.startswith(("http://", "https://"))
-
-
 def load_document(source: str, cfg: Config):
-    """Return (blocks, meta, doc) for a .txt path, .html path, or http(s) URL.
+    """Return (blocks, meta, doc) for a source.
 
-    `meta` carries chapter/fiction titles (Opus tags); `doc` is the parsed
-    ingest.Document (with provenance filled in) for HTML/URL input, else None.
+    A content provider (Royal Road, a saved .html, …) yields an ingest.Document
+    with provenance stamped; `meta` carries the Opus tags. A plain .txt file is
+    already the artifact, so `doc` is None and no Markdown is emitted for it.
     """
-    if _is_url(source) or source.lower().endswith((".html", ".htm")):
-        from .ingest import fetch_html, parse_document
+    from . import providers
 
-        if _is_url(source):
-            html = fetch_html(source)
-            retrieved = time.strftime("%Y-%m-%dT%H:%M:%S")
-        else:
-            html = open(source, encoding="utf-8").read()
-            retrieved = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(os.path.getmtime(source)))
-
-        doc = parse_document(html, url=source if _is_url(source) else "")
-        raw = html.encode("utf-8", "replace")
-        doc.raw_sha256 = hashlib.sha256(raw).hexdigest()
-        doc.raw_bytes = len(raw)
-        doc.retrieved_at = retrieved
-
+    prov = providers.resolve(source)
+    if prov is not None:
+        doc = prov.read(source, cfg=cfg)
         blocks = list(doc.blocks)
         if cfg.general.speak_title and doc.chapter_title:
             blocks.insert(0, Block("heading", doc.chapter_title))

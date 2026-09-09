@@ -11,8 +11,10 @@ no GPU, no cloud, no account required.
 - **Rule-based dialogue attribution** — explicit tags, pronoun + gender, sticky
   continuations, descriptive referents ("the old woman"). No model download; every
   decision is visible and overridable in config.
-- **Royal Road library** — track a series, `sync` renders every new chapter past
-  where you left off; nightly via a systemd timer.
+- **Library** — track a series, `sync` renders every new chapter past where you
+  left off; drive it from a **Tcl/Tk control UI** or a systemd timer.
+- **Provider seam** — Royal Road + local files today; a new source (webnovel.com,
+  usenet/mbox, …) is one class producing the shared `Document`.
 - **Three outputs per chapter** — mastered Opus, a **readable Markdown** copy
   (decoys stripped, structure kept, YAML provenance — feeds `pandoc … -o epub`),
   and the internal narration script.
@@ -60,8 +62,9 @@ tracked series; `webnovel-audio schedule --install` runs it nightly.
 | `inspect <input>` | how it parsed: blocks, styles, cast, thought routing, lexicon queue |
 | `cast <input>` | detect speakers, print a `[cast.voices]` starter block |
 | `lexicon <input> --write` | queue unknown proper nouns into `data/lexicons/<slug>.csv` |
-| `series add\|list\|set\|refresh` | manage tracked Royal Road series |
+| `series add\|list\|set\|refresh` | manage tracked series |
 | `sync [key] [--limit N] [--dry-run]` | render new chapters into `library/` |
+| `config` | show resolved paths (state DB, library, executable, …) |
 | `login [--cookies-file … \| --check]` | store a Royal Road session cookie (optional) |
 | `serve` | localhost/LAN podcast feeds + audio |
 | `book <key> [--from N] [--to M]` | stitch chapters into a chapterised `.m4b` |
@@ -69,8 +72,29 @@ tracked series; `webnovel-audio schedule --install` runs it nightly.
 | `schedule [--install]` | emit / install a systemd-user timer for nightly `sync` |
 | `fetch <url>` / `fetch-models` | save a chapter page / download the TTS model |
 
-Input to `render`/`inspect`/`cast`/`lexicon` can be a chapter **URL**, a saved
-**`.html`**, or a plain **`.txt`**.
+`series list`, `series add/set/refresh`, `sync`, and `config` take **`--json`**
+(machine-readable; `sync --json` streams one JSON event per line). Input to
+`render`/`inspect`/`cast`/`lexicon` can be a chapter **URL**, a saved **`.html`**,
+or a plain **`.txt`**.
+
+### Control UI
+
+```sh
+wish ui/control.tcl        # needs tk (Arch: pacman -S tk)
+```
+
+A Tcl/Tk front end over the CLI: add/track series, run `sync` on demand or on an
+in-app schedule (interval or daily), with a live log. It's a stand-alone
+alternative to the systemd timer — leave it open and it drives the batch runs.
+Set `WEBNOVEL_AUDIO=/path/to/webnovel-audio` if it isn't found automatically.
+
+### Adding a content source
+
+Royal Road and local `.html` are **providers** (`src/webnovel_audio/providers.py`);
+plain `.txt` is passed through as-is. A new site (webnovel.com, an mbox, …) is one
+`Provider` subclass that produces an `ingest.Document`; everything downstream —
+audio, the readable `.md`, the feed, `.m4b` — is provider-agnostic. Contract and
+sketches: [`docs/PROVIDERS.md`](docs/PROVIDERS.md).
 
 ## How it works
 
@@ -137,20 +161,24 @@ per-series casting · `[chat]` livestream-chat behaviour · `[synth]`
 ## Development
 
 ```sh
-uv run pytest -q            # ~58 tests, fully offline
+uv run pytest -q            # ~61 tests, fully offline
 uv run python -m compileall -q src/
 ```
 
-Layout: `ingest` (HTML → blocks) → `normalize` / `dialogue` / `segment` (blocks →
-narration script) → `synth/` (Kokoro or a silent `null` backend) → `audio`
-(master + Opus) ; `textout` (blocks → Markdown) ; `royalroad` + `db` + `sync`
-(library) ; `feed` + `serve` + `package` (delivery). `cli` wires it together.
+Layout: `providers` (source → `ingest` Document) → `normalize` / `dialogue` /
+`segment` (blocks → narration script) → `synth/` (Kokoro or a silent `null`
+backend) → `audio` (master + Opus) ; `textout` (Document → Markdown) ; `royalroad`
++ `db` + `sync` (library) ; `feed` + `serve` + `package` (delivery). `cli` wires
+it together; `ui/` is a Tcl/Tk front end over the CLI.
 
 ## Status & scope
 
 Personal project, still moving. It scrapes Royal Road for **personal listening
 only** — respect authors who sell their own audiobooks, and the site's terms.
-No warranty. There is no `LICENSE` file yet; treat the code as all-rights-reserved
-until one is added.
+No warranty.
 
-Next up: a small localhost UI for adding series and managing the sync schedule.
+## License
+
+[0BSD](LICENSE) (BSD Zero Clause) — do anything, no attribution or notice
+required. (Swap in the Unlicense or CC0 if you prefer the public-domain framing;
+0BSD is the same permissiveness with fewer jurisdictional questions.)
