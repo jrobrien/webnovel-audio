@@ -1,0 +1,92 @@
+import os
+
+from webnovel_audio.config import Config
+from webnovel_audio.ingest import Document
+from webnovel_audio.normalize import Block
+from webnovel_audio.textout import _emphasize, _yaml, render_markdown
+
+
+def _doc(**kw):
+    d = Document(blocks=kw.pop("blocks", []))
+    d.chapter_title = kw.get("chapter_title", "1- The Tomb")
+    d.fiction_title = kw.get("fiction_title", "A Test Serial")
+    d.author = kw.get("author", "a-test-author")
+    d.url = kw.get("url", "https://www.royalroad.com/fiction/9/x/chapter/7007/the-tomb")
+    d.raw_sha256 = "deadbeef"
+    d.raw_bytes = 1234
+    d.retrieved_at = "2026-09-08T21:00:00"
+    return d
+
+
+def test_yaml_escaping():
+    assert _yaml('a "b" \\c') == '"a \\"b\\" \\\\c"'
+
+
+def test_emphasize_cases():
+    # partial italic; a leading space inside the span is moved outside the marks
+    assert _emphasize("He paused. Worth a shot.", [(10, 24)]) == "He paused. *Worth a shot.*"
+    # leading space inside the span is moved out
+    assert _emphasize("tomb. Really.", [(5, 13)]) == "tomb. *Really.*"
+    # whole string italic
+    assert _emphasize("all of it", [(0, 9)]) == "*all of it*"
+    # a lone italic quote mark is not emphasis
+    assert _emphasize('"So there.', [(0, 1)]) == '"So there.'
+    assert _emphasize("plain", []) == "plain"
+
+
+def test_render_markdown_structure():
+    blocks = [
+        Block("paragraph", "He raised the blade. Ahh well.", italic=[(21, 30)]),
+        Block("scene_break"),
+        Block("system", "HP: 40/50   STR: 12"),
+        Block("chat", "First!", meta={"user": "Noob9000", "location": "Earth"}),
+        Block("paragraph", "The cold lingered."),
+    ]
+    md = render_markdown(_doc(blocks=blocks), front_matter_extra={"chapter": 7})
+
+    fm, _, body = md.partition("\n---\n")
+    assert fm.startswith("---\n")
+    assert 'title: "1- The Tomb"' in fm
+    assert "chapter: 7" in fm
+    assert "royalroad_id: \"7007\"" in fm
+    assert "raw_sha256: \"deadbeef\"" in fm
+    assert "generator: \"webnovel-audio " in fm
+
+    assert "# 1- The Tomb" in body
+    assert "He raised the blade. *Ahh well.*" in body
+    assert "\n* * *\n" in body
+    assert "> HP: 40/50   STR: 12" in body
+    assert "[Noob9000 (Earth): First!]" in body
+    assert body.rstrip().endswith("The cold lingered.")
+
+
+def test_markdown_from_real_fixture():
+    fixture = os.path.join(os.path.dirname(__file__), "..", "samples", "salvage-run-ch1.html")
+    if not os.path.exists(fixture):
+        return
+    from webnovel_audio import pipeline
+
+    _blocks, _segs, _meta, doc = pipeline.build_script(fixture, Config())
+    md = render_markdown(doc, front_matter_extra={"chapter": 1})
+
+    assert md.startswith("---\n") and "raw_sha256:" in md
+    assert 'source: "https://www.royalroad.com/fiction/424242/salvage-run/chapter/1001/' in md
+    # readable text, NOT spoken-form: digits kept, quotes kept verbatim
+    assert "Mara" in md
+    assert "1,204 credits" in md
+    assert "*Nothing this far out is worth what it costs to reach.*" in md   # thought -> italic
+    assert "lifted from its home" not in md                                  # decoy stripped
+
+
+def test_txt_input_has_no_document():
+    from webnovel_audio.pipeline import load_document
+
+    import tempfile
+    with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as fh:
+        fh.write("A short paragraph.\n\nAnother one.\n")
+        path = fh.name
+    try:
+        _blocks, _meta, doc = load_document(path, Config())
+        assert doc is None
+    finally:
+        os.unlink(path)

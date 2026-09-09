@@ -1,0 +1,28 @@
+# virtualenv / caches
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.cache/
+
+# generated output
+/out/
+/library/
+chapter.html
+*.opus
+*.wav
+*.m4b
+*.m4a
+*.mp3
+*.epub
+*.segments.json
+
+# local state / config
+*.db
+config.toml
+config.local.toml
+
+# editor / OS
+.DS_Store
+*.swp
+*~

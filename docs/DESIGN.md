@@ -1,0 +1,202 @@
+# webnovel-audio — design
+
+Goal: generate good audiobook-quality narration of web novels (Royal Road, etc.)
+for personal listening, as an overnight batch job on a CUDA-less AMD APU laptop.
+
+## Target hardware
+
+| | |
+|---|---|
+| CPU | AMD Ryzen 7 8745HS — 8c/16t Zen 4, AVX-512 + VNNI + BF16 |
+| GPU | Radeon 780M (RDNA3, gfx1103), shares system RAM, **no CUDA** |
+| RAM | 32 GB (shared with iGPU) |
+| Other | ffmpeg 9, `uv`, big NVMe |
+
+Consequence: **CPU + ONNX Runtime is the reliable synthesis path.** ROCm on
+gfx1103 is fragile; the one dependable GPU path is Vulkan, and only really for a
+llama.cpp annotation model. Not realtime, and that's fine.
+
+## Engines
+
+| Role | Engine | Notes |
+|---|---|---|
+| Baseline narration | **Kokoro-82M** (`kokoro-onnx`) | Apache-2.0, natural prosody, faster than realtime on Zen 4. Phase 1 default. |
+| Premium narration (opt) | XTTS-v2 / StyleTTS2 | Voice cloning, more expressive. ~0.1–0.3× realtime on CPU → overnight only. |
+| Bulk / fallback | Piper | 20–100× realtime; flat prosody. For clearing a big backlog. |
+| Speaker attribution | BookNLP | Quote → speaker, coref. CPU-fine. |
+| Tone / emphasis / IPA guesses | llama.cpp (Vulkan) + Qwen2.5-7B | Annotate a chapter in a couple of minutes. |
+
+## Pipeline
+
+```
+fetch (RoyalRoad) → clean/structure → normalize (LitRPG-aware) → annotate
+(BookNLP speakers + LLM tone + thought detection) → apply per-series lexicon →
+segment script (JSON) → synthesize (cache per segment) → per-voice DSP +
+2-pass loudnorm → assemble → Opus / chapter-marked M4B → deliver (local podcast
+RSS feed the phone subscribes to)
+```
+
+## The text pre-pass (where quality comes from)
+
+- **Normalize**: curly quotes, ellipses, em-dashes, zero-width chars, thousands
+  separators, `Lvl`→level, integers/ordinals→words. Strip hidden anti-piracy nodes.
+- **Internal monologue**: whole-paragraph/sentence italics not inside quotes →
+  a distinct, consistent `thought` voice (or narrator + intimacy DSP chain).
+- **Speaker attribution**: BookNLP + light LLM → per-character casting from a
+  voice bank; LitRPG status boxes → a flatter `system_ui` voice.
+- **Per-series lexicon**: `surface → respelling` (+ optional IPA). Seed with an
+  LLM, correct by ear once, cached forever. `inspect` builds the review queue.
+
+## Audio post
+
+Per-voice EQ/comp; `thought` voice gets high-pass + gentle comp + a touch of
+short reverb. Pauses: ~260 ms sentence, ~380 ms paragraph, ~1100 ms scene break,
++220 ms on a trailing ellipsis. Loudness: two-pass ffmpeg `loudnorm` to
+−19 LUFS / −3 dBTP. Encode: Opus 56 kbit/s mono; optional M4B per arc with
+chapter markers.
+
+## Delivery
+
+Generate a per-series podcast RSS feed; serve it on the LAN / Tailscale; any
+phone podcast app subscribes, auto-downloads new chapters, tracks position.
+M4B export stays available for single-file arcs.
+
+## RoyalRoad sync (lower priority)
+
+No official API. Log in via browser once, export the session cookie, use it with
+`httpx`. Parse `div.chapter-content`, drop `.author-note` and hidden nodes. Be
+polite (1 req / 2–3 s, cache, back off on 429). SQLite tracks
+series/chapter/status; a `sync` command enqueues new chapters; a systemd-user
+timer runs it nightly. Personal use only — respect authors with official audio.
+
+## Roadmap
+
+- **Phase 1 — spine** *(done)*: txt → Kokoro → Opus, config, lexicon, segment
+  cache, `inspect`.
+- **Phase 2 — pre-pass** *(done)*: `ingest.py` turns a saved `.html` or a live
+  chapter URL into the same Block list; Royal Road anti-piracy decoys (a
+  `display:none` stylesheet rule + a matching node) are stripped; italic
+  character ranges are preserved and `build_segments` routes per-sentence italic
+  runs to the `thought` voice with a light FFT band-limit/level DSP; richer
+  spoken-form normalization (decimals, `%`, `e.g.`, spaced ellipsis, `#N`,
+  chapter-heading phrasing) plus a `normalize_system` pass for stat lines;
+  chapter/fiction titles become a spoken heading + Opus tags; `lexicon --write`
+  appends candidate rows. New CLI: `fetch`, `lexicon`; `render`/`inspect` accept
+  txt | html | url.
+- **Phase 3 — cast** *(done)*: `dialogue.py` splits quotes out of each paragraph
+  and attributes a speaker (explicit `"...," said X` / `X said, "..."` tags,
+  pronoun + a running gender guess, sticky speaker for untagged continuations,
+  descriptive referents → a lowercase key like `crone`). `[cast.voices]` maps
+  names to Kokoro voice ids; `[cast] protagonist` catches untagged first-person
+  lines. `[dsp.*]` effect chains (pitch via OLA, gain, HP/LP, spectral tilt) are
+  applied after the segment cache, keyed speaker → voice → style; `thought` and
+  `system` ship with sensible defaults. `system_ui` voice is wired (no system
+  boxes in the sample chapter). New CLI: `cast`. **Deviation from the original
+  plan:** BookNLP was dropped in favour of rules — no 2 GB dependency / model
+  download, fully offline and deterministic, and every decision is visible in
+  `inspect` and overridable in config. `Attributor.attribute` is the seam if a
+  BookNLP/LLM backend is wanted later.
+- **Livestream chat** *(done)*: `ingest._parse_chat` recognises
+  `[Handle (Location): message]` (tolerates `[[`, a colon in the handle, missing
+  location) and emits `Block("chat", message, meta={user, location})`; bracketed
+  lines with no handle head, or a handle in `_SYSTEM_KEYWORDS`, fall through to
+  `system`. `build_segments` routes chat to a rotating `[chat.voices]` pool
+  (greedy distinct assignment in first-appearance order, then hash), style
+  `chat`, rate `[chat] rate`, `[dsp.chat]` band-limit; inserts a `kind="cue"`
+  earcon (`audio.earcon`, synthesised in numpy) before each run; speaks the
+  handle per `[chat] speak_username`. `normalize_username` / `normalize_chat_message`
+  handle CamelCase/digit handles, `@`-mentions, unicode emoji, ALL-CAPS.
+
+- **Phase 4 — sync** *(done)*: `royalroad.py` (`RRClient` with a politeness
+  delay + retry + optional stored cookie; `parse_fiction` reads the authoritative
+  `window.chapters` JSON via a string-aware bracket scanner, falls back to the
+  `#chapters` table). `db.py` is a small SQLite layer (`series`, `chapters` with
+  `progress_order` + per-chapter `status`). `sync.py`: `add_series` (with a
+  `--from latest|start|N|<chapter-url>` marker), `refresh`, `run_sync` (oldest
+  first, caches raw HTML under `library/<slug>/.raw/`, calls `pipeline.render`,
+  advances progress only on success, keeps going past errors). CLI: `series
+  add|set|refresh|list`, `sync`, `login` (cookie header or Netscape
+  cookies.txt → `~/.config/webnovel-audio/session.json`, verified against
+  `/my/follows`), `schedule` (emits/installs a systemd-user `.service` + `.timer`).
+  `parse_follows` exists but is best-effort (no auth fixture to test against).
+- **Readable text output** *(done)*: `textout.render_markdown(doc)` turns the
+  ingest `Document` into a Markdown file written next to every `.opus`
+  (`NNN-<slug>.md`), and `render` does the same for one-off HTML/URL input. It's
+  the distilled story — decoys gone, structure recovered (`#`/`* * *`/`> `/chat
+  lines), italic spans → `*…*` — *before* spoken-form normalization, so numbers
+  and names read as written. YAML front-matter carries provenance (`source`,
+  `royalroad_id`, `retrieved`, `raw_sha256`, `raw_bytes`, `chapter`, `published`);
+  `pipeline.load_document` fills the hash/size/timestamp onto `Document`. First-
+  class archive + direct `pandoc … -o epub` source. `.txt` input produces no
+  `.md` (it already is the text).
+
+- **Phase 5 — delivery** *(done)*: `feed.py` builds RSS 2.0 + iTunes tags from
+  the library DB (per-item enclosure with byte length + MIME from extension,
+  `<itunes:duration>` from the stored `chapters.duration_s`, `pubDate` from the
+  Royal Road publish date so a backlog sorts right, newest-first). `serve.py` is
+  a stdlib `ThreadingHTTPServer`: `/` = a subscribe page listing tracked series,
+  `/feed/<slug>.xml` = live feed, `/audio/...` and `/cover/...` = files with
+  single-range HTTP support. `package.py` builds a `.m4b` via `ffmpeg` concat +
+  an `;FFMETADATA1` chapters file (cumulative START/END from durations) + AAC
+  transcode + embedded cover. CLI: `serve`, `book [--from N] [--to M]`, `feed`
+  (static files for an external server). `sync` now caches `cover.jpg` per series
+  and records each chapter's duration.
+- **Phase 6 — premium (opt)**: overnight XTTS-v2 / StyleTTS2 narrator, A/B.
+
+## Royal Road ingest notes
+
+- Chapter body: `div.chapter-content` (fallbacks: `.chapter-inner`, densest
+  `<div>` of `<p>`).
+- Anti-piracy: RR adds `<style>.<rand>{display:none}</style>` and drops a
+  `<p>`/`<span class="<rand>">` with a "report this to Amazon" sentence into the
+  body. `_hidden_class_names` scans every stylesheet for rules that hide content
+  and `_strip_hidden` decomposes matches (plus inline `display:none`, `hidden`,
+  `aria-hidden`, and `author-note` blocks) before text extraction.
+- Each `<p>` carries a unique random watermark class — ignored.
+- Italics (`<em>`/`<i>`): recorded as `(start, end)` char ranges on the raw block
+  text; the segmenter dequotes length-preservingly, splits into sentences with
+  offsets, and thresholds italic coverage per sentence.
+- Metadata from `og:title` (`"<chapter> - <fiction>"`), first `<h1>`, `og:url`,
+  and the "Next Chapter" link.
+
+## Security model
+
+Everything the tool ingests — chapter HTML, the `window.chapters` JSON, `og:*`
+tags, cover URLs — is **attacker-influenced**: a hostile fiction author controls
+their own page. The threat model is "a fiction you track is malicious," plus the
+`serve` HTTP surface.
+
+Handled:
+
+- **HTML parsing** — only `BeautifulSoup(html, "lxml")` (the HTML parser, no DTD /
+  entity resolution → no XXE); `lxml.etree` is never given untrusted input.
+  `script`/`style`/`iframe`/`object`/`embed`/`svg`/`template`/`noscript` are
+  decomposed before text extraction so nothing executable reaches the `.md`.
+- **Path traversal** — `royalroad._safe_id` (`^\d{1,12}$`) and `_safe_slug`
+  (`[A-Za-z0-9._-]`, no leading `.`/`-`, single path component) sanitise every id
+  and slug at parse time; `sync` re-sanitises from the DB before building paths;
+  `serve._file` resolves `realpath` and checks `commonpath` against the library
+  root, rejects `NUL`.
+- **XSS in `serve`'s index** — `_h()` escapes `& < > " '` for every interpolated
+  value (title, author, slug, URL); the client `Host` header is stripped to
+  host/port characters before use.
+- **Session-cookie exfiltration** — covers come from an attacker's `og:image`;
+  `royalroad.fetch_asset` fetches them with **no cookies** and only from
+  `royalroad.com` / `royalroadcdn.com`.
+- **Command injection** — `ffmpeg` is always invoked as an argv list (no
+  `shell=True`); chapter titles go into an `ffmetadata` file with `=`/`;`/newline
+  sanitised, never argv.
+- **YAML front-matter** — control chars / newlines in titles are collapsed so a
+  crafted title can't break the `.md` header.
+
+Residual / accepted (single-user desktop tool):
+
+- **SSRF via redirects** — `follow_redirects=True` on chapter fetches could be
+  bounced to `localhost`/link-local. Low value here (no cloud metadata endpoint,
+  the user picks each fiction URL); not currently restricted.
+- **`serve` has no auth or CSRF protection.** It is read-only today. Any
+  write endpoints (the planned add-series / schedule UI) MUST bind localhost
+  only, carry CSRF tokens, and check `Origin`/`Host` to defeat DNS rebinding —
+  or be a separate local GUI that calls the library functions directly.
+- `schedule --calendar` is interpolated into a unit file; it's the user's own CLI
+  argument, not remote input.

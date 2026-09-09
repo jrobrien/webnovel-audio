@@ -1,0 +1,109 @@
+# Copy to config.toml and edit. CLI flags (--voice, --speed, --backend) override these.
+
+[general]
+lexicon = "data/lexicons/salvage-run.csv"     # per-series pronunciation dictionary (CSV)
+cache_dir = ".cache/segments"                 # per-segment wav cache (hash-keyed)
+speak_title = true                            # narrate the chapter title first (html/url input)
+
+[voices]
+# Fallback voices, used when [cast] doesn't name the speaker.
+# Male: am_michael am_adam am_eric am_onyx am_puck am_fenrir bm_george bm_lewis bm_daniel bm_fable
+# Female: af_heart af_bella af_nicole af_sarah af_sky af_aoede bf_emma bf_alice bf_isabella bf_lily
+narrator          = "am_michael"
+thought           = "bm_george"   # internal monologue
+dialogue_default  = "am_michael"  # dialogue whose speaker isn't in [cast.voices]
+system_ui         = "af_sky"      # LitRPG status boxes / stat lines
+
+[cast]
+# Per-series casting (example: the samples/salvage-run-ch1.html fixture).
+# `webnovel-audio cast <chapter>` prints a starter block for a real series.
+protagonist = "Mara"               # POV char; catches untagged first-person lines
+# narrator  = "am_michael"         # optional: override [voices].narrator
+# default   = "am_adam"            # optional: override [voices].dialogue_default
+
+[cast.voices]
+Mara = "af_heart"
+Resk = "am_michael"
+# holdkeeper = "am_onyx"           # descriptively-referenced speakers get a lowercase key
+
+[chat]
+# Livestream "chat" overlay: [Handle (Location): message] lines.
+speak_username = "first"            # always | first | never  (first time per chapter)
+speak_location = false              # append ", from Ceres Ring"
+dampen_caps    = true               # "SO SCIFI" -> "SO Scifi"
+earcon         = true               # soft blip before each run of chat lines
+rate           = 1.10               # chat reads a little quicker than prose
+voices = [
+  "af_nicole", "am_eric", "bf_lily", "am_liam", "af_river", "bm_daniel",
+  "af_alloy", "am_fenrir", "bf_isabella", "am_onyx", "af_aoede", "bm_fable",
+]
+# voices_by_user = { SolarWindsurfer = "am_eric" }  # pin a recurring commenter
+
+[synth]
+backend           = "kokoro"   # kokoro | null   (null = silence sized to est. duration, for testing)
+speed             = 1.0
+sample_rate       = 24000
+system_rate       = 1.06       # LitRPG status boxes read a touch faster than prose
+thought_threshold = 0.6        # fraction of a sentence that must be italic to become "thought"
+
+[pauses]
+sentence_ms       = 260
+paragraph_ms      = 380
+scene_break_ms    = 1100
+dialogue_ms       = 240
+ellipsis_extra_ms = 220    # extra hang time when a sentence trails off with an ellipsis
+lead_ms           = 400    # silence before the first word
+tail_ms           = 900    # silence after the last word
+
+[audio]
+opus_bitrate = "56k"       # mono; transparent for speech
+loudness_i   = -19.0       # LUFS target (two-pass ffmpeg loudnorm)
+loudness_tp  = -3.0        # dBTP ceiling
+loudness_lra = 11.0
+dsp          = true        # apply the [dsp.*] effect chains below
+
+# Post-synthesis effect chains. Key = a character name, a Kokoro voice id, or a
+# style (narration | thought | dialogue | system | heading). More specific keys
+# win per field: speaker -> voice -> style. Fields (all optional):
+#   semitones  pitch shift, +/- (OLA; small changes only, ~+/-3)
+#   gain_db    level trim
+#   hp_hz      high-pass corner
+#   lp_hz      low-pass corner
+#   tilt_db    spectral tilt, dB/octave (+ = brighter)
+[dsp.thought]
+gain_db = -1.5
+hp_hz   = 115
+lp_hz   = 3600
+
+[dsp.system]
+gain_db = -1.0
+hp_hz   = 250
+lp_hz   = 3900
+tilt_db = 2.0              # brighten -> "readout" feel
+
+[dsp.chat]
+gain_db = -3.0            # sit chat behind the narration
+hp_hz   = 300
+lp_hz   = 3400            # band-limited -> "stream chat TTS" feel
+tilt_db = 1.0
+
+[dsp.Resk]
+semitones = -1.0           # example: nudge one character's voice lower
+
+[royalroad]
+library_dir   = "library"                              # rendered chapters land here, per series
+state_db      = "~/.local/state/webnovel-audio/state.db"
+request_delay = 2.5                                     # seconds between royalroad.com requests
+
+[serve]
+host = "0.0.0.0"                                        # `webnovel-audio serve` -> podcast feeds
+port = 8080
+qr   = true                                             # print a scannable QR of the URL on startup
+# base_url = "http://192.168.1.50:8080"                # else auto-detected from the request
+
+[book]
+bitrate = "64k"                                         # AAC bitrate for `webnovel-audio book` (.m4b)
+
+[metadata]
+artist = "webnovel-audio (Kokoro)"
+genre  = "Audiobook"
