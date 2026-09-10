@@ -157,23 +157,45 @@ proc sync_readable {} {
     set line [string trim $line]
     if {$line eq ""} return
     if {[catch {json::parse $line} ev]} { log $line ; return }
+    set slug [json::get $ev slug]
     switch -- [json::get $ev event] {
         start        { log "start: [json::get $ev series] series[expr {[json::get $ev dry_run] eq {1} ? { (dry run)} : {}}]" }
-        series       { log "  [json::get $ev title]: [json::get $ev pending] pending" }
-        chapter_begin { log "    #[json::get $ev number] [json::get $ev title] …" }
+        series {
+            log "  [json::get $ev title]: [json::get $ev pending] pending"
+            if {$slug ne "" && [.series exists $slug]} {
+                .series set $slug pend [json::get $ev pending]
+            }
+        }
+        chapter_begin {
+            log "    #[json::get $ev number] [json::get $ev title] …"
+            .series set $slug next "rendering #[json::get $ev number]…"
+        }
         chapter {
-            set r [json::get $ev result]
+            set r [json::get $ev result] ; set num [json::get $ev number]
             if {$r eq "rendered"} {
-                log "    #[json::get $ev number] ok  ([json::get $ev audio_seconds]s audio, [json::get $ev elapsed_seconds]s)"
+                log "    #$num ok  ([json::get $ev audio_seconds]s audio, [json::get $ev elapsed_seconds]s)"
+                row_progress $slug $num
             } elseif {$r eq "error"} {
-                log "    #[json::get $ev number] ERROR: [json::get $ev error]"
+                log "    #$num ERROR: [json::get $ev error]"
+                if {$slug ne "" && [.series exists $slug]} {
+                    .series set $slug err [expr {[.series set $slug err] + 1}]
+                }
             } else {
-                log "    #[json::get $ev number] [json::get $ev title]  ->  [json::get $ev path]"
+                log "    #$num [json::get $ev title]  ->  [json::get $ev path]"
             }
         }
         done { log "done: [json::get $ev rendered] rendered, [json::get $ev errors] error(s), [json::get $ev skipped] pending" }
         default { log $line }
     }
+}
+
+# advance a series row as each chapter lands, without a round-trip to the CLI
+proc row_progress {slug num} {
+    if {$slug eq "" || ![.series exists $slug]} return
+    .series set $slug prog "#$num"
+    set p [.series set $slug pend]
+    if {[string is integer -strict $p] && $p > 0} { .series set $slug pend [expr {$p - 1}] }
+    .series set $slug next ""
 }
 
 proc sync_finish {} {

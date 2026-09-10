@@ -278,12 +278,22 @@ def _cmd_series(args) -> int:
 
 def _cmd_sync(args) -> int:
     import json as _json
+    import sys
 
     from . import sync
 
     cfg = Config.load(args.config)
     want_json = getattr(args, "json", False)
-    emit = (lambda d: print(_json.dumps(d, ensure_ascii=False))) if want_json else None
+    if want_json:
+        try:                                    # stream events line-by-line down a pipe
+            sys.stdout.reconfigure(line_buffering=True)
+        except (AttributeError, ValueError):
+            pass
+
+    def emit(d):
+        print(_json.dumps(d, ensure_ascii=False), flush=True)
+
+    emit = emit if want_json else None
     res = sync.run_sync(cfg, args.key, limit=args.limit, dry_run=args.dry_run,
                         backend=args.backend or cfg.synth.backend,
                         refresh_first=not args.no_refresh,
