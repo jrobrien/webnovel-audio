@@ -90,6 +90,17 @@ def test_system_line_normalization():
     assert "->" not in out and "[" not in out
 
 
+def test_foreign_scripts_and_inverted_punct_dropped():
+    # non-Latin letters can't be spoken; the g2p emits "chinese letter …"
+    assert normalize_text("He said 你好 to me, Kevin?") == "He said to me, Kevin?"
+    assert normalize_text("The word Привет appeared.") == "The word appeared."
+    # inverted ¿ ¡ removed; the trailing ? ! (and its intonation) stay
+    assert normalize_text("¡Hola! ¿Cómo estás?") == "Hola! Cómo estás?"
+    # accented Latin is kept — espeak reads it in English, no accent switch
+    assert normalize_text("Renée met señor Núñez. Nǐ hǎo, Li?") == \
+        "Renée met señor Núñez. Nǐ hǎo, Li?"
+
+
 def test_allcaps_shouting_is_calmed():
     # espeak spells short all-caps tokens as letters (IT -> "eye-tee")
     assert normalize_text('"DAMN IT!"') == '"damn it!"'

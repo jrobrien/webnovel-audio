@@ -75,6 +75,34 @@ _CAPS_WORD_RE = re.compile(r"[A-Z][A-Z'’\-]*[A-Z]")   # 2+ all-caps letters
 _ROMAN_RE = re.compile(r"[IVXLCDM]+\Z")
 _CAPS_STRIP = "\"'’“”‘()[].,!?;:…—–*"
 
+# Inverted Spanish punctuation — the trailing ? / ! already carries the intonation,
+# and a leading ¿ can nudge espeak toward a Spanish reading of the clause.
+_INVERTED_PUNCT = dict.fromkeys(map(ord, "¿¡"), None)
+
+
+def _strip_foreign_scripts(s: str) -> str:
+    """Drop letters from non-Latin scripts (Han, Kana, Hangul, Cyrillic, Arabic…).
+
+    The g2p can't speak them — it emits "chinese letter chinese letter" or spells
+    Cyrillic out letter-name by letter-name. A translated work that leaves a stray
+    glyph in should just skip it, not narrate a placeholder. Accented Latin
+    (é, ñ, ü, ā, ǐ, Vietnamese) is kept — espeak handles it.
+    """
+    if s.isascii():
+        return s
+    out = []
+    for ch in s:
+        o = ord(ch)
+        if unicodedata.category(ch)[0] == "L" and not (
+            o < 0x0250                       # Latin + Latin-1 + Extended-A/B
+            or 0x1E00 <= o <= 0x1EFF         # Latin Extended Additional
+            or 0x0250 <= o <= 0x02AF         # IPA extensions
+        ):
+            out.append(" ")
+        else:
+            out.append(ch)
+    return "".join(out)
+
 
 def _dampen_caps(s: str) -> str:
     """Fold shouted ALL-CAPS to normal case so the g2p doesn't spell it out.
@@ -172,6 +200,8 @@ def normalize_text(s: str, *, dampen_caps: bool = True) -> str:
     s = unicodedata.normalize("NFC", s)
     s = _strip_zero_width(s)
     s = _EMOJI_RE.sub(" ", s)
+    s = s.translate(_INVERTED_PUNCT)
+    s = _strip_foreign_scripts(s)
     s = _dequote(s)
     s = _MD_ITALIC_RE.sub(r"\1", s)
     if dampen_caps:

@@ -43,6 +43,10 @@ RSS feed the phone subscribes to)
   Fold shouted ALL-CAPS to normal case (`_dampen_caps`) — the g2p spells a short
   all-caps token letter by letter ("DAMN IT!" → "damn eye-tee"); a shouting run or
   a ≤2-letter token is downcased, lone acronyms ("the FBI", "Chapter IV") survive.
+  Drop non-Latin letters (Han/Kana/Hangul/Cyrillic/Arabic — the g2p narrates them
+  as "chinese letter …" or spells them out) and strip inverted `¿`/`¡`. Accented
+  Latin is kept; the g2p is pinned to `en-us` and language auto-switch is never
+  enabled, so a Spanish-looking word gets English letter-to-sound, not an accent.
 - **Internal monologue**: whole-paragraph/sentence italics not inside quotes →
   a distinct, consistent `thought` voice (or narrator + intimacy DSP chain).
 - **Speaker attribution**: BookNLP + light LLM → per-character casting from a
