@@ -186,6 +186,9 @@ def build_segments(blocks: list[Block], cfg, lexicon=None) -> list[Segment]:
 
         if block.kind == "heading":
             text = _finish(normalize_heading(block.text), lexicon)
+            fic = _finish(normalize_text(block.meta.get("fiction", "")), lexicon).strip(" .")
+            if fic and text:
+                text = f"{fic}. {text}"          # "Salvage Run. Chapter One. Dead Air."
             if text:
                 segs.append(Segment(text=text,
                                     voice=cfg.cast.narrator or cfg.voices.narrator,

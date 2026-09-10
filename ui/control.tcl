@@ -284,9 +284,10 @@ ttk::spinbox .tools.limit -from 0 -to 999 -width 4
 ttk::checkbutton .tools.dry -text "dry run"
 ttk::label .tools.status -text ""
 grid .tools.add .tools.setp .tools.refresh .tools.s1 .tools.syncall .tools.syncsel \
-     .tools.stop .tools.ll .tools.limit .tools.dry -row 0 -padx 2 -sticky w
-grid .tools.status -row 1 -column 0 -columnspan 10 -sticky w -pady {4 0}
-grid .tools.s1 -sticky ns -padx 6
+     .tools.stop .tools.ll .tools.limit .tools.dry -row 0 -padx 3 -pady 2 -sticky w
+grid .tools.status -row 1 -column 0 -columnspan 10 -sticky w -pady {6 0}
+grid .tools.s1 -sticky ns -padx 8
+grid .tools.ll -padx {12 3}
 grid columnconfigure .tools 20 -weight 1
 grid .tools -row 0 -sticky ew
 
@@ -315,20 +316,27 @@ grid columnconfigure .body.lf 0 -weight 1
 .body add .body.lf -weight 2
 grid .body -row 1 -sticky nsew
 
-ttk::labelframe .sched -text "Auto-sync" -padding 6
+ttk::labelframe .sched -text "Auto-sync" -padding {10 8}
 ttk::checkbutton .sched.on -text "enabled" -variable ::AUTO -command schedule_next
 ttk::radiobutton .sched.mi -text "every" -variable ::MODE -value interval -command schedule_next
 ttk::spinbox .sched.iv -from 1 -to 1440 -width 5 -textvariable ::IVAL -command schedule_next
 ttk::label .sched.mm -text "min"
 ttk::radiobutton .sched.md -text "daily at" -variable ::MODE -value daily -command schedule_next
-ttk::entry .sched.dt -width 6 -textvariable ::DAILY
-ttk::label .sched.next -textvariable ::NEXTRUN -foreground "#2a7"
+ttk::entry .sched.dt -width 7 -textvariable ::DAILY
+ttk::label .sched.nl -text "next run:"
+ttk::label .sched.next -textvariable ::NEXTRUN -foreground "#2a9d5c"
 bind .sched.iv <FocusOut> schedule_next
 bind .sched.dt <Return>   schedule_next
 bind .sched.dt <FocusOut> schedule_next
-grid .sched.on .sched.mi .sched.iv .sched.mm .sched.md .sched.dt -row 0 -padx 3 -sticky w
-grid [ttk::label .sched.nl -text "  next:"] .sched.next -row 0 -padx 3
-grid .sched -row 2 -sticky ew
+pack .sched.on -side left -padx {0 16}
+pack .sched.mi -side left -padx {0 4}
+pack .sched.iv -side left
+pack .sched.mm -side left -padx {4 16}
+pack .sched.md -side left -padx {0 4}
+pack .sched.dt -side left
+pack .sched.next -side right -padx {8 0}
+pack .sched.nl -side right
+grid .sched -row 2 -sticky ew -padx 6 -pady {4 8}
 
 grid rowconfigure . 1 -weight 1
 grid columnconfigure . 0 -weight 1

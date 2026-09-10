@@ -45,7 +45,8 @@ def load_document(source: str, cfg: Config):
         doc = prov.read(source, cfg=cfg)
         blocks = list(doc.blocks)
         if cfg.general.speak_title and doc.chapter_title:
-            blocks.insert(0, Block("heading", doc.chapter_title))
+            fic = doc.fiction_title if cfg.general.speak_series else ""
+            blocks.insert(0, Block("heading", doc.chapter_title, meta={"fiction": fic}))
         meta = {k: v for k, v in {
             "title": doc.chapter_title,
             "album": doc.fiction_title,

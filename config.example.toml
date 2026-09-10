@@ -3,7 +3,8 @@
 [general]
 lexicon = "data/lexicons/salvage-run.csv"     # per-series pronunciation dictionary (CSV)
 cache_dir = ".cache/segments"                 # per-segment wav cache (hash-keyed)
-speak_title = true                            # narrate the chapter title first (html/url input)
+speak_title  = true                           # narrate the chapter title first (html/url input)
+speak_series = true                           # ...prefixed with the series title
 
 [voices]
 # Fallback voices, used when [cast] doesn't name the speaker.
@@ -52,7 +53,7 @@ paragraph_ms      = 380
 scene_break_ms    = 1100
 dialogue_ms       = 240
 ellipsis_extra_ms = 220    # extra hang time when a sentence trails off with an ellipsis
-lead_ms           = 400    # silence before the first word
+lead_ms           = 1000   # settling silence before the first word
 tail_ms           = 900    # silence after the last word
 
 [audio]

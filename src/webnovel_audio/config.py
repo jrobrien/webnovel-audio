@@ -12,6 +12,7 @@ class General:
     cache_dir: str = ".cache/segments"
     models_dir: str = os.path.expanduser("~/.cache/webnovel-audio")
     speak_title: bool = True
+    speak_series: bool = True    # prefix the chapter announcement with the series title
 
 
 @dataclass
@@ -63,7 +64,7 @@ class Pauses:
     dialogue_ms: int = 240
     chat_ms: int = 200               # between consecutive chat messages
     ellipsis_extra_ms: int = 220
-    lead_ms: int = 400
+    lead_ms: int = 1000        # settling silence before the first word
     tail_ms: int = 900
 
 
