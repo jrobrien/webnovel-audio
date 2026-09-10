@@ -189,6 +189,8 @@ def build_segments(blocks: list[Block], cfg, lexicon=None) -> list[Segment]:
             fic = _finish(normalize_text(block.meta.get("fiction", "")), lexicon).strip(" .")
             if fic and text:
                 text = f"{fic}. {text}"          # "Salvage Run. Chapter One. Dead Air."
+            if text and text[-1] not in ".!?…":
+                text += "."                     # unterminated -> Kokoro clips the last word
             if text:
                 segs.append(Segment(text=text,
                                     voice=cfg.cast.narrator or cfg.voices.narrator,

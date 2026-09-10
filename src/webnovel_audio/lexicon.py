@@ -36,6 +36,20 @@ class Lexicon:
         ]
 
     @classmethod
+    def load_many(cls, paths: list[str]) -> "Lexicon":
+        """Merge several CSVs; a later file's row wins for the same surface.
+
+        Used to stack the always-on base lexicon under a per-series one.
+        """
+        merged: dict[str, Entry] = {}
+        for path in paths:
+            if not path or not os.path.exists(path):
+                continue
+            for e in cls.load(path).entries:
+                merged[e.surface] = e
+        return cls(list(merged.values()))
+
+    @classmethod
     def load(cls, path: str) -> "Lexicon":
         entries: list[Entry] = []
         with open(path, newline="", encoding="utf-8") as fh:

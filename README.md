@@ -21,7 +21,8 @@ no GPU, no cloud, no account required.
 - **Delivery** — a localhost/LAN server with a per-series **podcast RSS feed**
   (real dates, durations, cover art, HTTP Range), or a chapterised **`.m4b`**.
 - **Faithful text handling** — anti-piracy decoy paragraphs removed, LitRPG
-  number/stat normalization, per-series pronunciation lexicons.
+  number/stat normalization, a global respelling lexicon (`Montgomery`, `Eleanor`,
+  … — names the TTS g2p gets wrong) with per-series lexicons layered on top.
 
 Built for and tuned on an AMD Ryzen 7 8745HS / Radeon 780M laptop (no CUDA).
 Rendering is not realtime — a ~2,800-word chapter is ~17 min of audio in ~3–5 min
@@ -62,7 +63,10 @@ tracked series; `webnovel-audio schedule --install` runs it nightly.
 | `inspect <input>` | how it parsed: blocks, styles, cast, thought routing, lexicon queue |
 | `cast <input>` | detect speakers, print a `[cast.voices]` starter block |
 | `lexicon <input> --write` | queue unknown proper nouns into `data/lexicons/<slug>.csv` |
-| `series add\|list\|set\|refresh` | manage tracked series |
+| `pron <text> [--series S] [--check]` | how the TTS will say it: phonemes + a rough gloss, before/after the lexicon |
+| `voices [--demo -o f.opus]` | list the 28 voices; `--demo` renders one chaptered file (one chapter per voice) with a spoken label + sample |
+| `ui` | launch the Tcl/Tk control UI (also the default when run with no command) |
+| `series add\|list\|set\|refresh\|redo` | manage tracked series (`redo <key> [N-M]` re-queues rendered chapters after a lexicon/cast fix) |
 | `sync [key] [--limit N] [--dry-run]` | render new chapters into `library/` |
 | `config` | show resolved paths (state DB, library, executable, …) |
 | `login [--cookies-file … \| --check]` | store a Royal Road session cookie (optional) |
@@ -80,14 +84,28 @@ or a plain **`.txt`**.
 ### Control UI
 
 ```sh
-wish ui/control.tcl        # needs tk (Arch: pacman -S tk)
+uv run webnovel-audio ui        # or just `uv run webnovel-audio`; or: wish ui/control.tcl
 ```
 
-A Tcl/Tk front end over the CLI: add/track series, run `sync` on demand or on an
-in-app schedule (interval or daily), start/stop the feed **server**, with a live
-log. It's a stand-alone alternative to the systemd timer — leave it open and it
-drives the batch runs. Set `WEBNOVEL_AUDIO=/path/to/webnovel-audio` if it isn't
-found automatically.
+`ui` execs `wish` if it's on `PATH`, otherwise falls back to Python's bundled
+Tcl/Tk (`--python` forces that). A Tcl/Tk front end over the CLI: add/track
+series, run `sync` on demand or on an in-app schedule (interval or daily),
+start/stop the feed **server**, edit the config / base + per-series lexicons,
+**Test word…** to preview a pronunciation, with a live log. It's a stand-alone
+alternative to the systemd timer — leave it open and it drives the batch runs.
+Launched via `wish` directly, set `WEBNOVEL_AUDIO=/path/to/webnovel-audio` if the
+CLI isn't found automatically.
+
+The **Selected series** strip opens that series' pronunciation lexicon
+(`data/lexicons/<slug>.csv`) or per-series overrides (`data/series/<slug>.toml`)
+in your `$EDITOR` via `xdg-open`, sets its narrator voice (written to the
+overrides file), and re-queues already-rendered chapters (**Re-render…**) so a
+fix takes effect. **Edit config…** and **Base lexicon…** on the toolbar open
+`config.toml` and the always-on `data/lexicons/_base.csv`. These open via
+`xdg-open`; set `WEBNOVEL_AUDIO_EDITOR` (e.g. `="$EDITOR"`, or `"foot nvim"`) to
+force a specific editor — handy because a header-only `.csv` sniffs as
+`text/plain` and a filled one as `text/csv`, so `xdg-open` can send them to
+different apps.
 
 ### Adding a content source
 
@@ -132,6 +150,11 @@ rules-only and deterministic — it gets tags, pronoun tags, volleys and untagge
 continuations right, and mis-assigns the occasional oddly-phrased line, which you
 fix in the cast map.
 
+To pick voice ids by ear, `webnovel-audio voices --demo -o voices.opus` renders
+one file that says each id then reads a sample paragraph in it (`--only a,b,c`
+for a shortlist, `--pause MS` for the gap). It's chaptered one-per-voice — in mpv
+jump with PgUp/PgDn (the voice id shows on the OSD), or `mpv --start='#5' …`.
+
 ### Livestream chat
 
 `[Handle (Location): message]` lines (a livestream chat watching the protagonist)
@@ -154,7 +177,7 @@ don't — use `book` for a `.m4b`.
 `config.toml` (copy from `config.example.toml`, auto-detected in the working
 directory; `-c` for a different one):
 
-`[general]` lexicon / per-series-config paths · `[voices]` fallback voices · `[cast]` + `[cast.voices]`
+`[general]` `base_lexicon` (always-on) + `lexicon` / per-series-config paths · `[voices]` fallback voices · `[cast]` + `[cast.voices]`
 per-series casting · `[chat]` livestream-chat behaviour · `[synth]`
 (`thought_threshold`, `system_rate`) · `[pauses]` · `[audio]` loudness ·
 `[dsp.*]` effect chains keyed by speaker / voice / style · `[royalroad]`
@@ -164,7 +187,7 @@ per-series casting · `[chat]` livestream-chat behaviour · `[synth]`
 ## Development
 
 ```sh
-uv run pytest -q            # ~61 tests, fully offline
+uv run pytest -q            # ~75 tests, fully offline
 uv run python -m compileall -q src/
 ```
 

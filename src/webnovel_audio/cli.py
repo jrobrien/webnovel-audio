@@ -20,6 +20,11 @@ _FEMALE_POOL = [
     "af_heart", "bf_emma", "af_bella", "af_nicole", "bf_alice", "af_sarah",
     "af_sky", "bf_isabella", "af_aoede", "af_kore",
 ]
+# all English Kokoro voice ids (af/am = US, bf/bm = UK)
+_EN_VOICES = sorted(set(_MALE_POOL + _FEMALE_POOL) | {
+    "am_adam", "am_echo", "am_santa", "af_alloy", "af_jessica", "af_nova", "af_river",
+    "bm_daniel", "bf_lily", "bm_george",
+})
 
 
 def _default_config() -> str:
@@ -75,7 +80,6 @@ def _cmd_render(args) -> int:
 
 
 def _cmd_inspect(args) -> int:
-    from .lexicon import Lexicon
     from .pipeline import build_script
     from .segment import find_unknown_names
 
@@ -121,9 +125,10 @@ def _cmd_inspect(args) -> int:
         for name, n in sorted(chat_counts.items(), key=lambda kv: -kv[1])[:12]:
             print(f"  {n:3d}  {name:<24} {chat_voice_of.get(name, '?')}")
 
-    known: set[str] = set()
-    if cfg.general.lexicon and os.path.exists(cfg.general.lexicon):
-        known = Lexicon.load(cfg.general.lexicon).surfaces()
+    from .pipeline import _load_lexicon
+
+    lex = _load_lexicon(cfg)                       # base + per-series, stacked
+    known = lex.surfaces() if lex is not None else set()
     unknown = find_unknown_names(blocks, known)
     print(f"\ncandidate proper nouns not in lexicon ({len(unknown)}):")
     for name, n in unknown:
@@ -175,6 +180,9 @@ def _cmd_lexicon(args) -> int:
 
     path = args.lexicon or cfg.general.lexicon
     known = Lexicon.load(path).surfaces() if path and os.path.exists(path) else set()
+    base = cfg.general.base_lexicon
+    if base and os.path.exists(base) and base != path:
+        known |= Lexicon.load(base).surfaces()          # already handled globally
     candidates = [name for name, _ in find_unknown_names(blocks, known)]
 
     if not candidates:
@@ -190,6 +198,232 @@ def _cmd_lexicon(args) -> int:
         print(f"appended {added} row(s) to {path} — fill in the `respell` column by ear.")
     else:
         print("re-run with --write to append blank rows to the lexicon CSV.")
+    return 0
+
+
+_TOKENIZER = None
+
+
+def _phonemes(text: str) -> str:
+    """The exact phoneme string Kokoro tokenizes for `text` (needs no ONNX model)."""
+    global _TOKENIZER
+    if _TOKENIZER is None:
+        try:
+            from kokoro_onnx.tokenizer import Tokenizer
+        except ModuleNotFoundError:
+            raise SystemExit("`pron` needs the TTS engine:  uv sync --extra kokoro")
+        _TOKENIZER = Tokenizer()
+    return _TOKENIZER.phonemize(text)
+
+
+# rough IPA -> ASCII. Multi-codepoint keys first; a single left-to-right pass
+# (no chained str.replace — the outputs contain letters that are themselves keys).
+# Plain b/d/f/h/k/l/m/n/p/r/s/t/v/w/z and punctuation fall through unchanged.
+_GLOSS_MAP = [
+    ("eɪ", "ay"), ("aɪ", "y"), ("ɔɪ", "oy"), ("aʊ", "ow"), ("oʊ", "oh"),
+    ("ɛə", "air"), ("ɪə", "eer"), ("ʊə", "oor"),
+    ("tʃ", "ch"), ("dʒ", "j"), ("ʃ", "sh"), ("ʒ", "zh"), ("θ", "th"), ("ð", "th"),
+    ("ŋ", "ng"), ("ɑː", "ah"), ("ɔː", "aw"), ("iː", "ee"), ("uː", "oo"),
+    ("ɜː", "ur"), ("ɜ", "ur"), ("ɑ", "ah"), ("ɒ", "o"), ("ɔ", "aw"), ("æ", "a"),
+    ("ʌ", "uh"), ("ɐ", "uh"), ("ə", "uh"), ("ɚ", "ur"), ("ɝ", "ur"), ("ɛ", "eh"),
+    ("ɪ", "ih"), ("ᵻ", "ih"), ("i", "ee"), ("ʊ", "uu"), ("u", "oo"), ("e", "eh"),
+    ("o", "oh"), ("a", "ah"), ("ɹ", "r"), ("ɡ", "g"), ("j", "y"), ("ç", "h"),
+    ("x", "kh"), ("ʔ", ""), ("ː", ""),
+]
+
+
+def _translit(s: str) -> str:
+    out, i = [], 0
+    while i < len(s):
+        for k, v in _GLOSS_MAP:
+            if s.startswith(k, i):
+                out.append(v)
+                i += len(k)
+                break
+        else:
+            out.append(s[i])
+            i += 1
+    return "".join(out)
+
+
+def _gloss(phonemes: str) -> str:
+    """A crude how-to-say-it rendering of a phoneme string. Approximate."""
+    import re as _re
+
+    words = []
+    for w in phonemes.split():
+        one_stress = w.count("ˈ") == 1
+        parts, stressed, pending = [], None, False
+        for tok in _re.split(r"([ˈˌ])", w):
+            if tok == "ˈ":
+                pending = True
+                continue
+            if tok in ("ˌ", ""):
+                continue
+            if pending and one_stress:
+                stressed = len(parts)
+            pending = False
+            parts.append(_translit(tok))
+        if len(parts) > 1 and not any(c in "aeiou" for c in parts[0]):
+            parts[1] = parts[0] + parts[1]                 # glue a vowel-less onset
+            parts.pop(0)
+            if stressed:
+                stressed -= 1
+        if stressed is not None and 0 <= stressed < len(parts):
+            parts[stressed] = parts[stressed].upper()
+        words.append("-".join(p for p in parts if p))
+    return " ".join(words)
+
+
+def _cmd_pron(args) -> int:
+    from . import sync as _sync
+    from .pipeline import _load_lexicon
+
+    cfg = Config.load(args.config)
+    if args.series:
+        cfg = _sync._series_cfg(cfg, args.series)
+    lex = None if args.no_lexicon else _load_lexicon(cfg)
+
+    if args.check:
+        from .lexicon import Lexicon
+
+        seen, rows = set(), []
+        for path in (cfg.general.base_lexicon, cfg.general.lexicon):
+            if path and os.path.exists(path):
+                rows += Lexicon.load(path).entries
+        if not rows:
+            print("no lexicon entries to check.")
+            return 0
+        for e in rows:
+            if e.surface in seen:
+                continue
+            seen.add(e.surface)
+            raw = _phonemes(e.surface)
+            if not e.respell or e.respell == e.surface:
+                print(f"  {e.surface:16} {raw}   (no respell)")
+                continue
+            new = _phonemes(e.respell)
+            flag = "  = unchanged" if new == raw else ""
+            print(f"  {e.surface:16} {raw}  ->  {new}   [{_gloss(new)}]{flag}")
+        return 0
+
+    text = " ".join(args.text).strip()
+    if not text:
+        print("give some text:  webnovel-audio pron Montgomery")
+        return 1
+    raw = _phonemes(text)
+    print(f"text      : {text}")
+    print(f"phonemes  : {raw}")
+    print(f"≈ say     : {_gloss(raw)}")
+    if lex is not None:
+        applied = lex.apply(text)
+        if applied != text:
+            new = _phonemes(applied)
+            print(f"\nwith lexicon : {applied}")
+            print(f"phonemes     : {new}")
+            print(f"≈ say        : {_gloss(new)}")
+        else:
+            print("\n(no lexicon entry changes this text)")
+    return 0
+
+
+_ACCENT = {"am": "American male", "af": "American female",
+           "bm": "British male", "bf": "British female"}
+_VOICE_SAMPLE = (
+    "The old lighthouse keeper counted thirty-seven ships before dawn. "
+    "\"Are you certain?\" she asked, not quite believing it. Rain hammered "
+    "the glass, and somewhere far off, thunder rolled. It would be a long, "
+    "strange night."
+)
+
+
+def _voice_label(v: str) -> str:
+    pre, _, name = v.partition("_")
+    return f"{_ACCENT.get(pre, pre)}. {name.capitalize() or v}."
+
+
+def _cmd_voices(args) -> int:
+    voices = [v.strip() for v in args.only.split(",")] if args.only else list(_EN_VOICES)
+    voices = [v for v in voices if v]
+
+    if not args.demo:
+        for pre in ("am", "af", "bm", "bf"):
+            row = [v for v in voices if v.startswith(pre + "_")]
+            if row:
+                print(f"{_ACCENT[pre]:16} {'  '.join(row)}")
+        extra = [v for v in voices if v.split('_')[0] not in _ACCENT]
+        if extra:
+            print(f"{'other':16} {'  '.join(extra)}")
+        print(f"\n{len(voices)} voices · audition file:  "
+              f"webnovel-audio voices --demo -o voices.opus")
+        return 0
+
+    from .audio import assemble, write_opus
+    from .segment import Segment
+    from .synth.kokoro import KokoroSynth
+
+    cfg = Config.load(args.config)
+    sample = (args.text or _VOICE_SAMPLE).strip()
+    segs: list[Segment] = []
+    for v in voices:
+        segs.append(Segment(text=_voice_label(v), voice=args.announcer,
+                            style="heading", pause_after_ms=250))
+        segs.append(Segment(text=sample, voice=v, style="narration",
+                            pause_after_ms=max(0, args.pause)))
+
+    synth = KokoroSynth(default_voice=args.announcer,
+                        cache_dir=cfg.general.models_dir, speed=cfg.synth.speed)
+    sr = synth.sample_rate
+    print(f"rendering {len(voices)} voices → {args.out} …")
+    renders, chapters, t = [], [], 0.3          # 0.3s = assemble lead_ms
+    for i, s in enumerate(segs):
+        a = synth.synth(s)
+        renders.append(a)
+        if s.style == "heading":
+            chapters.append((t, voices[i // 2]))   # a voice's section starts at its label
+            print(f"  {voices[i // 2]}")
+        t += (a.size / sr if a is not None else 0.0) + s.pause_after_ms / 1000.0
+    synth.close()
+
+    wav = assemble(segs, renders, sr, lead_ms=300, tail_ms=400)
+    write_opus(wav, sr, args.out,
+               bitrate=cfg.audio.opus_bitrate,
+               loud=(cfg.audio.loudness_i, cfg.audio.loudness_tp, cfg.audio.loudness_lra),
+               meta={**cfg.metadata, "title": "voice audition", "album": "webnovel-audio"},
+               chapters=chapters)
+    print(f"{args.out}  ({wav.size / sr:.0f}s, {len(chapters)} chapters — mpv: PgUp/PgDn)")
+    return 0
+
+
+def _cmd_ui(args) -> int:
+    import shutil
+    import sys
+
+    project = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    tcl = os.path.join(project, "ui", "control.tcl")
+    if not os.path.exists(tcl):
+        print(f"UI script not found: {tcl}", file=sys.stderr)
+        return 1
+
+    env = dict(os.environ)
+    exe = shutil.which("webnovel-audio") or os.path.realpath(sys.argv[0])
+    if os.path.basename(exe).startswith("webnovel-audio") and os.access(exe, os.X_OK):
+        env.setdefault("WEBNOVEL_AUDIO", exe)
+
+    wish = None if args.python else shutil.which("wish")
+    if wish:
+        os.execve(wish, [wish, tcl], env)     # replace this process with the UI
+
+    try:
+        import tkinter
+    except Exception:
+        print("need `wish` (Arch: pacman -S tk) or Python tkinter to run the UI",
+              file=sys.stderr)
+        return 1
+    os.environ.update(env)
+    root = tkinter.Tk()
+    root.tk.call("source", tcl)               # `source` (not eval) so it finds json.tcl
+    root.mainloop()
     return 0
 
 
@@ -219,6 +453,17 @@ def _jprint(obj) -> None:
     print(_json.dumps(obj, ensure_ascii=False))
 
 
+def _parse_range(s):
+    """'', '5', '5-9' -> (lo, hi) with None meaning open."""
+    s = (s or "").strip()
+    if not s:
+        return None, None
+    if "-" in s:
+        a, _, b = s.partition("-")
+        return (int(a) if a.strip() else None), (int(b) if b.strip() else None)
+    return int(s), int(s)
+
+
 def _cmd_series(args) -> int:
     from . import sync
     from .db import DB
@@ -240,7 +485,7 @@ def _cmd_series(args) -> int:
             _jprint({"ok": True, "series": results or []})
         return 0
 
-    if args.action == "set":
+    if args.action in ("set", "redo"):
         db = DB(cfg.royalroad.state_db)
         s = db.get_series(args.key)
         if not s:
@@ -249,13 +494,33 @@ def _cmd_series(args) -> int:
                 if want_json else f"no tracked series matching {args.key!r}")
             db.close()
             return 1
-        order = sync._resolve_start(db.chapters(s["id"]), args.position)
-        db.force_progress(s["id"], order)
-        pend = len(db.pending(s["id"]))
+        chs = db.chapters(s["id"])
+        if args.action == "set":
+            order = sync._resolve_start(chs, args.position)
+            db.force_progress(s["id"], order)
+            pend = len(db.pending(s["id"]))
+            if want_json:
+                _jprint({"ok": True, "slug": s["slug"], "progress": order + 1, "pending": pend})
+            else:
+                print(f"{s['title']}: progress set to #{order + 1} ({pend} chapters pending)")
+            db.close()
+            return 0
+
+        # redo: mark rendered chapters in a range back to 'new' so `sync` re-renders
+        lo, hi = _parse_range(args.range)
+        redo = [c for c in chs if c["status"] == "rendered"
+                and (lo is None or c["ord"] + 1 >= lo) and (hi is None or c["ord"] + 1 <= hi)]
+        for c in redo:
+            db.mark(c["id"], "new")
+        if redo:
+            db.force_progress(s["id"], redo[0]["ord"] - 1)   # never raises progress
+        nums = [c["ord"] + 1 for c in redo]
         if want_json:
-            _jprint({"ok": True, "slug": s["slug"], "progress": order + 1, "pending": pend})
+            _jprint({"ok": True, "slug": s["slug"], "requeued": nums,
+                     "pending": len(db.pending(s["id"]))})
         else:
-            print(f"{s['title']}: progress set to #{order + 1} ({pend} chapters pending)")
+            print(f"{s['title']}: re-queued {len(nums)} chapter(s) "
+                  f"{('#' + str(nums[0]) + '–#' + str(nums[-1])) if nums else ''} — run `sync`")
         db.close()
         return 0
 
@@ -319,9 +584,16 @@ def _cmd_config(args) -> int:
         "project_dir": project,
         "state_db": os.path.abspath(os.path.expanduser(cfg.royalroad.state_db)),
         "library_dir": os.path.abspath(os.path.expanduser(cfg.royalroad.library_dir)),
+        "lexicon_dir": os.path.abspath(os.path.expanduser(cfg.general.lexicon_dir or "data/lexicons")),
+        "base_lexicon": (os.path.abspath(os.path.expanduser(cfg.general.base_lexicon))
+                         if cfg.general.base_lexicon else ""),
+        "series_config_dir": os.path.abspath(os.path.expanduser(
+            cfg.general.series_config_dir or "data/series")),
         "models_dir": cfg.general.models_dir,
         "request_delay": cfg.royalroad.request_delay,
         "backend": cfg.synth.backend,
+        "narrator": cfg.cast.narrator or cfg.voices.narrator,
+        "voices": _EN_VOICES,
         "serve_port": cfg.serve.port,
     }
     if getattr(args, "json", False):
@@ -431,6 +703,13 @@ def _cmd_schedule(args) -> int:
 
 
 def main(argv=None) -> int:
+    import sys
+
+    if argv is None:
+        argv = sys.argv[1:]
+    if not argv:
+        argv = ["ui"]                          # bare `webnovel-audio` opens the UI
+
     ap = argparse.ArgumentParser(
         prog="webnovel-audio",
         description="Offline web-novel TTS, CPU-first (Ryzen 8745HS / no CUDA).",
@@ -470,6 +749,30 @@ def main(argv=None) -> int:
     lx.add_argument("--write", action="store_true", help="append blank rows for new names")
     lx.set_defaults(func=_cmd_lexicon)
 
+    pr = sub.add_parser("pron", help="show how Kokoro will pronounce text (phonemes + rough gloss)")
+    pr.add_argument("text", nargs="*", help="word(s) to check; omit with --check")
+    pr.add_argument("-c", "--config", default=_default_config())
+    pr.add_argument("--series", help="also apply that series' lexicon + overlay")
+    pr.add_argument("--no-lexicon", action="store_true", help="raw g2p only, skip lexicons")
+    pr.add_argument("--check", action="store_true",
+                    help="audit every lexicon row: surface vs respell phonemes")
+    pr.set_defaults(func=_cmd_pron)
+
+    ui = sub.add_parser("ui", help="launch the Tcl/Tk control UI (default when run with no command)")
+    ui.add_argument("--python", action="store_true",
+                    help="use Python's bundled Tcl/Tk instead of the `wish` binary")
+    ui.set_defaults(func=_cmd_ui)
+
+    vc = sub.add_parser("voices", help="list voices, or render an audition file that cycles them")
+    vc.add_argument("--demo", action="store_true", help="render one .opus, each voice speaking a sample")
+    vc.add_argument("-o", "--out", default="voice-audition.opus")
+    vc.add_argument("--text", help="custom sample paragraph (--demo)")
+    vc.add_argument("--only", help="comma-separated subset of voice ids")
+    vc.add_argument("--pause", type=int, default=1200, help="ms between voices (--demo; default 1200)")
+    vc.add_argument("--announcer", default="am_michael", help="voice that reads each label (--demo)")
+    vc.add_argument("-c", "--config", default=_default_config())
+    vc.set_defaults(func=_cmd_voices)
+
     ft = sub.add_parser("fetch", help="download a chapter page to a local .html file")
     ft.add_argument("url")
     ft.add_argument("-o", "--out", help="output path (default chapter.html)")
@@ -494,6 +797,10 @@ def main(argv=None) -> int:
     se_set.add_argument("key", help="series slug / id / title substring")
     se_set.add_argument("position", help="latest | start | <N> | <chapter-url>")
     _cfg_json(se_set)
+    se_redo = se_sub.add_parser("redo", help="re-queue rendered chapters (after a lexicon/config edit)")
+    se_redo.add_argument("key", help="series slug / id / title substring")
+    se_redo.add_argument("range", nargs="?", default="", help="N | N-M | N- | -M (default: all rendered)")
+    _cfg_json(se_redo)
     se_ref = se_sub.add_parser("refresh", help="re-fetch chapter lists")
     se_ref.add_argument("key", nargs="?", help="one series, or all if omitted")
     _cfg_json(se_ref)

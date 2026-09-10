@@ -146,6 +146,20 @@ def measure_loudnorm(in_wav: str, i: float, tp: float, lra: float) -> dict | Non
         return None
 
 
+def _ffmeta_chapters(chapters, total_s: float) -> str:
+    """An ffmetadata document with one [CHAPTER] block per (start_seconds, title)."""
+    lines = [";FFMETADATA1"]
+    marks = sorted(chapters, key=lambda c: c[0])
+    for n, (start, title) in enumerate(marks):
+        end = marks[n + 1][0] if n + 1 < len(marks) else total_s
+        safe = str(title).replace("\\", "\\\\").replace("\n", " ").replace("=", "-")
+        lines += ["[CHAPTER]", "TIMEBASE=1/1000",
+                  f"START={int(round(start * 1000))}",
+                  f"END={int(round(max(end, start) * 1000))}",
+                  f"title={safe}"]
+    return "\n".join(lines) + "\n"
+
+
 def write_opus(
     wav: np.ndarray,
     sr: int,
@@ -154,6 +168,7 @@ def write_opus(
     bitrate: str = "56k",
     loud: tuple[float, float, float] = (-19.0, -3.0, 11.0),
     meta: dict | None = None,
+    chapters: list[tuple[float, str]] | None = None,
 ) -> None:
     meta = meta or {}
     i, tp, lra = loud
@@ -172,8 +187,13 @@ def write_opus(
                 f":offset={m['target_offset']}:linear=true"
             )
 
-        cmd = [
-            _ffmpeg(), "-hide_banner", "-nostats", "-y", "-i", raw,
+        cmd = [_ffmpeg(), "-hide_banner", "-nostats", "-y", "-i", raw]
+        if chapters:
+            fm = os.path.join(td, "chapters.txt")
+            with open(fm, "w", encoding="utf-8") as fh:
+                fh.write(_ffmeta_chapters(chapters, wav.size / sr))
+            cmd += ["-i", fm, "-map", "0:a", "-map_chapters", "1"]
+        cmd += [
             "-af", af, "-ar", "48000", "-ac", "1",
             "-c:a", "libopus", "-b:a", bitrate, "-vbr", "on",
         ]

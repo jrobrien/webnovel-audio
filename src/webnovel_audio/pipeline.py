@@ -89,10 +89,17 @@ def _dsp_spec(seg: Segment, cfg: Config) -> dict:
 
 
 def _load_lexicon(cfg: Config) -> Lexicon | None:
+    paths: list[str] = []
+    base = getattr(cfg.general, "base_lexicon", "")
+    if base and os.path.exists(base):
+        paths.append(base)
     path = cfg.general.lexicon
-    if path and os.path.exists(path):
-        return Lexicon.load(path)
-    return None
+    if path and os.path.exists(path) and path not in paths:
+        paths.append(path)                       # per-series rows override the base
+    if not paths:
+        return None
+    lex = Lexicon.load_many(paths)
+    return lex if lex.entries else None
 
 
 def build_script(source: str, cfg: Config):

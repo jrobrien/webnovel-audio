@@ -58,6 +58,7 @@ most likely to touch:
 | `[royalroad] request_delay` | seconds between requests to royalroad.com (be polite; default 2.5) |
 | `[serve] port` / `base_url` | the LAN feed server |
 | `[general] lexicon_dir` | drop `data/lexicons/<series-slug>.csv` here and `sync` uses it automatically |
+| `[general] base_lexicon` | always-on respelling CSV (`data/lexicons/_base.csv`) applied to every series; a per-series row for the same word wins. `""` to disable |
 | `[general] series_config_dir` | drop `data/series/<series-slug>.toml` here to override any config section for one series |
 
 Pass `-c /path/to/other.toml` to any command to use a different config. For
@@ -155,15 +156,27 @@ cover embedded — for any audiobook player.
 ### Option A — the Tcl/Tk control UI
 
 ```sh
-sudo pacman -S tk        # once, if not installed
-wish ui/control.tcl      # from the project root
+uv run webnovel-audio ui     # or just `uv run webnovel-audio`
 ```
+
+`ui` runs `wish` if it's installed (`sudo pacman -S tk`), else Python's bundled
+Tcl/Tk (`--python` forces the fallback); either way it sets `WEBNOVEL_AUDIO` so
+the UI finds the CLI. You can still run `wish ui/control.tcl` directly from the
+project root (add `WEBNOVEL_AUDIO=$(pwd)/.venv/bin/webnovel-audio` if it isn't
+found).
 
 Add series, run `sync` on demand (all / selected, with a chapter limit), or turn
 on **Auto-sync** (every N minutes, or daily at a time) and leave the window open
 — it becomes the thing that launches your batch runs, with a live log. Settings
-persist to `~/.config/webnovel-audio/ui.conf`. If the CLI isn't found, launch
-with `WEBNOVEL_AUDIO=$(pwd)/.venv/bin/webnovel-audio wish ui/control.tcl`.
+persist to `~/.config/webnovel-audio/ui.conf`.
+
+The **Edit lexicon / overrides / config / base lexicon** buttons open files with
+`xdg-open`. If that picks the wrong app — a common one: an empty `.csv` is sniffed
+as `text/plain` (text editor) but a populated one as `text/csv` (spreadsheet), so
+two lexicons open differently — either fix the association
+(`xdg-mime default nvim.desktop text/csv application/csv text/x-csv`) or set
+`WEBNOVEL_AUDIO_EDITOR` before launching `wish` (a command with optional args:
+`WEBNOVEL_AUDIO_EDITOR="$EDITOR"`, `="foot -e nvim"`, `="code -w"`).
 
 ### Option B — a systemd-user timer (unattended, headless)
 
@@ -238,6 +251,22 @@ paths above. Nothing else is touched; no system packages are installed.
   series: `webnovel-audio cast <chapter-url>` for a `[cast.voices]` starter,
   `webnovel-audio lexicon <chapter-url> --write` to queue pronunciations into
   `data/lexicons/<slug>.csv`. See `README.md`.
+- **Fixing a pronunciation** — for a name that's wrong everywhere (e.g.
+  `Montgomery`, `Eleanor`), add a row to `data/lexicons/_base.csv` — it applies to
+  every series. For a name specific to one series, use `data/lexicons/<slug>.csv`
+  (a row here overrides `_base.csv` for the same word). One row per term,
+  `surface,respell,ipa,notes`; give a phonetic **respell** — lowercase
+  sound-it-out syllables joined by hyphens (`Kaelith,kay-lith`), *not* uppercase
+  (the g2p reads `KAY` as letters). The `ipa` column is reserved and ignored
+  today; leave it blank. `sync` auto-loads both files. Check a respell before
+  committing to it: `webnovel-audio pron Montgomery` prints the raw phonemes and a
+  rough gloss, then the same after the lexicon; `webnovel-audio pron --check`
+  audits every row (add `--series <slug>` for that series' file). The UI's
+  **Test word…** button does the same. To hear the fix in chapters you already
+  rendered: `webnovel-audio series redo <slug> [N | N-M]` (blank = every rendered
+  chapter) marks them back to *pending* and rewinds `progress_order`; then
+  `webnovel-audio sync <slug>`. The control UI does the same from **Selected
+  series → Edit lexicon** and **Re-render…**.
 - **`sync` re-renders something you already have** — its status is `error` or its
   `ord` is past your `progress_order`. `series list` shows the mark;
   `series set <slug> N` fixes it.

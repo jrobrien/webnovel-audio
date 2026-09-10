@@ -40,6 +40,53 @@ def test_db_roundtrip_and_pending(tmp_path):
     db.close()
 
 
+def test_parse_range():
+    from webnovel_audio.cli import _parse_range
+
+    assert _parse_range("") == (None, None)
+    assert _parse_range("5") == (5, 5)
+    assert _parse_range("3-7") == (3, 7)
+    assert _parse_range("4-") == (4, None)
+    assert _parse_range("-6") == (None, 6)
+
+
+def test_series_redo(tmp_path, capsys):
+    import json
+    import types
+
+    from webnovel_audio import cli
+    from webnovel_audio.royalroad import ChapterRef, FictionInfo
+
+    dbp = tmp_path / "s.db"
+    db = DB(str(dbp))
+    fi = FictionInfo(rr_id="9", slug="demo", title="Demo", url="https://rr/9")
+    sid = db.upsert_series(fi)
+    db.replace_chapters(sid, [
+        ChapterRef(rr_id=str(100 + i), order=i, title=f"C{i + 1}", slug=f"c{i + 1}",
+                   url=f"https://rr/c/{100 + i}", published_at="2025-01-01")
+        for i in range(6)
+    ])
+    for c in db.chapters(sid)[:4]:               # #1-#4 rendered
+        db.mark(c["id"], "rendered", audio_path="/x.opus")
+    db.force_progress(sid, 3)
+    db.close()
+
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(f'[royalroad]\nstate_db = "{dbp}"\n')
+    cli._cmd_series(types.SimpleNamespace(action="redo", key="demo", range="2-3",
+                                          config=str(cfg), json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert out["requeued"] == [2, 3]
+
+    db = DB(str(dbp))
+    s = db.get_series("demo")
+    assert s["progress_order"] == 0                              # rewound to before #2
+    st = {c["ord"] + 1: c["status"] for c in db.chapters(s["id"])}
+    assert st[2] == "new" and st[3] == "new" and st[1] == "rendered" and st[4] == "rendered"
+    assert [c["ord"] + 1 for c in db.pending(s["id"])] == [2, 3, 5, 6]
+    db.close()
+
+
 def test_resolve_start_variants():
     chs = _chapters(10)
     assert sync._resolve_start(chs, "latest") == 9

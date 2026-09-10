@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, fields
 class General:
     lexicon: str = ""                       # optional shared pronunciation CSV
     lexicon_dir: str = "data/lexicons"      # <series-slug>.csv here is picked up by `sync`
+    base_lexicon: str = "data/lexicons/_base.csv"  # always-on respellings; per-series entries win
     series_config_dir: str = "data/series"  # <series-slug>.toml overlays the base config
     cache_dir: str = ".cache/segments"
     models_dir: str = os.path.expanduser("~/.cache/webnovel-audio")

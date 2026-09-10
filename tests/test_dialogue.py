@@ -85,6 +85,18 @@ def test_build_segments_assigns_cast_voices():
     assert by_speaker["Mara"] == "am_michael"
 
 
+def test_heading_segment_gets_terminal_punctuation():
+    # an unterminated line makes Kokoro clip the last word ("...Dead Air")
+    cfg = Config()
+    blocks = [Block("heading", "1. Dead Air", meta={"fiction": "Salvage Run"})]
+    seg = next(s for s in build_segments(blocks, cfg) if s.style == "heading")
+    assert seg.text == "Salvage Run. Chapter One. Dead Air."
+    # a heading that already ends in punctuation is left alone
+    blocks = [Block("heading", "Prologue?", meta={})]
+    seg = next(s for s in build_segments(blocks, cfg) if s.style == "heading")
+    assert seg.text.endswith("?") and not seg.text.endswith("?.")
+
+
 def test_pitch_shift_keeps_length_changes_content():
     x = np.sin(2 * np.pi * 220 * np.arange(24000) / 24000).astype("float32")
     y = pitch_shift(x, 24000, -2.0)

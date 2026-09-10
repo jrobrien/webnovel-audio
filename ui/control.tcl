@@ -14,6 +14,10 @@ source [file join [file dirname [info script]] json.tcl]
 set ::CFGDIR [file join [file normalize ~] .config webnovel-audio]
 set ::UICONF [file join $::CFGDIR ui.conf]
 
+# filled in at startup from `webnovel-audio config --json`
+set ::CFGPATH "" ; set ::LEXDIR "data/lexicons" ; set ::SERIESDIR "data/series"
+set ::BASELEX "data/lexicons/_base.csv" ; set ::VOICES {(default)}
+
 # ---------------------------------------------------------------- exe + paths --
 proc find_exe {} {
     if {[info exists ::env(WEBNOVEL_AUDIO)] && [file executable $::env(WEBNOVEL_AUDIO)]} {
@@ -277,6 +281,184 @@ proc server_stop {} {
     after 1000 {if {$::SERVEPID ne ""} {catch {exec kill {*}$::SERVEPID} ; server_gone}}
 }
 
+# ---------------------------------------------------------------- file edits ---
+# WEBNOVEL_AUDIO_EDITOR (a command, may include args) overrides xdg-open — use it
+# when xdg-open guesses wrong (a header-only .csv sniffs as text/plain, a filled
+# one as text/csv, so the two can open in different apps).
+proc open_file {path {stub ""}} {
+    file mkdir [file dirname $path]
+    if {![file exists $path] && $stub ne ""} {
+        set fh [open $path w] ; puts -nonewline $fh $stub ; close $fh
+    }
+    set ed ""
+    if {[info exists ::env(WEBNOVEL_AUDIO_EDITOR)]} { set ed [string trim $::env(WEBNOVEL_AUDIO_EDITOR)] }
+    if {$ed ne ""} {
+        if {[catch {exec -- {*}$ed $path &} err]} { log "! $ed: $err" } \
+        else { log "opened $path  ($ed)" }
+        return
+    }
+    if {[catch {exec xdg-open $path &} err]} { log "! xdg-open: $err" } \
+    else { log "opened $path" }
+}
+
+proc edit_base_lexicon {} {
+    open_file $::BASELEX "surface,respell,ipa,notes\n"
+}
+
+# ---------------------------------------------------------- pronunciation test -
+# every slug we could apply a lexicon for: tracked series + data/lexicons/*.csv
+proc lexicon_slugs {} {
+    set s {}
+    foreach id [.series children {}] { lappend s $id }
+    foreach f [glob -nocomplain -directory $::LEXDIR *.csv] {
+        set stem [file rootname [file tail $f]]
+        if {$stem ne "_base"} { lappend s $stem }
+    }
+    return [lsort -unique $s]
+}
+proc dlg_pron {} {
+    set w .pron ; catch {destroy $w}
+    toplevel $w ; wm title $w "Pronunciation check" ; wm transient $w .
+    ttk::label  $w.l  -text "Word or phrase:"
+    ttk::entry  $w.e  -width 44
+    ttk::button $w.go -text "Check" -command [list do_pron $w]
+    ttk::label  $w.sl -text "Series lexicon:"
+    ttk::combobox $w.sr -width 24 -values [linsert [lexicon_slugs] 0 "(none — base only)"]
+    $w.sr set [expr {[selected_slug] ne "" ? [selected_slug] : "(none — base only)"}]
+    ttk::button $w.ck -text "Audit lexicon" -command [list do_pron $w --check]
+    text $w.out -width 70 -height 14 -wrap none -state disabled \
+        -font TkFixedFont -yscrollcommand [list $w.sb set]
+    ttk::scrollbar $w.sb -orient vertical -command [list $w.out yview]
+    grid $w.l $w.e $w.go -padx 6 -pady {8 4} -sticky w
+    grid $w.sl $w.sr $w.ck -row 1 -padx 6 -pady {0 4} -sticky w
+    grid $w.out $w.sb -row 2 -column 0 -columnspan 3 -padx 6 -pady 6 -sticky nsew
+    grid configure $w.sb -column 3 -sticky ns
+    grid rowconfigure $w 2 -weight 1 ; grid columnconfigure $w 1 -weight 1
+    focus $w.e ; bind $w <Return> [list do_pron $w] ; bind $w <Escape> [list destroy $w]
+}
+proc do_pron {w {mode ""}} {
+    set slug [$w.sr get]
+    if {[string match "(none*" $slug]} { set slug "" }
+    set t [string trim [$w.e get]]
+    if {$mode eq "--check"} {
+        set a [list pron --check]
+    } else {
+        if {$t eq ""} return
+        set a [list pron $t]
+    }
+    if {$slug ne ""} { lappend a --series $slug }
+    if {[catch {exec -- $::EXE {*}$a 2>@1} out]} { set out "error: $out" }
+    $w.out configure -state normal
+    $w.out delete 1.0 end ; $w.out insert end $out
+    $w.out configure -state disabled
+}
+
+proc edit_config {} {
+    if {![file exists $::CFGPATH]} {
+        set ex [file join [file dirname $::CFGPATH] config.example.toml]
+        if {[file exists $ex]} {
+            file copy $ex $::CFGPATH ; log "created $::CFGPATH from config.example.toml"
+        }
+    }
+    open_file $::CFGPATH
+}
+
+proc edit_lexicon {} {
+    set slug [selected_slug]
+    if {$slug eq ""} { log "select a series first" ; return }
+    open_file [file join $::LEXDIR "$slug.csv"] "surface,respell,ipa,notes\n"
+}
+
+proc edit_overlay {} {
+    set slug [selected_slug]
+    if {$slug eq ""} { log "select a series first" ; return }
+    open_file [file join $::SERIESDIR "$slug.toml"] \
+        "# per-series overrides for $slug (merged over config.toml by sync)\n\n\[cast\]\n"
+}
+
+# read/set one "key = \"value\"" line inside a TOML section, preserving the rest
+proc toml_get {path section key} {
+    if {![file exists $path]} { return "" }
+    set fh [open $path r] ; set lines [split [read $fh] "\n"] ; close $fh
+    set insec 0
+    foreach ln $lines {
+        if {[regexp {^\s*\[} $ln]} { set insec [regexp "^\\s*\\\[$section\\\]" $ln] ; continue }
+        if {$insec && [regexp "^\\s*$key\\s*=\\s*\"?(\[^\"\]*)\"?" $ln -> v]} { return [string trim $v] }
+    }
+    return ""
+}
+proc toml_upsert {path section key value} {
+    set lines {}
+    if {[file exists $path]} {
+        set fh [open $path r] ; set lines [split [string trimright [read $fh] "\n"] "\n"] ; close $fh
+    }
+    set out {} ; set insec 0 ; set done 0
+    foreach ln $lines {
+        if {[regexp {^\s*\[} $ln]} {
+            if {$insec && !$done} { lappend out "$key = \"$value\"" ; set done 1 }
+            set insec [regexp "^\\s*\\\[$section\\\]" $ln]
+            lappend out $ln ; continue
+        }
+        if {$insec && !$done && [regexp "^\\s*$key\\s*=" $ln]} {
+            lappend out "$key = \"$value\"" ; set done 1 ; continue
+        }
+        lappend out $ln
+    }
+    if {$insec && !$done} { lappend out "$key = \"$value\"" ; set done 1 }
+    if {!$done} {
+        if {[llength $out] && [lindex $out end] ne ""} { lappend out "" }
+        lappend out "\[$section\]" "$key = \"$value\"" ; set done 1
+    }
+    file mkdir [file dirname $path]
+    set fh [open $path w] ; puts $fh [join $out "\n"] ; close $fh
+}
+
+proc set_narrator {} {
+    set slug [selected_slug]
+    if {$slug eq ""} return
+    set v [.sel.voice get]
+    if {$v eq "" || $v eq "(default)"} return
+    set f [file join $::SERIESDIR "$slug.toml"]
+    toml_upsert $f cast narrator $v
+    log "$slug narrator -> $v   (Re-render to apply)"
+}
+
+proc dlg_redo {} {
+    set slug [selected_slug]
+    if {$slug eq ""} { log "select a series first" ; return }
+    set w .redo ; catch {destroy $w}
+    toplevel $w ; wm title $w "Re-render: $slug" ; wm transient $w .
+    grid [ttk::label $w.l -text "Chapters (blank = all rendered; N or N-M):"] \
+        -row 0 -column 0 -columnspan 2 -padx 8 -pady {8 4} -sticky w
+    grid [ttk::entry $w.r -width 16] -row 1 -column 0 -padx 8 -sticky w
+    grid [ttk::checkbutton $w.s -text "sync now"] -row 1 -column 1 -padx 8
+    $w.s state selected
+    grid [ttk::frame $w.b] -row 2 -column 0 -columnspan 2 -pady 8
+    ttk::button $w.b.ok -text "Re-queue" -command [list do_redo $w [list $slug]]
+    ttk::button $w.b.cx -text Cancel -command [list destroy $w]
+    pack $w.b.ok $w.b.cx -side left -padx 4
+    focus $w.r ; bind $w <Escape> [list destroy $w] ; bind $w <Return> [list do_redo $w [list $slug]]
+}
+proc do_redo {w slug} {
+    set rng [string trim [$w.r get]]
+    set sync [$w.s instate selected]
+    destroy $w
+    set d [run_json series redo $slug $rng]
+    if {$d ne ""} { log "$slug: re-queued [json::get $d requeued] ([json::get $d pending] pending)" }
+    refresh_series
+    if {$sync} { .series selection set $slug ; do_sync selected }
+}
+
+proc on_select {} {
+    set slug [selected_slug]
+    set on [expr {$slug ne "" ? "!disabled" : "disabled"}]
+    foreach b {.sel.lex .sel.ovl .sel.redo .sel.voice} { $b state $on }
+    if {$slug eq ""} { .sel.title configure -text "—" ; return }
+    .sel.title configure -text [.series set $slug title]
+    set n [toml_get [file join $::SERIESDIR "$slug.toml"] cast narrator]
+    .sel.voice set [expr {$n ne "" ? $n : "(default)"}]
+}
+
 # ---------------------------------------------------------------- scheduler ----
 set ::AUTO 0 ; set ::MODE interval ; set ::IVAL 180 ; set ::DAILY 03:00
 set ::AFTERID "" ; set ::NEXTRUN "off"
@@ -337,6 +519,9 @@ ttk::frame .tools -padding 6
 ttk::button .tools.add     -text "Add series…"   -command dlg_add
 ttk::button .tools.setp    -text "Set progress…" -command dlg_setprog
 ttk::button .tools.refresh -text "Refresh"       -command refresh_series
+ttk::button .tools.editcfg -text "Edit config…"  -command edit_config
+ttk::button .tools.editbase -text "Base lexicon…" -command edit_base_lexicon
+ttk::button .tools.pron    -text "Test word…"     -command dlg_pron
 ttk::separator .tools.s1 -orient vertical
 ttk::button .tools.syncall -text "Sync all"      -command {do_sync all}
 ttk::button .tools.syncsel -text "Sync selected" -command {do_sync selected}
@@ -346,9 +531,10 @@ ttk::spinbox .tools.limit -from 0 -to 999 -width 4
 .tools.limit set 0
 ttk::checkbutton .tools.dry -text "dry run"
 ttk::label .tools.status -text ""
-grid .tools.add .tools.setp .tools.refresh .tools.s1 .tools.syncall .tools.syncsel \
-     .tools.stop .tools.ll .tools.limit .tools.dry -row 0 -padx 3 -pady 2 -sticky w
-grid .tools.status -row 1 -column 0 -columnspan 10 -sticky w -pady {6 0}
+grid .tools.add .tools.setp .tools.refresh .tools.editcfg .tools.editbase .tools.pron .tools.s1 \
+     .tools.syncall .tools.syncsel .tools.stop .tools.ll .tools.limit .tools.dry \
+     -row 0 -padx 3 -pady 2 -sticky w
+grid .tools.status -row 1 -column 0 -columnspan 12 -sticky w -pady {6 0}
 grid .tools.s1 -sticky ns -padx 8
 grid .tools.ll -padx {12 3}
 grid columnconfigure .tools 20 -weight 1
@@ -367,6 +553,7 @@ grid .series .body.sf.sb -in .body.sf -sticky nsew
 grid rowconfigure .body.sf 0 -weight 1
 grid columnconfigure .body.sf 0 -weight 1
 bind .series <Double-1> {dlg_setprog}
+bind .series <<TreeviewSelect>> on_select
 
 frame .body.lf
 text .body.log -height 12 -wrap word -state disabled -yscrollcommand {.body.lf.sb set}
@@ -378,6 +565,20 @@ grid columnconfigure .body.lf 0 -weight 1
 .body add .body.sf -weight 3
 .body add .body.lf -weight 2
 grid .body -row 1 -sticky nsew
+
+ttk::labelframe .sel -text "Selected series" -padding {10 8}
+ttk::label  .sel.title -text "—"
+ttk::button .sel.lex   -text "Edit lexicon"   -command edit_lexicon
+ttk::button .sel.ovl   -text "Edit overrides" -command edit_overlay
+ttk::button .sel.redo  -text "Re-render…"     -command dlg_redo
+ttk::label  .sel.vl    -text "Narrator:"
+ttk::combobox .sel.voice -width 16 -state readonly -values $::VOICES
+bind .sel.voice <<ComboboxSelected>> set_narrator
+pack .sel.title -side left -padx {0 14}
+pack .sel.lex .sel.ovl .sel.redo -side left -padx {0 6}
+pack .sel.voice -side right
+pack .sel.vl    -side right -padx {12 4}
+grid .sel -row 2 -sticky ew -padx 6 -pady {4 4}
 
 ttk::labelframe .sched -text "Auto-sync" -padding {10 8}
 ttk::checkbutton .sched.on -text "enabled" -variable ::AUTO -command schedule_next
@@ -399,7 +600,7 @@ pack .sched.md -side left -padx {0 4}
 pack .sched.dt -side left
 pack .sched.next -side right -padx {8 0}
 pack .sched.nl -side right
-grid .sched -row 2 -sticky ew -padx 6 -pady {4 4}
+grid .sched -row 3 -sticky ew -padx 6 -pady {4 4}
 
 ttk::labelframe .srv -text "Feed server" -padding {10 8}
 ttk::button .srv.start -text "Start" -command server_start
@@ -408,7 +609,7 @@ ttk::label  .srv.status -text "off" -foreground "#a33"
 pack .srv.start -side left -padx {0 6}
 pack .srv.stop  -side left -padx {0 12}
 pack .srv.status -side left
-grid .srv -row 3 -sticky ew -padx 6 -pady {0 8}
+grid .srv -row 4 -sticky ew -padx 6 -pady {0 8}
 
 grid rowconfigure . 1 -weight 1
 grid columnconfigure . 0 -weight 1
@@ -418,9 +619,20 @@ load_conf
 ui_busy 0
 log "webnovel-audio control — exe: $::EXE"
 if {[set c [run_json config]] ne ""} {
+    set ::CFGPATH   [json::get $c config_path]
+    set ::LEXDIR    [json::get $c lexicon_dir]
+    set ::SERIESDIR [json::get $c series_config_dir]
+    if {[json::get $c base_lexicon] ne ""} { set ::BASELEX [json::get $c base_lexicon] }
+    set v [json::get $c voices]
+    if {[llength $v]} { set ::VOICES [linsert $v 0 "(default)"] }
+    .sel.voice configure -values $::VOICES
+    if {$::CFGPATH eq ""} { set ::CFGPATH [file join [json::get $c project_dir] config.toml] }
+    set ::CFGPATH [file normalize $::CFGPATH]
+    log "config   : $::CFGPATH"
     log "state db : [json::get $c state_db]"
     log "library  : [json::get $c library_dir]"
 }
+on_select
 refresh_series
 schedule_next
 wm protocol . WM_DELETE_WINDOW {server_stop ; save_conf ; exit}

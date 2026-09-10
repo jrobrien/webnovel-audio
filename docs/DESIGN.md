@@ -44,8 +44,12 @@ RSS feed the phone subscribes to)
   a distinct, consistent `thought` voice (or narrator + intimacy DSP chain).
 - **Speaker attribution**: BookNLP + light LLM → per-character casting from a
   voice bank; LitRPG status boxes → a flatter `system_ui` voice.
-- **Per-series lexicon**: `surface → respelling` (+ optional IPA). Seed with an
-  LLM, correct by ear once, cached forever. `inspect` builds the review queue.
+- **Per-series lexicon**: `surface → respelling` (+ optional IPA). Two layers —
+  an always-on `data/lexicons/_base.csv` (names the g2p mangles everywhere) with
+  `data/lexicons/<slug>.csv` stacked on top. Seed with `lexicon --write`, correct
+  by ear once (`pron` shows phonemes + a rough gloss, before/after), cached forever.
+- **Headings**: `"<Series>. Chapter N. <Title>"`, forced to end in sentence
+  punctuation — Kokoro clips the final word of an unterminated line.
 
 ## Audio post
 
@@ -143,6 +147,15 @@ timer runs it nightly. Personal use only — respect authors with official audio
   and records each chapter's duration.
 - **Phase 6 — premium (opt)**: overnight XTTS-v2 / StyleTTS2 narrator, A/B.
 
+- **Tooling** *(done)*: `pron <text>` — the exact phoneme string Kokoro will use
+  (via `kokoro_onnx.Tokenizer`, no model load) plus a rough ASCII gloss, raw and
+  after the lexicon; `--check` audits every lexicon row. `voices` lists the 28
+  ids; `voices --demo` renders one chaptered `.opus` (one chapter per voice, an
+  announcer reads the id, then that voice reads a sample) — `write_opus` grew an
+  optional `chapters=` arg that muxes an `;FFMETADATA1` file. `ui` launches the
+  Tcl/Tk control app (execs `wish`, else Python's bundled Tk) and is the default
+  when the CLI is run with no subcommand.
+
 ## Royal Road ingest notes
 
 - Chapter body: `div.chapter-content` (fallbacks: `.chapter-inner`, densest
@@ -230,6 +243,11 @@ series_config_dir`) is merged over it by `sync` via `Config.overlay` — only ke
 present in the overlay change, `[cast.voices]`/`[chat.voices]` replace their
 table, `[dsp.*]` merges per key. `_series_cfg` applies the auto per-series lexicon
 first, then the overlay (which can still override `[general] lexicon`).
+
+Lexicons stack: `pipeline._load_lexicon` loads `[general] base_lexicon`
+(`data/lexicons/_base.csv` — standard names the g2p mangles) then the per-series
+CSV via `Lexicon.load_many`, so a per-series row overrides the base for the same
+`surface`. `inspect` / `lexicon --write` treat base entries as already-known.
 
 ## Buffering note
 
