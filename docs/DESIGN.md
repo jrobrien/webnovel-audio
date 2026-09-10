@@ -40,6 +40,9 @@ RSS feed the phone subscribes to)
 
 - **Normalize**: curly quotes, ellipses, em-dashes, zero-width chars, thousands
   separators, `Lvl`→level, integers/ordinals→words. Strip hidden anti-piracy nodes.
+  Fold shouted ALL-CAPS to normal case (`_dampen_caps`) — the g2p spells a short
+  all-caps token letter by letter ("DAMN IT!" → "damn eye-tee"); a shouting run or
+  a ≤2-letter token is downcased, lone acronyms ("the FBI", "Chapter IV") survive.
 - **Internal monologue**: whole-paragraph/sentence italics not inside quotes →
   a distinct, consistent `thought` voice (or narrator + intimacy DSP chain).
 - **Speaker attribution**: BookNLP + light LLM → per-character casting from a

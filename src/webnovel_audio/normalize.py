@@ -71,6 +71,32 @@ _CAMEL_RE = re.compile(r"(?<=[a-z])(?=[A-Z])")
 _LETNUM_RE = re.compile(r"(?<=[A-Za-z])(?=\d)|(?<=\d)(?=[A-Za-z])")
 _ALLCAPS_RE = re.compile(r"\b([A-Z][A-Z'’]{3,})\b")
 
+_CAPS_WORD_RE = re.compile(r"[A-Z][A-Z'’\-]*[A-Z]")   # 2+ all-caps letters
+_ROMAN_RE = re.compile(r"[IVXLCDM]+\Z")
+_CAPS_STRIP = "\"'’“”‘()[].,!?;:…—–*"
+
+
+def _dampen_caps(s: str) -> str:
+    """Fold shouted ALL-CAPS to normal case so the g2p doesn't spell it out.
+
+    ("DAMN IT!" -> "damn it!"; espeak reads a short all-caps token as letters:
+    IT -> "eye-tee", US -> "you-ess".)  A lone all-caps word is left alone unless
+    it is <=2 letters or sits next to another all-caps word (a shouting run), so
+    real acronyms ("the FBI", "a USB port", "Chapter IV") survive.
+    """
+    parts = re.split(r"(\s+)", s)
+    words = parts[::2]
+    core = [w.strip(_CAPS_STRIP) for w in words]
+    isc = [bool(c) and _CAPS_WORD_RE.fullmatch(c) is not None
+           and _ROMAN_RE.match(c) is None for c in core]
+    for i, w in enumerate(words):
+        if not isc[i]:
+            continue
+        run = (i and isc[i - 1]) or (i + 1 < len(isc) and isc[i + 1])
+        if run or len(core[i]) <= 2:
+            parts[i * 2] = w.lower()
+    return "".join(parts)
+
 
 @dataclass
 class Block:
@@ -141,13 +167,15 @@ def _decimal_words(m: re.Match[str]) -> str:
     return f"{int_to_words(int(whole))} point {digits}"
 
 
-def normalize_text(s: str) -> str:
+def normalize_text(s: str, *, dampen_caps: bool = True) -> str:
     """Spoken-form normalization. Keeps `…` (TTS renders the trailing pause well)."""
     s = unicodedata.normalize("NFC", s)
     s = _strip_zero_width(s)
     s = _EMOJI_RE.sub(" ", s)
     s = _dequote(s)
     s = _MD_ITALIC_RE.sub(r"\1", s)
+    if dampen_caps:
+        s = _dampen_caps(s)
     s = _SPACED_ELLIPSIS_RE.sub("…", s)
     s = s.replace("...", "…")
     s = _THOUSANDS_RE.sub("", s)
@@ -192,8 +220,8 @@ def normalize_chat_message(s: str, *, dampen_caps: bool = True) -> str:
     s = s.lstrip("[").rstrip("]").strip()
     s = re.sub(r"(?<!\w)@(\w)", r"\1", s)          # drop @ from mentions
     if dampen_caps:
-        s = _ALLCAPS_RE.sub(lambda m: m.group(1).capitalize(), s)
-    return normalize_text(s)
+        s = _ALLCAPS_RE.sub(lambda m: m.group(1).capitalize(), s)   # lone long shouts
+    return normalize_text(s, dampen_caps=dampen_caps)
 
 
 _SYSTEM_SUBS: list[tuple[re.Pattern[str], str]] = [
@@ -224,7 +252,7 @@ def normalize_system(s: str) -> str:
     s = _RATIO_RE.sub(
         lambda m: f"{int_to_words(int(m.group(1)))} out of {int_to_words(int(m.group(2)))}", s
     )
-    return normalize_text(s)
+    return normalize_text(s, dampen_caps=False)   # keep stat-box acronyms (AC, DR, …)
 
 
 def is_scene_break(line: str) -> bool:

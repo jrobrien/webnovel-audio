@@ -31,8 +31,8 @@ def test_username_speakable():
 
 
 def test_chat_message_normalization():
-    # long all-caps words are calmed; 2-letter ones (SO, OK, AI) are left alone
-    assert normalize_chat_message("THAT'S STILL SO SCIFI.") == "That's Still SO Scifi."
+    # shouting is calmed to normal case; dampen_caps=False keeps it verbatim
+    assert normalize_chat_message("THAT'S STILL SO SCIFI.") == "That's Still so Scifi."
     assert "SCIFI" in normalize_chat_message("THAT'S STILL SO SCIFI.", dampen_caps=False)
     assert "@" not in normalize_chat_message("You were saying @1000years of death.")
 

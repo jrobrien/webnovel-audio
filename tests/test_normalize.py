@@ -88,3 +88,17 @@ def test_system_line_normalization():
     assert "forty out of fifty" in out
     assert "Strength" in out
     assert "->" not in out and "[" not in out
+
+
+def test_allcaps_shouting_is_calmed():
+    # espeak spells short all-caps tokens as letters (IT -> "eye-tee")
+    assert normalize_text('"DAMN IT!"') == '"damn it!"'
+    assert normalize_text("Help US, please.") == "Help us, please."
+    assert normalize_text("GET OUT OF MY HOUSE.") == "get out of my house."
+    assert normalize_text("I said IT, not US.") == "I said it, not us."
+    # real acronyms and roman numerals survive (lone, 3+ letters / numeral chars)
+    assert normalize_text("The FBI called about a USB drive.") == \
+        "The FBI called about a USB drive."
+    assert "IV" in normalize_text("Chapter IV: The Return")
+    # stat boxes keep their acronyms
+    assert "DR" in normalize_system("DR: 5  Block: 10")
