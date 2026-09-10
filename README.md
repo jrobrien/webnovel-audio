@@ -84,9 +84,10 @@ wish ui/control.tcl        # needs tk (Arch: pacman -S tk)
 ```
 
 A Tcl/Tk front end over the CLI: add/track series, run `sync` on demand or on an
-in-app schedule (interval or daily), with a live log. It's a stand-alone
-alternative to the systemd timer — leave it open and it drives the batch runs.
-Set `WEBNOVEL_AUDIO=/path/to/webnovel-audio` if it isn't found automatically.
+in-app schedule (interval or daily), start/stop the feed **server**, with a live
+log. It's a stand-alone alternative to the systemd timer — leave it open and it
+drives the batch runs. Set `WEBNOVEL_AUDIO=/path/to/webnovel-audio` if it isn't
+found automatically.
 
 ### Adding a content source
 
@@ -95,6 +96,8 @@ plain `.txt` is passed through as-is. A new site (webnovel.com, an mbox, …) is
 `Provider` subclass that produces an `ingest.Document`; everything downstream —
 audio, the readable `.md`, the feed, `.m4b` — is provider-agnostic. Contract and
 sketches: [`docs/PROVIDERS.md`](docs/PROVIDERS.md).
+
+Per-series overrides: drop `data/series/<slug>.toml` (any `config.toml` section) and `sync` merges it over the base config for that series — see [`data/series/README.md`](data/series/README.md).
 
 ## How it works
 
@@ -151,7 +154,7 @@ don't — use `book` for a `.m4b`.
 `config.toml` (copy from `config.example.toml`, auto-detected in the working
 directory; `-c` for a different one):
 
-`[general]` lexicon paths · `[voices]` fallback voices · `[cast]` + `[cast.voices]`
+`[general]` lexicon / per-series-config paths · `[voices]` fallback voices · `[cast]` + `[cast.voices]`
 per-series casting · `[chat]` livestream-chat behaviour · `[synth]`
 (`thought_threshold`, `system_rate`) · `[pauses]` · `[audio]` loudness ·
 `[dsp.*]` effect chains keyed by speaker / voice / style · `[royalroad]`

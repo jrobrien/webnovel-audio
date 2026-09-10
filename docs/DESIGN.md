@@ -222,3 +222,19 @@ systemd timer. It needs no `sqlite3`/`json`/`tls` Tcl packages — just `tk`.
 
 The DB opens WAL + a busy timeout so a reader (a second CLI, a future native UI)
 never blocks the `sync` writer.
+
+## Per-series config overlays
+
+`config.toml` is the base; `data/series/<slug>.toml` (dir = `[general]
+series_config_dir`) is merged over it by `sync` via `Config.overlay` — only keys
+present in the overlay change, `[cast.voices]`/`[chat.voices]` replace their
+table, `[dsp.*]` merges per key. `_series_cfg` applies the auto per-series lexicon
+first, then the overlay (which can still override `[general] lexicon`).
+
+## Buffering note
+
+`sync --json` and `serve` set `sys.stdout` line-buffered and flush each event —
+Python block-buffers a pipe, so without it the control UI (which reads their
+stdout through a Tcl pipe) sees nothing until the child exits. The UI's
+Feed-server button spawns `serve`, pipes its output to the log as `[serve] …`,
+and stops it with `SIGINT` (clean `httpd.server_close()`), `SIGKILL` after 1 s.

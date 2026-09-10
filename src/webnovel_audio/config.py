@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import os
 import tomllib
 from dataclasses import dataclass, field, fields
@@ -9,6 +10,7 @@ from dataclasses import dataclass, field, fields
 class General:
     lexicon: str = ""                       # optional shared pronunciation CSV
     lexicon_dir: str = "data/lexicons"      # <series-slug>.csv here is picked up by `sync`
+    series_config_dir: str = "data/series"  # <series-slug>.toml overlays the base config
     cache_dir: str = ".cache/segments"
     models_dir: str = os.path.expanduser("~/.cache/webnovel-audio")
     speak_title: bool = True
@@ -134,6 +136,31 @@ class Config:
     book: Book = field(default_factory=Book)
     dsp: dict = field(default_factory=lambda: _merge_dsp(None))
     metadata: dict = field(default_factory=dict)
+
+    def overlay(self, path: str | None) -> "Config":
+        """Return a copy of this config with the TOML at `path` merged over it.
+
+        Per-series `data/series/<slug>.toml` uses this: only the keys present in
+        the overlay change; a `[cast.voices]` / `[chat.voices]` in the overlay
+        replaces that table wholesale, `[dsp.*]` merges per key.
+        """
+        if not path or not os.path.exists(path):
+            return self
+        with open(path, "rb") as fh:
+            data = tomllib.load(fh)
+        c = copy.deepcopy(self)
+        for name, sub in (("general", c.general), ("voices", c.voices), ("cast", c.cast),
+                          ("chat", c.chat), ("synth", c.synth), ("pauses", c.pauses),
+                          ("audio", c.audio), ("royalroad", c.royalroad),
+                          ("serve", c.serve), ("book", c.book)):
+            allowed = {f.name for f in fields(sub)}
+            for k, v in (data.get(name) or {}).items():
+                if k in allowed:
+                    setattr(sub, k, v)
+        for key, spec in (data.get("dsp") or {}).items():
+            c.dsp.setdefault(key, {}).update(spec)
+        c.metadata = {**c.metadata, **(data.get("metadata") or {})}
+        return c
 
     @classmethod
     def load(cls, path: str | None) -> "Config":

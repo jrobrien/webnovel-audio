@@ -362,8 +362,14 @@ def _cmd_login(args) -> int:
 
 
 def _cmd_serve(args) -> int:
+    import sys
+
     from .serve import serve
 
+    try:                       # so a parent (the control UI) sees startup output live
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
     serve(Config.load(args.config), host=args.host, port=args.port)
     return 0
 

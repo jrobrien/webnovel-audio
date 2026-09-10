@@ -58,9 +58,12 @@ most likely to touch:
 | `[royalroad] request_delay` | seconds between requests to royalroad.com (be polite; default 2.5) |
 | `[serve] port` / `base_url` | the LAN feed server |
 | `[general] lexicon_dir` | drop `data/lexicons/<series-slug>.csv` here and `sync` uses it automatically |
+| `[general] series_config_dir` | drop `data/series/<series-slug>.toml` here to override any config section for one series |
 
-Pass `-c /path/to/other.toml` to any command to use a different config (e.g. one
-per series with its own `[cast]` block).
+Pass `-c /path/to/other.toml` to any command to use a different config. For
+per-series tweaks (a cast, chat behaviour, pauses…) prefer a
+`data/series/<slug>.toml` overlay — `sync` merges it over `config.toml`
+automatically; see `data/series/README.md`.
 
 ## 4. One-off render (sanity check)
 
@@ -118,6 +121,7 @@ front-matter).
 uv run webnovel-audio serve            # binds 0.0.0.0:8080 by default
 ```
 
+You can also start/stop the server from the control UI (Feed server → Start).
 On startup `serve` prints a **scannable QR** of the URL (needs `qrencode`; point
 your phone camera at it). Or open `http://<this-machine-ip>:8080/` by hand — it
 lists each tracked series with a feed URL. Add that feed URL in a podcast app

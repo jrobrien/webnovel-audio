@@ -236,6 +236,47 @@ proc ui_busy {on} {
     .tools.stop state [expr {$on ? "!disabled" : "disabled"}]
 }
 
+# ---------------------------------------------------------------- feed server --
+set ::SERVEPIPE "" ; set ::SERVEPID ""
+
+proc server_start {} {
+    if {$::SERVEPID ne ""} return
+    if {[catch {open "| [list $::EXE serve 2>@1]" r} ::SERVEPIPE]} {
+        log "! server: $::SERVEPIPE" ; set ::SERVEPIPE "" ; return
+    }
+    set ::SERVEPID [pid $::SERVEPIPE]
+    fconfigure $::SERVEPIPE -blocking 0 -buffering line
+    fileevent $::SERVEPIPE readable server_readable
+    .srv.start state disabled
+    .srv.stop  state !disabled
+    .srv.status configure -text "running (pid $::SERVEPID)" -foreground "#2a9d5c"
+    log "feed server started (pid $::SERVEPID)"
+}
+
+proc server_readable {} {
+    if {[gets $::SERVEPIPE line] < 0} {
+        if {[eof $::SERVEPIPE]} { server_gone }
+        return
+    }
+    if {[string trim $line] ne ""} { log "\[serve\] $line" }
+}
+
+proc server_gone {} {
+    catch {fileevent $::SERVEPIPE readable {}}
+    catch {close $::SERVEPIPE}
+    set ::SERVEPIPE "" ; set ::SERVEPID ""
+    .srv.start state !disabled
+    .srv.stop  state disabled
+    .srv.status configure -text "off" -foreground "#a33"
+    log "feed server stopped"
+}
+
+proc server_stop {} {
+    if {$::SERVEPID eq ""} return
+    catch {exec kill -INT {*}$::SERVEPID}
+    after 1000 {if {$::SERVEPID ne ""} {catch {exec kill {*}$::SERVEPID} ; server_gone}}
+}
+
 # ---------------------------------------------------------------- scheduler ----
 set ::AUTO 0 ; set ::MODE interval ; set ::IVAL 180 ; set ::DAILY 03:00
 set ::AFTERID "" ; set ::NEXTRUN "off"
@@ -358,7 +399,16 @@ pack .sched.md -side left -padx {0 4}
 pack .sched.dt -side left
 pack .sched.next -side right -padx {8 0}
 pack .sched.nl -side right
-grid .sched -row 2 -sticky ew -padx 6 -pady {4 8}
+grid .sched -row 2 -sticky ew -padx 6 -pady {4 4}
+
+ttk::labelframe .srv -text "Feed server" -padding {10 8}
+ttk::button .srv.start -text "Start" -command server_start
+ttk::button .srv.stop  -text "Stop"  -command server_stop -state disabled
+ttk::label  .srv.status -text "off" -foreground "#a33"
+pack .srv.start -side left -padx {0 6}
+pack .srv.stop  -side left -padx {0 12}
+pack .srv.status -side left
+grid .srv -row 3 -sticky ew -padx 6 -pady {0 8}
 
 grid rowconfigure . 1 -weight 1
 grid columnconfigure . 0 -weight 1
@@ -373,4 +423,4 @@ if {[set c [run_json config]] ne ""} {
 }
 refresh_series
 schedule_next
-wm protocol . WM_DELETE_WINDOW {save_conf ; exit}
+wm protocol . WM_DELETE_WINDOW {server_stop ; save_conf ; exit}

@@ -51,11 +51,27 @@ def test_resolve_start_variants():
 def test_series_cfg_prefers_per_series_lexicon(tmp_path):
     cfg = Config()
     cfg.general.lexicon_dir = str(tmp_path)
+    cfg.general.series_config_dir = str(tmp_path)
     assert sync._series_cfg(cfg, "salvage-run") is cfg          # no file -> unchanged
     (tmp_path / "salvage-run.csv").write_text("surface,respell,ipa,notes\n")
     sc = sync._series_cfg(cfg, "salvage-run")
     assert sc is not cfg and sc.general.lexicon.endswith("salvage-run.csv")
     assert cfg.general.lexicon == ""                          # original untouched
+
+
+def test_series_cfg_applies_toml_overlay(tmp_path):
+    cfg = Config()
+    cfg.general.series_config_dir = str(tmp_path)
+    (tmp_path / "salvage-run.toml").write_text(
+        '[cast]\nprotagonist = "Mara"\n[cast.voices]\nMara = "af_heart"\n'
+        '[pauses]\nlead_ms = 1500\n[dsp.Mara]\nsemitones = -1.0\n'
+    )
+    sc = sync._series_cfg(cfg, "salvage-run")
+    assert sc is not cfg
+    assert sc.cast.protagonist == "Mara" and sc.cast.voices == {"Mara": "af_heart"}
+    assert sc.pauses.lead_ms == 1500
+    assert sc.dsp["Mara"] == {"semitones": -1.0} and "thought" in sc.dsp   # base kept
+    assert cfg.cast.protagonist == "" and cfg.pauses.lead_ms == 1000       # base untouched
 
 
 def test_add_and_sync_offline(tmp_path, monkeypatch):

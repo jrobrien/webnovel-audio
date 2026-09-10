@@ -34,12 +34,16 @@ def _dir_slug(row) -> str:
 
 
 def _series_cfg(cfg: Config, slug: str) -> Config:
-    """A per-series view of the config: prefer <lexicon_dir>/<slug>.csv if it exists."""
-    path = os.path.join(os.path.expanduser(cfg.general.lexicon_dir or ""), f"{slug}.csv")
-    if not os.path.isfile(path) or path == cfg.general.lexicon:
-        return cfg
-    sc = copy.deepcopy(cfg)
-    sc.general.lexicon = path
+    """A per-series view of the base config: auto-lexicon + optional TOML overlay."""
+    sc = cfg
+    lex = os.path.join(os.path.expanduser(cfg.general.lexicon_dir or ""), f"{slug}.csv")
+    if os.path.isfile(lex) and lex != cfg.general.lexicon:
+        sc = copy.deepcopy(sc)
+        sc.general.lexicon = lex
+    overlay = os.path.join(os.path.expanduser(cfg.general.series_config_dir or ""),
+                           f"{slug}.toml")
+    if os.path.isfile(overlay):
+        sc = sc.overlay(overlay)          # overlay() deep-copies
     return sc
 
 
