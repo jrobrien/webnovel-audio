@@ -559,10 +559,18 @@ def _cmd_sync(args) -> int:
         print(_json.dumps(d, ensure_ascii=False), flush=True)
 
     emit = emit if want_json else None
-    res = sync.run_sync(cfg, args.key, limit=args.limit, dry_run=args.dry_run,
-                        backend=args.backend or cfg.synth.backend,
-                        refresh_first=not args.no_refresh,
-                        log=(lambda *_: None) if want_json else print, emit=emit)
+    try:
+        with sync.sync_lock(cfg):
+            res = sync.run_sync(cfg, args.key, limit=args.limit, dry_run=args.dry_run,
+                                backend=args.backend or cfg.synth.backend,
+                                refresh_first=not args.no_refresh,
+                                log=(lambda *_: None) if want_json else print, emit=emit)
+    except sync.SyncLocked as exc:
+        if want_json:
+            emit({"event": "locked", "path": exc.path, "message": str(exc)})
+        else:
+            print(f"! {exc} — wait for it to finish (check `ps` for a stray `sync`).")
+        return 2
     if not want_json:
         if args.dry_run:
             print(f"\nsync (dry run): {res.skipped} chapter(s) would render")
@@ -708,7 +716,7 @@ def main(argv=None) -> int:
     if argv is None:
         argv = sys.argv[1:]
     if not argv:
-        argv = ["ui"]                          # bare `webnovel-audio` opens the UI
+        argv = ["--help"]                      # bare `webnovel-audio` -> help, not the UI
 
     ap = argparse.ArgumentParser(
         prog="webnovel-audio",
@@ -758,7 +766,7 @@ def main(argv=None) -> int:
                     help="audit every lexicon row: surface vs respell phonemes")
     pr.set_defaults(func=_cmd_pron)
 
-    ui = sub.add_parser("ui", help="launch the Tcl/Tk control UI (default when run with no command)")
+    ui = sub.add_parser("ui", help="launch the Tcl/Tk control UI")
     ui.add_argument("--python", action="store_true",
                     help="use Python's bundled Tcl/Tk instead of the `wish` binary")
     ui.set_defaults(func=_cmd_ui)

@@ -11,7 +11,14 @@
 package require Tk
 source [file join [file dirname [info script]] json.tcl]
 
-set ::CFGDIR [file join [file normalize ~] .config webnovel-audio]
+# `[file normalize ~]` silently falls back to a literal "~" path component if
+# $HOME isn't set in this process's environment (e.g. launched from cron or a
+# stripped systemd unit) — go straight to $env(HOME) so a missing one is loud.
+if {![info exists ::env(HOME)] || $::env(HOME) eq ""} {
+    puts stderr "webnovel-audio ui: \$HOME is not set — can't find ~/.config"
+    exit 1
+}
+set ::CFGDIR [file join $::env(HOME) .config webnovel-audio]
 set ::UICONF [file join $::CFGDIR ui.conf]
 
 # filled in at startup from `webnovel-audio config --json`
@@ -164,6 +171,7 @@ proc sync_readable {} {
     set slug [json::get $ev slug]
     switch -- [json::get $ev event] {
         start        { log "start: [json::get $ev series] series[expr {[json::get $ev dry_run] eq {1} ? { (dry run)} : {}}]" }
+        locked       { log "! refused: another sync is already running against this library ([json::get $ev path])" }
         series {
             log "  [json::get $ev title]: [json::get $ev pending] pending"
             if {$slug ne "" && [.series exists $slug]} {

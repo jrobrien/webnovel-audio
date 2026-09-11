@@ -160,8 +160,8 @@ timer runs it nightly. Personal use only — respect authors with official audio
   ids; `voices --demo` renders one chaptered `.opus` (one chapter per voice, an
   announcer reads the id, then that voice reads a sample) — `write_opus` grew an
   optional `chapters=` arg that muxes an `;FFMETADATA1` file. `ui` launches the
-  Tcl/Tk control app (execs `wish`, else Python's bundled Tk) and is the default
-  when the CLI is run with no subcommand.
+  Tcl/Tk control app (execs `wish`, else Python's bundled Tk). Bare
+  `webnovel-audio` with no subcommand prints `--help` rather than guessing.
 
 ## Royal Road ingest notes
 
@@ -263,3 +263,17 @@ Python block-buffers a pipe, so without it the control UI (which reads their
 stdout through a Tcl pipe) sees nothing until the child exits. The UI's
 Feed-server button spawns `serve`, pipes its output to the log as `[serve] …`,
 and stops it with `SIGINT` (clean `httpd.server_close()`), `SIGKILL` after 1 s.
+
+## Sync lock
+
+`sync.sync_lock(cfg)` holds a non-blocking `flock` on `<state-db-dir>/sync.lock`
+for the duration of a `sync` run — one state DB (one library) gets at most one
+`sync` at a time. It's advisory and per-open-file-description, so it's released
+automatically if the holder is killed; nothing to clean up by hand. A second
+`sync` — from the UI, a second UI window, or a bare terminal invocation, doesn't
+matter which — gets `SyncLocked` immediately: `_cmd_sync` turns that into a
+`{"event": "locked", "path": ...}` line under `--json` (exit 2, distinct from
+exit 1 for "ran, but some chapters errored") or a one-line message otherwise.
+The UI's `$::RUNNING` guard still exists (it avoids even spawning a second
+process from the same window) but the lock is what actually prevents two
+processes from racing for the same 8 cores, which `$::RUNNING` alone couldn't.

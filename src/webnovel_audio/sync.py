@@ -1,7 +1,9 @@
 """Track Royal Road series and batch-render new chapters into a library."""
 from __future__ import annotations
 
+import contextlib
 import copy
+import fcntl
 import os
 import re
 import time
@@ -15,6 +17,45 @@ from .royalroad import _safe_slug, fetch_asset
 
 def _db(cfg: Config) -> DB:
     return DB(cfg.royalroad.state_db)
+
+
+class SyncLocked(Exception):
+    """Another `sync` is already running against this state DB."""
+
+    def __init__(self, path: str):
+        super().__init__(f"another sync is already running (lock: {path})")
+        self.path = path
+
+
+def _lock_path(cfg: Config) -> str:
+    db_path = os.path.abspath(os.path.expanduser(cfg.royalroad.state_db))
+    return os.path.join(os.path.dirname(db_path) or ".", "sync.lock")
+
+
+@contextlib.contextmanager
+def sync_lock(cfg: Config):
+    """Exclusive, non-blocking lock so only one `sync` runs per state DB at a time.
+
+    One state DB == one library; two `sync` runs against it race for the same
+    CPU and can pile up (UI double-click, a stray terminal invocation, ...) —
+    harmless to the data (chapter writes are idempotent) but wasteful to watch.
+    `flock` is per-open-file-description and advisory: it's released the instant
+    the holding process exits, crash or not, so there's never a stale lock file
+    to clean up by hand.
+    """
+    path = _lock_path(cfg)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    fh = open(path, "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        fh.close()
+        raise SyncLocked(path) from None
+    try:
+        yield
+    finally:
+        fcntl.flock(fh, fcntl.LOCK_UN)
+        fh.close()
 
 
 def _series_provider(source: str) -> providers.Provider:

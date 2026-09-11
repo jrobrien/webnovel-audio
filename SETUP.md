@@ -270,3 +270,9 @@ paths above. Nothing else is touched; no system packages are installed.
 - **`sync` re-renders something you already have** — its status is `error` or its
   `ord` is past your `progress_order`. `series list` shows the mark;
   `series set <slug> N` fixes it.
+- **`sync` refuses immediately with "another sync is already running"** — only
+  one `sync` runs at a time per state DB (a `flock` on `<state-db-dir>/sync.lock`),
+  whether the other one was launched from the UI, a second UI window, or a
+  terminal — this is what stops two batches racing for the same CPU. Wait for
+  the other to finish (`ps -ef | grep 'webnovel-audio sync'`); the lock releases
+  itself the instant that process exits, crash or not — nothing to clean up.

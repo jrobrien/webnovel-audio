@@ -1,5 +1,7 @@
 import os
 
+import pytest
+
 from webnovel_audio import sync
 from webnovel_audio.config import Config
 from webnovel_audio.db import DB
@@ -85,6 +87,35 @@ def test_series_redo(tmp_path, capsys):
     assert st[2] == "new" and st[3] == "new" and st[1] == "rendered" and st[4] == "rendered"
     assert [c["ord"] + 1 for c in db.pending(s["id"])] == [2, 3, 5, 6]
     db.close()
+
+
+def test_sync_lock_blocks_a_second_holder(tmp_path):
+    cfg = Config()
+    cfg.royalroad.state_db = str(tmp_path / "s.db")
+    with sync.sync_lock(cfg):
+        with pytest.raises(sync.SyncLocked):
+            with sync.sync_lock(cfg):
+                pass                                    # never reached
+    with sync.sync_lock(cfg):                            # released -> free again
+        pass
+
+
+def test_cmd_sync_refuses_when_locked(tmp_path, capsys):
+    import json
+    import types
+
+    from webnovel_audio import cli
+
+    cfgp = tmp_path / "c.toml"
+    dbp = tmp_path / "s.db"
+    cfgp.write_text(f'[royalroad]\nstate_db = "{dbp}"\n')
+    cfg = Config.load(str(cfgp))
+    with sync.sync_lock(cfg):
+        rc = cli._cmd_sync(types.SimpleNamespace(
+            config=str(cfgp), key=None, limit=None, dry_run=False,
+            backend=None, no_refresh=False, json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 2 and out["event"] == "locked"
 
 
 def test_resolve_start_variants():

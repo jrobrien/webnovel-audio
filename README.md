@@ -65,9 +65,9 @@ tracked series; `webnovel-audio schedule --install` runs it nightly.
 | `lexicon <input> --write` | queue unknown proper nouns into `data/lexicons/<slug>.csv` |
 | `pron <text> [--series S] [--check]` | how the TTS will say it: phonemes + a rough gloss, before/after the lexicon |
 | `voices [--demo -o f.opus]` | list the 28 voices; `--demo` renders one chaptered file (one chapter per voice) with a spoken label + sample |
-| `ui` | launch the Tcl/Tk control UI (also the default when run with no command) |
+| `ui` | launch the Tcl/Tk control UI |
 | `series add\|list\|set\|refresh\|redo` | manage tracked series (`redo <key> [N-M]` re-queues rendered chapters after a lexicon/cast fix) |
-| `sync [key] [--limit N] [--dry-run]` | render new chapters into `library/` |
+| `sync [key] [--limit N] [--dry-run]` | render new chapters into `library/` (one at a time per state DB — a second `sync` refuses with exit 2 while one's running) |
 | `config` | show resolved paths (state DB, library, executable, …) |
 | `login [--cookies-file … \| --check]` | store a Royal Road session cookie (optional) |
 | `serve` | localhost/LAN podcast feeds + audio |
@@ -79,12 +79,60 @@ tracked series; `webnovel-audio schedule --install` runs it nightly.
 `series list`, `series add/set/refresh`, `sync`, and `config` take **`--json`**
 (machine-readable; `sync --json` streams one JSON event per line). Input to
 `render`/`inspect`/`cast`/`lexicon` can be a chapter **URL**, a saved **`.html`**,
-or a plain **`.txt`**.
+or a plain **`.txt`**. Running `webnovel-audio` with no arguments just prints
+this help (`--help`) — it doesn't launch the UI or do anything on its own; use
+`webnovel-audio ui` (or `wish ui/control.tcl`) for that explicitly.
+
+### Command-line examples
+
+```sh
+# track a new series, starting from the beginning
+webnovel-audio series add https://www.royalroad.com/fiction/12345/some-fiction --from start
+
+# ...or starting from where you've already read up to (skips 1-40)
+webnovel-audio series add https://www.royalroad.com/fiction/12345/some-fiction --from 40
+
+# see what's tracked and how far behind each one is
+webnovel-audio series list
+
+# render everything new, across every tracked series
+webnovel-audio sync
+
+# render just the next 3 chapters of one series
+webnovel-audio sync some-fiction --limit 3
+
+# preview what a sync would do without rendering anything
+webnovel-audio sync --dry-run
+
+# fix a mispronunciation, then re-render the chapters that already have it
+$EDITOR data/lexicons/some-fiction.csv          # add a respell row
+webnovel-audio series redo some-fiction 12-15
+webnovel-audio sync some-fiction
+
+# hear how a name will be said before committing to a respelling
+webnovel-audio pron Kaelith --series some-fiction
+
+# browse the 28 voices before casting a character
+webnovel-audio voices --demo -o voices.opus
+
+# see how one chapter would be cast / parsed, without rendering it
+webnovel-audio cast some-chapter.html
+webnovel-audio inspect some-chapter.html
+
+# serve the library as a podcast feed on the LAN
+webnovel-audio serve
+
+# a standalone chaptered audiobook file for one arc
+webnovel-audio book some-fiction --from 1 --to 40 -o some-fiction.m4b
+
+# script against it: --json on series/sync/config gives structured output
+webnovel-audio series list --json | jq '.series[] | {slug, pending}'
+```
 
 ### Control UI
 
 ```sh
-uv run webnovel-audio ui        # or just `uv run webnovel-audio`; or: wish ui/control.tcl
+uv run webnovel-audio ui        # or: wish ui/control.tcl
 ```
 
 `ui` execs `wish` if it's on `PATH`, otherwise falls back to Python's bundled
@@ -187,7 +235,7 @@ per-series casting · `[chat]` livestream-chat behaviour · `[synth]`
 ## Development
 
 ```sh
-uv run pytest -q            # ~75 tests, fully offline
+uv run pytest -q            # ~80 tests, fully offline
 uv run python -m compileall -q src/
 ```
 

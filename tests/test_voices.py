@@ -1,7 +1,18 @@
 import types
 
+import pytest
+
 from webnovel_audio import cli
 from webnovel_audio.audio import _ffmeta_chapters
+
+
+def test_bare_invocation_shows_help_not_ui(capsys):
+    with pytest.raises(SystemExit) as exc:
+        cli.main([])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "usage:" in out and "webnovel-audio" in out
+    assert "ui" in out                        # still listed as a subcommand
 
 
 def test_ffmeta_chapters():
