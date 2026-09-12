@@ -1210,7 +1210,9 @@ def main(argv=None) -> int:
     lg.set_defaults(func=_cmd_login)
 
     sc = sub.add_parser("schedule", help="systemd-user timer for nightly sync")
-    sc.add_argument("--install", action="store_true")
+    sc.add_argument("--install", action="store_true", help="write the unit files")
+    sc.add_argument("--calendar", default="*-*-* 03:00",
+                    help="systemd OnCalendar expression (default: 3am daily)")
     _cfg(sc)
     sc.set_defaults(func=_cmd_schedule)
 
