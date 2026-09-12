@@ -704,11 +704,18 @@ def run_sync(cfg: Config, key: str | None = None, *, limit: int | None = None,
                      dry_run=dry_run, refresh_first=refresh_first, log=log, emit=emit)
 
 
-# Seconds of wall time per second of rendered audio. Only the fallback: once a
-# series has timed renders (`chapters.render_started_at`/`_ended_at`) the ratio
-# is measured from those instead, so the estimate tracks this machine, this
-# config and this series. Seeded from 88.4 s wall for 223 s of audio, cold cache.
-RENDER_COST_RATIO = 0.40
+# Seconds of wall time per second of rendered audio — only the fallback for a
+# series with nothing timed yet. Once `chapters.render_started_at`/`_ended_at`
+# has >= MIN_COST_SAMPLES rows the ratio is measured from those instead, so the
+# estimate tracks this machine, this config and this series.
+#
+# The first seed here was 0.40, from a single 223 s chapter rendered cold. That
+# turned out ~2x pessimistic: Kokoro's model load is a fixed cost that a short
+# chapter can't amortise. Measured over 13 real chapters (2.4 h of audio) the
+# steady-state ratio is 0.200, range 0.193-0.233. Kept slightly above the
+# measurement so a fresh series over-estimates rather than under-estimates —
+# being told a job is shorter than it is, is the worse failure.
+RENDER_COST_RATIO = 0.25
 MIN_COST_SAMPLES = 3            # below this, the median is too noisy to trust
 _FALLBACK_CHAPTER_SECONDS = 900.0        # ~15 min, if we've never rendered any
 
