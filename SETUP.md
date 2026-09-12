@@ -164,30 +164,29 @@ uv run webnovel-audio book <series-slug> 1-3 -o out/arc1.m4b
 Produces a single AAC `.m4b` with a chapter marker + title per chapter and the
 cover embedded — for any audiobook player.
 
-## 8. Run it: the control UI
+## 8. The control UI
 
 ```sh
-uv run webnovel-audio ui     # or just `uv run webnovel-audio`
+uv run webnovel-audio ui     # needs tk (Arch: pacman -S tk), else falls back
+                             # to Python's bundled Tcl/Tk with --python
 ```
 
-`ui` runs `wish` if it's installed (`sudo pacman -S tk`), else Python's bundled
-Tcl/Tk (`--python` forces the fallback); either way it sets `WEBNOVEL_AUDIO` so
-the UI finds the CLI. You can still run `wish ui/control.tcl` directly from the
-project root (add `WEBNOVEL_AUDIO=$(pwd)/.venv/bin/webnovel-audio` if it isn't
-found).
+Laid out like gitk: series across the top, chapters bottom-left, a
+Cast / Lexicon / Log notebook bottom-right, status bar along the bottom.
 
-Add series, run `sync` on demand (all / selected, with a chapter limit), or turn
-on **Auto-sync** (every N minutes, or daily at a time) and leave the window open
-— it becomes the thing that launches your batch runs, with a live log. Settings
-persist to `~/.config/webnovel-audio/ui.conf`.
+- Select chapters (shift/ctrl) and **right-click** for fetch / parse / check /
+  render over that selection, or to mark skipped/new and clear errors. A
+  scattered pick becomes one comma range, e.g. `render <slug> 1-3,7,20-21`.
+- **Sync…** shows a CPU estimate before starting.
+- Cast and Lexicon are edited in place, with an mtime guard so a file changed
+  underneath (by `cast update`) is never silently overwritten. **Open in
+  $EDITOR** hands off for real editing.
+- The feed **server** starts/stops from the toolbar.
+- Window size and sash positions persist to `~/.config/webnovel-audio/ui.conf`.
 
-The **Edit lexicon / overrides / config / base lexicon** buttons open files with
-`xdg-open`. If that picks the wrong app — a common one: an empty `.csv` is sniffed
-as `text/plain` (text editor) but a populated one as `text/csv` (spreadsheet), so
-two lexicons open differently — either fix the association
-(`xdg-mime default nvim.desktop text/csv application/csv text/x-csv`) or set
-`WEBNOVEL_AUDIO_EDITOR` before launching `wish` (a command with optional args:
-`WEBNOVEL_AUDIO_EDITOR="$EDITOR"`, `="foot -e nvim"`, `="code -w"`).
+Only one `render`/`sync` runs at a time per library (a `flock`), so a command
+launched here while one is already going is refused with a log line rather than
+fighting for the CPU.
 
 ## 9. Royal Road login (optional)
 
@@ -268,7 +267,7 @@ paths above. Nothing else is touched; no system packages are installed.
   committing to it: `webnovel-audio pron Montgomery` prints the raw phonemes and a
   rough gloss, then the same after the lexicon; `webnovel-audio pron --check`
   audits every row (add `--series <slug>` for that series' file). The UI's
-  **Test word…** button does the same. To hear the fix in chapters you already
+  `pron` from a terminal does the same. To hear the fix in chapters you already
   rendered, just name them: `webnovel-audio render <slug> 12-15`. An explicit
   range is imperative — it re-renders whatever the recorded state, so there's no
   separate "mark these dirty" step.

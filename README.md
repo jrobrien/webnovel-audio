@@ -239,25 +239,40 @@ webnovel-audio series list --json | jq '.series[] | {slug, pending}'
 uv run webnovel-audio ui        # or: wish ui/control.tcl
 ```
 
-`ui` execs `wish` if it's on `PATH`, otherwise falls back to Python's bundled
-Tcl/Tk (`--python` forces that). A Tcl/Tk front end over the CLI: add/track
-series, run `sync` on demand or on an in-app schedule (interval or daily),
-start/stop the feed **server**, edit the config / base + per-series lexicons,
-**Test word…** to preview a pronunciation, with a live log. It's a stand-alone
-way to leave batch runs running — leave it open and it drives them.
-Launched via `wish` directly, set `WEBNOVEL_AUDIO=/path/to/webnovel-audio` if the
-CLI isn't found automatically.
+A Tcl/Tk front end laid out like **gitk** — series across the top, chapters
+bottom-left, a notebook bottom-right:
 
-The **Selected series** strip opens that series' pronunciation lexicon
-(`data/lexicons/<slug>.csv`) or per-series overrides (`data/series/<slug>.toml`)
-in your `$EDITOR` via `xdg-open`, sets its narrator voice (written to the
-overrides file), and re-queues already-rendered chapters (**Re-render…**) so a
-fix takes effect. **Edit config…** and **Base lexicon…** on the toolbar open
-`config.toml` and the always-on `data/lexicons/_base.csv`. These open via
-`xdg-open`; set `WEBNOVEL_AUDIO_EDITOR` (e.g. `="$EDITOR"`, or `"foot nvim"`) to
-force a specific editor — handy because a header-only `.csv` sniffs as
-`text/plain` and a filled one as `text/csv`, so `xdg-open` can send them to
-different apps.
+```
+┌ series ──────────────────────────────────────────────────────┐
+│ Title            Status   Rendered  Pending  Err  Next up    │
+├ chapters ──────────────────┬ Cast │ Lexicon │ Log ───────────┤
+│ 33  …      rendered   14m  │ [cast.voices]                   │
+│ 34  …      rendered   13m  │ "Tian" = "am_michael"           │
+│ 35  …      error       —   │              [Save][Reload][↗]  │
+├────────────────────────────┴─────────────────────────────────┤
+│ rendering #35 (4/10) · server :8080                          │
+└──────────────────────────────────────────────────────────────┘
+```
+
+Select chapters (shift/ctrl for ranges and scattered picks) and **right-click**
+to run `fetch` / `parse` / `check` / `render` over exactly that selection, or to
+mark them skipped/new or clear errors. The selection becomes one comma range —
+picking 1, 2, 3, 7, 20, 21 runs `render <slug> 1-3,7,20-21`.
+
+**Sync…** shows a live CPU estimate before it starts. The Cast and Lexicon tabs
+edit `data/series/<slug>.toml` and `data/lexicons/<slug>.csv` in place, with an
+mtime check so a file that `cast update` changed underneath is never silently
+clobbered; **Open in $EDITOR** hands off to `$WEBNOVEL_AUDIO_EDITOR` / `$VISUAL`
+/ `$EDITOR` when you want real editing. The feed **server** starts and stops
+from the toolbar, and window/sash geometry persists.
+
+`ui` execs `wish` if it's on `PATH`, else falls back to Python's bundled Tcl/Tk
+(`--python` forces that); either way it exports `WEBNOVEL_AUDIO` so the UI finds
+the CLI. Running `wish ui/control.tcl` directly works too — set
+`WEBNOVEL_AUDIO=/path/to/webnovel-audio` if it isn't found.
+
+It has no DB or network access of its own: everything goes through the CLI's
+`--json` output, so every capability here is one you also have from a terminal.
 
 ### Adding a content source
 
