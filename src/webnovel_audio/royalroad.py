@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
 
@@ -131,9 +132,15 @@ def fetch_asset(url: str, *, timeout: float = 15.0) -> bytes | None:
 # --- client ------------------------------------------------------------------
 
 class RRClient:
+    # Politeness is a property of us-vs-the-server, not of a client object, and
+    # `providers.RoyalRoadProvider.raw` builds a fresh client per chapter — a
+    # per-instance timestamp meant `fetch <slug> 1-50` fired 50 requests with no
+    # gap at all. Keep it on the class so the spacing survives client churn.
+    _last_request = 0.0
+    _rate_lock = threading.Lock()
+
     def __init__(self, delay: float = 2.5, cookies: dict | None = None):
         self.delay = delay
-        self._last = 0.0
         self._c = httpx.Client(
             headers={"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"},
             cookies=cookies if cookies is not None else load_session(),
@@ -144,15 +151,21 @@ class RRClient:
     def _abs(self, url: str) -> str:
         return url if url.startswith("http") else BASE + url
 
+    def _wait_turn(self) -> None:
+        """Space requests `delay` apart across every client in this process."""
+        with RRClient._rate_lock:
+            gap = time.monotonic() - RRClient._last_request
+            if gap < self.delay:
+                time.sleep(self.delay - gap)
+            RRClient._last_request = time.monotonic()
+
     def get(self, url: str, *, tries: int = 4) -> httpx.Response:
-        gap = time.monotonic() - self._last
-        if gap < self.delay:
-            time.sleep(self.delay - gap)
+        self._wait_turn()
         last_exc: Exception | None = None
         for attempt in range(tries):
             try:
                 resp = self._c.get(self._abs(url))
-                self._last = time.monotonic()
+                RRClient._last_request = time.monotonic()
                 if resp.status_code in (429, 500, 502, 503, 504):
                     time.sleep(self.delay * (attempt + 2))
                     continue

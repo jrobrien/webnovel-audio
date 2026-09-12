@@ -38,3 +38,37 @@ def test_parse_fiction_fixture():
     assert all(c.unlocked for c in fi.chapters)
     # a "]" inside a JSON string must not truncate window.chapters
     assert last.title == "6. Salvage Rights [it ends]"
+
+
+def test_request_delay_survives_client_churn(monkeypatch):
+    """`providers.RoyalRoadProvider.raw` builds a fresh RRClient per chapter, so
+    the politeness gap has to live on the class — otherwise `fetch <slug> 1-50`
+    fires 50 requests back to back."""
+    import time
+
+    import httpx
+
+    from webnovel_audio.royalroad import RRClient
+
+    slept: list[float] = []
+    monkeypatch.setattr(time, "sleep", slept.append)
+    monkeypatch.setattr(httpx.Client, "get", lambda self, url, **kw: _FakeResp())
+    monkeypatch.setattr(RRClient, "_last_request", 0.0)
+
+    for _ in range(3):
+        c = RRClient(delay=2.5)
+        c.get("https://www.royalroad.com/x")
+        c.close()
+
+    # first request is free, the next two each wait out most of the gap
+    assert len(slept) == 2, slept
+    assert all(2.0 < s <= 2.5 for s in slept), slept
+
+
+class _FakeResp:
+    status_code = 200
+    text = "<html></html>"
+    url = "https://www.royalroad.com/x"
+
+    def raise_for_status(self):
+        return None
