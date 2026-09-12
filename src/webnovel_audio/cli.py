@@ -39,14 +39,42 @@ def _jprint(obj) -> None:
 
 
 def _parse_range(s):
-    """'', '5', '5-9', '5-', '-9' -> (lo, hi); None means open."""
-    s = (s or "").strip()
-    if not s:
+    """A chapter selection -> a list of (lo, hi) spans; None means open-ended.
+
+        ""          -> []                    (no range: the declarative form)
+        "5"         -> [(5, 5)]
+        "5-9"       -> [(5, 9)]
+        "4-"        -> [(4, None)]
+        "-6"        -> [(None, 6)]
+        "1-3,7,20-" -> [(1, 3), (7, 7), (20, None)]
+
+    Comma lists matter for the UI: a treeview with `-selectmode extended` hands
+    back scattered chapters, and this lets that become one command instead of a
+    serialized pile of them (the flock would refuse concurrent runs anyway).
+    """
+    spans: list[tuple[int | None, int | None]] = []
+    for part in (s or "").replace(" ", "").split(","):
+        if not part:
+            continue
+        if "-" in part:
+            a, _, b = part.partition("-")
+            spans.append(((int(a) if a else None), (int(b) if b else None)))
+        else:
+            spans.append((int(part), int(part)))
+    return spans
+
+
+def _span_bounds(spans):
+    """(min lo, max hi) across spans — for callers that need one contiguous
+    range (`book`), or just 'is anything selected'."""
+    if not spans:
         return None, None
-    if "-" in s:
-        a, _, b = s.partition("-")
-        return (int(a) if a.strip() else None), (int(b) if b.strip() else None)
-    return int(s), int(s)
+    los = [lo for lo, _ in spans if lo is not None]
+    his = [hi for _, hi in spans if hi is not None]
+    open_lo = any(lo is None for lo, _ in spans)
+    open_hi = any(hi is None for _, hi in spans)
+    return (None if open_lo or not los else min(los),
+            None if open_hi or not his else max(his))
 
 
 def _is_file_target(target: str) -> bool:
@@ -65,22 +93,24 @@ def _stage_cmd(stage: str):
 
         cfg = Config.load(args.config)
         want_json = getattr(args, "json", False)
-        if want_json:
-            try:
-                sys.stdout.reconfigure(line_buffering=True)
-            except (AttributeError, ValueError):
-                pass
+        # These run for minutes to hours. Python block-buffers stdout whenever it
+        # isn't a tty, so `render … > log` (or nohup) showed nothing at all until
+        # the process exited. Line-buffer both output modes, not just --json.
+        try:
+            sys.stdout.reconfigure(line_buffering=True)
+        except (AttributeError, ValueError):
+            pass
 
         if _is_file_target(args.target):
             return _one_off(stage, args, cfg)
 
-        lo, hi = _parse_range(getattr(args, "range", ""))
+        spans = _parse_range(getattr(args, "range", ""))
         emit = (lambda d: print(_json.dumps(d, ensure_ascii=False), flush=True)) \
             if want_json else None
         try:
             with sync.sync_lock(cfg) if stage == "rendered" else _nullctx():
                 res = sync.run_stage(
-                    cfg, stage, args.target, lo=lo, hi=hi,
+                    cfg, stage, args.target, spans=spans,
                     limit=getattr(args, "limit", None),
                     backend=getattr(args, "backend", None),
                     dry_run=getattr(args, "dry_run", False),
@@ -209,8 +239,8 @@ def _cmd_check(args) -> int:
             return 1
         return _explain(args.target, cfg)
 
-    lo, hi = _parse_range(getattr(args, "range", ""))
-    report = sync.suggest_cast(cfg, args.target, lo=lo, hi=hi, context=args.context,
+    spans = _parse_range(getattr(args, "range", ""))
+    report = sync.suggest_cast(cfg, args.target, spans=spans, context=args.context,
                                write_lexicon=False, apply_cast=False,
                                log=(lambda *_: None) if want_json else print)
     if want_json:
@@ -614,8 +644,8 @@ def _cmd_cast(args) -> int:
         return 0
 
     # update: sample a range and merge in speakers we don't have yet
-    lo, hi = _parse_range(getattr(args, "range", ""))
-    report = sync.suggest_cast(cfg, args.key, lo=lo, hi=hi, apply_cast=not args.diff,
+    spans = _parse_range(getattr(args, "range", ""))
+    report = sync.suggest_cast(cfg, args.key, spans=spans, apply_cast=not args.diff,
                                write_lexicon=False,
                                log=(lambda *_: None) if want_json else print)
     if want_json:
@@ -649,13 +679,13 @@ def _cmd_state(args) -> int:
         if not s:
             print(f"no tracked series matching {args.key!r}")
             return 1
-        lo, hi = _parse_range(getattr(args, "range", ""))
+        spans = _parse_range(getattr(args, "range", ""))
 
         if args.action == "set":
             if args.status not in STATUSES:
                 print(f"status must be one of: {', '.join(STATUSES)}")
                 return 1
-            rows = db.range(s["id"], lo, hi)
+            rows = db.select(s["id"], spans)
             n = db.set_status([c["id"] for c in rows], args.status)
             (_jprint if want_json else print)(
                 {"ok": True, "changed": n, "status": args.status} if want_json
@@ -663,19 +693,26 @@ def _cmd_state(args) -> int:
             return 0
 
         if args.action == "reset":
-            rows = [c for c in db.range(s["id"], lo, hi) if c["status"] == "error"]
+            rows = [c for c in db.select(s["id"], spans) if c["status"] == "error"]
             n = db.set_status([c["id"] for c in rows], "new")
             (_jprint if want_json else print)(
                 {"ok": True, "reset": n} if want_json
                 else f"{s['title']}: {n} errored chapter(s) -> new")
             return 0
 
-        rows = db.range(s["id"], lo, hi)
+        rows = db.select(s["id"], spans)
         if want_json:
-            _jprint({"slug": s["slug"], "chapters": [
+            _jprint({"slug": s["slug"], "title": s["title"], "chapters": [
                 {"number": c["ord"] + 1, "title": c["title"], "status": c["status"],
                  "error_stage": c["error_stage"], "error": c["error"],
-                 "duration_s": c["duration_s"]} for c in rows]})
+                 "duration_s": c["duration_s"], "url": c["url"],
+                 "published_at": c["published_at"],
+                 "fetched_at": c["fetched_at"], "parsed_at": c["parsed_at"],
+                 "rendered_at": c["rendered_at"],
+                 "render_started_at": c["render_started_at"],
+                 "render_ended_at": c["render_ended_at"],
+                 "audio_path": c["audio_path"], "text_path": c["text_path"],
+                 "unlocked": bool(c["unlocked"])} for c in rows]})
             return 0
         print(f"{s['title']}  [{s['slug']}]")
         for c in rows:
@@ -777,11 +814,10 @@ def _cmd_sync(args) -> int:
 
     cfg = Config.load(args.config)
     want_json = getattr(args, "json", False)
-    if want_json:
-        try:                                    # stream events line-by-line down a pipe
-            sys.stdout.reconfigure(line_buffering=True)
-        except (AttributeError, ValueError):
-            pass
+    try:                    # long-running: never block-buffer into a pipe or log
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
 
     def emit(d):
         print(_json.dumps(d, ensure_ascii=False), flush=True)
@@ -791,6 +827,18 @@ def _cmd_sync(args) -> int:
     # `sync` is the one command that can silently start a multi-hour job off a
     # short line, so say how big it is first. Never prompts when the answer
     # can't be read (--json, --yes, --dry-run, or a non-tty: cron/systemd).
+    if getattr(args, "estimate", False):
+        est = sync.estimate_render(cfg, args.key, limit=args.limit)
+        if want_json:
+            _jprint({"ok": True, **est,
+                     "human": sync.human_duration(est["seconds"])})
+        else:
+            print(f"{est['chapters']} chapter(s), ~{sync.human_duration(est['seconds'])}")
+            for s in est["series"]:
+                print(f"  {s['title']:<32} {s['chapters']:>4} ch  "
+                      f"~{sync.human_duration(s['seconds'])}")
+        return 0
+
     if not (want_json or args.dry_run or args.yes):
         est = sync.estimate_render(cfg, args.key, limit=args.limit)
         if est["chapters"]:
@@ -927,7 +975,7 @@ def _cmd_serve(args) -> int:
 def _cmd_book(args) -> int:
     from . import sync
 
-    lo, hi = _parse_range(getattr(args, "range", ""))
+    lo, hi = _span_bounds(_parse_range(getattr(args, "range", "")))
     out = sync.make_book(Config.load(args.config), args.key,
                          first=lo, last=hi, out=args.out)
     print(f"wrote {out}  ({os.path.getsize(out) / 1e6:.1f} MB)")
@@ -1011,6 +1059,8 @@ def main(argv=None) -> int:
     sy.add_argument("--backend", choices=["kokoro", "null"])
     sy.add_argument("--dry-run", action="store_true", help="list what would render")
     sy.add_argument("--no-refresh", action="store_true", help="skip re-fetching chapter lists")
+    sy.add_argument("--estimate", action="store_true",
+                    help="print how long it would take and exit (no rendering)")
     sy.add_argument("-y", "--yes", action="store_true",
                     help="skip the size estimate + confirmation (for scripts/timers)")
     _cfg_json(sy)

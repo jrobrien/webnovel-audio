@@ -64,6 +64,8 @@ CREATE TABLE IF NOT EXISTS chapters (
     fetched_at   TEXT,
     parsed_at    TEXT,
     rendered_at  TEXT,
+    render_started_at TEXT,   -- wall clock around the synth, for cost estimates
+    render_ended_at   TEXT,
     error        TEXT,
     UNIQUE (series_id, rr_id)
 );
@@ -88,7 +90,8 @@ class DB:
         cols = {r["name"] for r in self.con.execute("PRAGMA table_info(chapters)")}
         for name, decl in (("duration_s", "REAL"), ("error_stage", "TEXT"),
                            ("raw_path", "TEXT"), ("text_path", "TEXT"),
-                           ("fetched_at", "TEXT"), ("parsed_at", "TEXT")):
+                           ("fetched_at", "TEXT"), ("parsed_at", "TEXT"),
+                           ("render_started_at", "TEXT"), ("render_ended_at", "TEXT")):
             if name not in cols:
                 self.con.execute(f"ALTER TABLE chapters ADD COLUMN {name} {decl}")
         scols = {r["name"] for r in self.con.execute("PRAGMA table_info(series)")}
@@ -229,22 +232,30 @@ class DB:
             "SELECT * FROM chapters WHERE series_id=? ORDER BY ord", (series_id,)
         ).fetchall()
 
+    def select(self, series_id: int, spans=None) -> list[sqlite3.Row]:
+        """Chapters matching any of `spans` (1-based, `None` = open end), in
+        chapter order — the *imperative* set.
+
+        An explicit selection means "do these", so nothing is filtered out: even
+        `skipped` and `rendered` chapters come back. No spans = every chapter.
+        """
+        rows = self.chapters(series_id)
+        if not spans:
+            return rows
+        out, seen = [], set()
+        for lo, hi in spans:
+            for c in rows:
+                n = c["ord"] + 1
+                if (lo is None or n >= lo) and (hi is None or n <= hi) \
+                        and c["id"] not in seen:
+                    seen.add(c["id"])
+                    out.append(c)
+        return sorted(out, key=lambda c: c["ord"])
+
     def range(self, series_id: int, lo: int | None = None,
               hi: int | None = None) -> list[sqlite3.Row]:
-        """Chapters by 1-based number, whatever their status — the *imperative* set.
-
-        An explicit range means "do these", so nothing is filtered out here; even
-        `skipped` and `rendered` chapters come back.
-        """
-        sql = "SELECT * FROM chapters WHERE series_id=?"
-        args: list = [series_id]
-        if lo is not None:
-            sql += " AND ord >= ?"
-            args.append(lo - 1)
-        if hi is not None:
-            sql += " AND ord <= ?"
-            args.append(hi - 1)
-        return self.con.execute(sql + " ORDER BY ord", args).fetchall()
+        """Back-compat single-span wrapper around `select`."""
+        return self.select(series_id, [(lo, hi)] if (lo or hi) else None)
 
     def outstanding(self, series_id: int, stage: str = "rendered",
                     limit: int | None = None) -> list[sqlite3.Row]:
@@ -270,13 +281,17 @@ class DB:
     def mark(self, chapter_id: int, status: str, *, raw_path: str | None = None,
              text_path: str | None = None, audio_path: str | None = None,
              duration_s: float | None = None, error: str | None = None,
-             error_stage: str | None = None) -> None:
+             error_stage: str | None = None,
+             render_started_at: str | None = None,
+             render_ended_at: str | None = None) -> None:
         """Advance (or reset) one chapter. Only the fields you pass are touched —
         a re-render must not erase the raw/text paths from earlier stages."""
         sets = ["status=?", "error=?", "error_stage=?"]
         args: list = [status, error, error_stage]
         for col, val in (("raw_path", raw_path), ("text_path", text_path),
-                         ("audio_path", audio_path), ("duration_s", duration_s)):
+                         ("audio_path", audio_path), ("duration_s", duration_s),
+                         ("render_started_at", render_started_at),
+                         ("render_ended_at", render_ended_at)):
             if val is not None:
                 sets.append(f"{col}=?")
                 args.append(val)
@@ -287,6 +302,25 @@ class DB:
         args.append(chapter_id)
         self.con.execute(f"UPDATE chapters SET {', '.join(sets)} WHERE id=?", args)
         self.con.commit()
+
+    def render_samples(self, series_id: int) -> list[tuple[float, float]]:
+        """[(audio_seconds, wall_seconds)] for chapters we actually timed.
+
+        Feeds the cost model in `sync.estimate_render`, so the estimate tracks
+        this machine and this series rather than a baked-in constant.
+        """
+        out = []
+        for c in self.chapters(series_id):
+            if not (c["render_started_at"] and c["render_ended_at"] and c["duration_s"]):
+                continue
+            try:
+                a = time.mktime(time.strptime(c["render_started_at"], "%Y-%m-%dT%H:%M:%S"))
+                b = time.mktime(time.strptime(c["render_ended_at"], "%Y-%m-%dT%H:%M:%S"))
+            except (ValueError, TypeError):
+                continue
+            if b > a:
+                out.append((float(c["duration_s"]), b - a))
+        return out
 
     def set_status(self, chapter_ids, status: str) -> int:
         """Bulk status set, for `state set` / `state reset`."""

@@ -55,13 +55,40 @@ def test_db_roundtrip_and_pending(tmp_path):
 
 
 def test_parse_range():
-    from webnovel_audio.cli import _parse_range
+    from webnovel_audio.cli import _parse_range, _span_bounds
 
-    assert _parse_range("") == (None, None)
-    assert _parse_range("5") == (5, 5)
-    assert _parse_range("3-7") == (3, 7)
-    assert _parse_range("4-") == (4, None)
-    assert _parse_range("-6") == (None, 6)
+    assert _parse_range("") == []
+    assert _parse_range("5") == [(5, 5)]
+    assert _parse_range("3-7") == [(3, 7)]
+    assert _parse_range("4-") == [(4, None)]
+    assert _parse_range("-6") == [(None, 6)]
+    # comma lists: scattered UI selection -> one command
+    assert _parse_range("1-3,7,20-25") == [(1, 3), (7, 7), (20, 25)]
+    assert _parse_range(" 1 - 3 , 7 ") == [(1, 3), (7, 7)]
+
+    assert _span_bounds([]) == (None, None)
+    assert _span_bounds([(1, 3), (20, 25)]) == (1, 25)
+    assert _span_bounds([(4, None)]) == (4, None)
+
+
+def test_db_select_spans(tmp_path):
+    db = DB(str(tmp_path / "s.db"))
+    sid = db.upsert_series(FictionInfo(rr_id="9", slug="demo", title="Demo",
+                                       url="https://rr/9"))
+    db.replace_chapters(sid, _chapters(10))
+    nums = lambda spans: [c["ord"] + 1 for c in db.select(sid, spans)]
+
+    assert nums(None) == list(range(1, 11))            # no spans -> everything
+    assert nums([(2, 4)]) == [2, 3, 4]
+    assert nums([(1, 2), (8, None)]) == [1, 2, 8, 9, 10]
+    assert nums([(None, 2)]) == [1, 2]
+    # overlapping spans must not duplicate, and order stays chapter order
+    assert nums([(5, 7), (6, 8)]) == [5, 6, 7, 8]
+    assert nums([(9, 10), (1, 1)]) == [1, 9, 10]
+    # an explicit selection ignores status — even skipped/rendered come back
+    db.set_status([c["id"] for c in db.chapters(sid)[:3]], "skipped")
+    assert nums([(1, 3)]) == [1, 2, 3]
+    db.close()
 
 
 def test_explicit_range_is_imperative(tmp_path, monkeypatch):

@@ -263,7 +263,8 @@ def pin_defaults_text(cfg: Config, slug: str) -> str:
     return "\n".join(lines) + "\n"
 
 
-def suggest_cast(cfg: Config, key: str, *, lo: int | None = None, hi: int | None = None,
+def suggest_cast(cfg: Config, key: str, *, spans=None,
+                 lo: int | None = None, hi: int | None = None,
                  write_lexicon: bool = False, apply_cast: bool = False,
                  context: int = 6, log=print) -> dict:
     """The `check` stage: sample a chapter range of a tracked series and
@@ -287,15 +288,11 @@ def suggest_cast(cfg: Config, key: str, *, lo: int | None = None, hi: int | None
         if not s:
             raise SystemExit(f"no tracked series matching {key!r}")
         slug = _dir_slug(s)
-        chs = db.chapters(s["id"])
-        if lo is None and hi is None:
-            hi = cfg.cast.seed_chapters
-        sample = sorted(
-            (c for c in chs if c["unlocked"]
-             and (lo is None or c["ord"] + 1 >= lo)
-             and (hi is None or c["ord"] + 1 <= hi)),
-            key=lambda c: c["ord"],
-        )
+        if spans is None:
+            spans = [(lo, hi)] if (lo is not None or hi is not None) else []
+        if not spans:
+            spans = [(None, cfg.cast.seed_chapters)]
+        sample = [c for c in db.select(s["id"], spans) if c["unlocked"]]
         empty = {"slug": slug, "title": s["title"], "chapters_sampled": [], "cast": {},
                  "heteronyms": [], "lexicon_candidates": [], "overlay_path": None,
                  "overlay_action": "none"}
@@ -577,13 +574,16 @@ def _opus_tags(scfg, series_row, c) -> dict:
 def _do_render(cfg, db, scfg, slug, c, raw_path, *, backend="kokoro",
                series_row=None) -> tuple[str, float]:
     out_path = _out_stem(cfg, slug, c) + ".opus"
+    started = time.strftime("%Y-%m-%dT%H:%M:%S")
     rep = pipeline.render(raw_path, out_path, scfg, backend=backend,
                           md_meta={"chapter": c["ord"] + 1,
                                    "published": c["published_at"] or ""},
                           tags=_opus_tags(scfg, series_row, c) if series_row is not None else None,
                           log=lambda *_: None)
     db.mark(c["id"], "rendered", audio_path=out_path,
-            duration_s=rep.audio_seconds or None)
+            duration_s=rep.audio_seconds or None,
+            render_started_at=started,
+            render_ended_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
     return out_path, rep.audio_seconds
 
 
@@ -616,7 +616,8 @@ def _advance(cfg, db, prov, scfg, slug, c, *, upto, force=False, backend="kokoro
 
 
 def run_stage(cfg: Config, stage: str, key: str | None = None, *,
-              lo: int | None = None, hi: int | None = None, limit: int | None = None,
+              spans=None, lo: int | None = None, hi: int | None = None,
+              limit: int | None = None,
               backend: str | None = None, dry_run: bool = False,
               refresh_first: bool = False, log=print, emit=None) -> SyncResult:
     """Run one pipeline stage over a series (or every enabled series).
@@ -625,7 +626,9 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
     No range is declarative: whatever hasn't reached `stage` yet.
     """
     _emit = emit or (lambda _d: None)
-    explicit = lo is not None or hi is not None
+    if spans is None:
+        spans = [(lo, hi)] if (lo is not None or hi is not None) else []
+    explicit = bool(spans)
     backend = backend or cfg.synth.backend
     db = _db(cfg)
     res = SyncResult()
@@ -638,7 +641,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
         else:
             targets = [s for s in db.list_series() if s["enabled"]]
         _emit({"event": "start", "stage": stage, "series": len(targets),
-               "dry_run": dry_run, "range": [lo, hi] if explicit else None})
+               "dry_run": dry_run, "range": spans or None})
 
         for s in targets:
             slug = _dir_slug(s)
@@ -649,7 +652,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                 db.replace_chapters(s["id"], fi.chapters)
                 # single-artifact providers (a Gutenberg .txt) pull once, here
                 prov.prefetch(fi, cfg=cfg, cache_dir=os.path.join(lib, slug, ".raw"))
-            todo = (db.range(s["id"], lo, hi) if explicit
+            todo = (db.select(s["id"], spans) if explicit
                     else db.outstanding(s["id"], stage, limit))
             if explicit and limit:
                 todo = todo[:limit]
@@ -700,11 +703,12 @@ def run_sync(cfg: Config, key: str | None = None, *, limit: int | None = None,
                      dry_run=dry_run, refresh_first=refresh_first, log=log, emit=emit)
 
 
-# Seconds of CPU per second of rendered audio, measured cold (empty segment
-# cache) on the target box: 88.4 s wall for 223 s of audio. A re-render of an
-# *unchanged* chapter is ~10x cheaper because every segment hits the cache, so
-# this is a deliberate over-estimate for that case.
+# Seconds of wall time per second of rendered audio. Only the fallback: once a
+# series has timed renders (`chapters.render_started_at`/`_ended_at`) the ratio
+# is measured from those instead, so the estimate tracks this machine, this
+# config and this series. Seeded from 88.4 s wall for 223 s of audio, cold cache.
 RENDER_COST_RATIO = 0.40
+MIN_COST_SAMPLES = 3            # below this, the median is too noisy to trust
 _FALLBACK_CHAPTER_SECONDS = 900.0        # ~15 min, if we've never rendered any
 
 
@@ -730,10 +734,17 @@ def estimate_render(cfg: Config, key: str | None = None, *,
             known = [c["duration_s"] for c in db.chapters(s["id"])
                      if c["status"] == "rendered" and c["duration_s"]]
             per_ch = statistics.median(known) if known else _FALLBACK_CHAPTER_SECONDS
-            secs = len(todo) * per_ch * RENDER_COST_RATIO
+            timed = db.render_samples(s["id"])
+            if len(timed) >= MIN_COST_SAMPLES:
+                ratio = statistics.median(w / a for a, w in timed if a > 0)
+            else:
+                ratio = RENDER_COST_RATIO
+            secs = len(todo) * per_ch * ratio
             per_series.append({"slug": _dir_slug(s), "title": s["title"],
                                "chapters": len(todo), "seconds": secs,
-                               "from_samples": len(known)})
+                               "from_samples": len(known),
+                               "cost_ratio": round(ratio, 3),
+                               "timed_samples": len(timed)})
             total_ch += len(todo)
             total_s += secs
         return {"chapters": total_ch, "seconds": total_s, "series": per_series}
