@@ -3,10 +3,11 @@
 Drop `<series-slug>.toml` here and `sync` merges it over `config.toml` for that
 series only. Same sections as `config.toml`; only the keys you set change.
 
-`webnovel-audio series add` writes a starter file here automatically — it
-samples the first `[cast] seed_chapters` chapters (default 5), runs the
-dialogue attributor, and fills in `[cast.voices]` with one line per detected
-speaker, each commented with its line count and a gender guess:
+`webnovel-audio series add` writes a starter file here, pinning the *resolved*
+voices so the series keeps sounding the same if you retune the global defaults
+later. `webnovel-audio cast update <slug> <range>` then fills in
+`[cast.voices]`, one line per detected speaker, commented with its line count
+and a gender guess:
 
 ```toml
 [cast.voices]
@@ -14,9 +15,10 @@ speaker, each commented with its line count and a gender guess:
 "Resk"  = "am_michael"   # 6 line(s), male
 ```
 
-It only writes the file if one doesn't already exist for that series — once
-you've edited it, `series add`/`refresh` never touch it again. `--cast-seed N`
-overrides the sample size for one `series add` call; `0` skips it.
+`cast update` only ever **adds** speakers it hasn't seen, so re-running it on a
+later range (once new characters appear) never rewrites what you've tuned. A
+speaker whose gender it can't infer is written unassigned (`= ""`) — visible to
+fix, and falling through to `[cast] default` until you do. `--diff` previews.
 
 - `[cast.voices]` and `[chat.voices]` in an overlay **replace** that table
   wholesale (a series' cast is fully defined here).

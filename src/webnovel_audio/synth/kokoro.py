@@ -1,7 +1,7 @@
 """Kokoro-82M backend via kokoro-onnx (ONNX Runtime, CPU).
 
 On a Zen 4 chip (AVX-512 / VNNI) this runs comfortably faster than realtime.
-Model files are ~350 MB total and are fetched once with `webnovel-audio fetch-models`.
+Model files are ~350 MB total and are fetched once with `webnovel-audio models fetch`.
 """
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ class KokoroSynth:
         model, voices = model_paths(cache_dir)
         if not (os.path.exists(model) and os.path.exists(voices)):
             raise SystemExit(
-                "Kokoro model files missing.  ->  webnovel-audio fetch-models"
+                "Kokoro model files missing.  ->  webnovel-audio models fetch"
             )
         self._k = Kokoro(model, voices)
         self.default_voice = default_voice
