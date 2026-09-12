@@ -122,10 +122,10 @@ timer runs it nightly. Personal use only — respect authors with official audio
   delay + retry + optional stored cookie; `parse_fiction` reads the authoritative
   `window.chapters` JSON via a string-aware bracket scanner, falls back to the
   `#chapters` table). `db.py` is a small SQLite layer (`series`, `chapters` with
-  `progress_order` + per-chapter `status`). `sync.py`: `add_series` (with a
-  `--from latest|start|N|<chapter-url>` marker), `refresh`, `run_sync` (oldest
-  first, caches raw HTML under `library/<slug>/.raw/`, calls `pipeline.render`,
-  advances progress only on success, keeps going past errors). CLI: `series
+  per-chapter `status`). `sync.py`: `add_series` (with a
+  `--from latest|start|N|<chapter-url>` skip marker), `refresh`, `run_sync`
+  (oldest first, caches raw HTML under `library/<slug>/.raw/`, calls
+  `pipeline.render`, keeps going past errors). CLI: `series
   add|set|refresh|list`, `sync`, `login` (cookie header or Netscape
   cookies.txt → `~/.config/webnovel-audio/session.json`, verified against
   `/my/follows`), `schedule` (emits/installs a systemd-user `.service` + `.timer`).
@@ -291,15 +291,16 @@ gone — `render <slug> 20-30` *is* the re-render. Stages pull their own inputs,
 `render` on an unfetched chapter fetches and parses it first; `force` applies
 only to the named stage, so a re-render never re-downloads.
 
-**Chapter state.** `status` walks new -> fetched -> parsed -> rendered, plus
-`error` (with `error_stage`, so a render failure doesn't forget it was fetched)
-and `skipped` (deliberately not wanted). **`status` alone gates work.** In 0.1
-`pending()` also required `ord > progress_order`, so `progress_order` was doing
-two jobs — reader position *and* render high-water mark — and a `new` chapter
-behind the marker was invisible to every command. `--from N` now marks chapters
-`skipped` explicitly instead. Migration backfills `error_stage`, and marks
-never-rendered chapters below the old marker as `skipped`; nothing becomes
-unreachable, because an explicit range ignores `skipped`.
+**Chapter state is the only progress.** `status` walks new -> fetched -> parsed
+-> rendered, plus `error` (with `error_stage`, so a render failure doesn't forget
+it was fetched) and `skipped` (deliberately not wanted). There is no separate
+reader-position marker and nothing syncs position to Royal Road — 0.1 had a
+`progress_order` column doing two jobs (reader position *and* render high-water
+mark), which made a `new` chapter behind the marker invisible to every command.
+`--from N` now just marks 1..N `skipped`; `state set <slug> <range> skipped`
+does it after the fact. 0.2.1 drops the column outright, folding its one real
+meaning into chapter status first, so nothing becomes unreachable (an explicit
+range ignores `skipped` anyway).
 
 **Segmentation is deliberately not a stage.** It's 3.6 ms and derived from
 blocks + config + lexicon + cast overlay — i.e. from exactly what the tuning loop

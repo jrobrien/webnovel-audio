@@ -72,7 +72,7 @@ proc refresh_series {} {
         set nxt [json::get $r next title]
         .series insert {} end -id [dict get $r slug] -values [list \
             [dict get $r title] \
-            "#[dict get $r progress]" \
+            [json::get $r stages rendered] \
             [dict get $r pending] \
             [dict get $r errors] \
             [json::get $r provider] \
@@ -116,29 +116,6 @@ proc do_add {w} {
     if {$d ne "" && [json::get $d ok] ne "0"} {
         log "added \"[json::get $d title]\" — [json::get $d chapters] chapters, [json::get $d pending] pending"
     }
-    refresh_series
-}
-
-# ---------------------------------------------------------------- set progress -
-proc dlg_setprog {} {
-    set slug [selected_slug]
-    if {$slug eq ""} { log "select a series first" ; return }
-    set w .setp
-    catch {destroy $w}
-    toplevel $w ; wm title $w "Set progress: $slug" ; wm transient $w .
-    grid [ttk::label $w.l -text "Heard/read through:"] -row 0 -column 0 -padx 6 -pady 6 -sticky e
-    grid [ttk::combobox $w.v -width 12 -values {latest start 1 5 10 25 50 100}] -row 0 -column 1 -padx 6 -pady 6 -sticky w
-    $w.v set latest
-    grid [ttk::frame $w.b] -row 1 -column 0 -columnspan 2 -pady 6
-    ttk::button $w.b.ok -text Set -command "do_setprog $w [list $slug]"
-    ttk::button $w.b.cx -text Cancel -command [list destroy $w]
-    pack $w.b.ok $w.b.cx -side left -padx 4
-    focus $w.v ; bind $w <Escape> [list destroy $w]
-}
-proc do_setprog {w slug} {
-    set v [string trim [$w.v get]] ; destroy $w
-    set d [run_json series set $slug $v]
-    if {$d ne ""} { log "$slug: progress -> #[json::get $d progress] ([json::get $d pending] pending)" }
     refresh_series
 }
 
@@ -206,7 +183,7 @@ proc sync_readable {} {
 # advance a series row as each chapter lands, without a round-trip to the CLI
 proc row_progress {slug num} {
     if {$slug eq "" || ![.series exists $slug]} return
-    .series set $slug prog "#$num"
+    .series set $slug prog [expr {[.series set $slug prog] + 1}]
     set p [.series set $slug pend]
     if {[string is integer -strict $p] && $p > 0} { .series set $slug pend [expr {$p - 1}] }
     .series set $slug next ""
@@ -244,7 +221,7 @@ proc do_sync {which} {
 
 proc ui_busy {on} {
     set st [expr {$on ? "disabled" : "!disabled"}]
-    foreach b {.tools.syncall .tools.syncsel .tools.refresh .tools.add .tools.setp} {
+    foreach b {.tools.syncall .tools.syncsel .tools.refresh .tools.add} {
         $b state $st
     }
     .tools.stop state [expr {$on ? "!disabled" : "disabled"}]
@@ -528,7 +505,6 @@ wm minsize . 720 480
 
 ttk::frame .tools -padding 6
 ttk::button .tools.add     -text "Add series…"   -command dlg_add
-ttk::button .tools.setp    -text "Set progress…" -command dlg_setprog
 ttk::button .tools.refresh -text "Refresh"       -command refresh_series
 ttk::button .tools.editcfg -text "Edit config…"  -command edit_config
 ttk::button .tools.editbase -text "Base lexicon…" -command edit_base_lexicon
@@ -542,7 +518,7 @@ ttk::spinbox .tools.limit -from 0 -to 999 -width 4
 .tools.limit set 0
 ttk::checkbutton .tools.dry -text "dry run"
 ttk::label .tools.status -text ""
-grid .tools.add .tools.setp .tools.refresh .tools.editcfg .tools.editbase .tools.pron .tools.s1 \
+grid .tools.add .tools.refresh .tools.editcfg .tools.editbase .tools.pron .tools.s1 \
      .tools.syncall .tools.syncsel .tools.stop .tools.ll .tools.limit .tools.dry \
      -row 0 -padx 3 -pady 2 -sticky w
 grid .tools.status -row 1 -column 0 -columnspan 12 -sticky w -pady {6 0}
@@ -555,7 +531,7 @@ ttk::panedwindow .body -orient vertical
 frame .body.sf
 ttk::treeview .series -columns {title prog pend err prov next} -show headings \
      -selectmode browse -yscrollcommand {.body.sf.sb set}
-foreach {c t w} {title Title 260 prog Progress 80 pend Pending 70 err Err 50 prov Provider 90 next "Next up" 220} {
+foreach {c t w} {title Title 260 prog Rendered 80 pend Pending 70 err Err 50 prov Provider 90 next "Next up" 220} {
     .series heading $c -text $t
     .series column $c -width $w -anchor [expr {$c in {prog pend err} ? "center" : "w"}]
 }
@@ -563,7 +539,6 @@ ttk::scrollbar .body.sf.sb -orient vertical -command {.series yview}
 grid .series .body.sf.sb -in .body.sf -sticky nsew
 grid rowconfigure .body.sf 0 -weight 1
 grid columnconfigure .body.sf 0 -weight 1
-bind .series <Double-1> {dlg_setprog}
 bind .series <<TreeviewSelect>> on_select
 
 frame .body.lf

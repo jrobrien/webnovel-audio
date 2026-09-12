@@ -34,7 +34,6 @@ def test_db_roundtrip_and_pending(tmp_path):
 
     # 0.2: status alone gates work. The reader's progress marker is NOT consulted
     # (when it was, a 'new' chapter behind it became invisible to every command).
-    db.force_progress(sid, 2)
     assert [c["ord"] for c in db.pending(sid)] == [0, 1, 2, 3, 4, 5, 6]
 
     chs = db.chapters(sid)
@@ -137,12 +136,12 @@ def test_cmd_sync_refuses_when_locked(tmp_path, capsys):
     assert rc == 2 and out["event"] == "locked"
 
 
-def test_resolve_start_variants():
+def test_skip_through_variants():
     chs = _chapters(10)
-    assert sync._resolve_start(chs, "latest") == 9
-    assert sync._resolve_start(chs, "start") == -1
-    assert sync._resolve_start(chs, "4") == 3
-    assert sync._resolve_start(chs, "https://rr/chapter/103/ch-4") == 3
+    assert sync._skip_through(chs, "start") == 0        # skip nothing
+    assert sync._skip_through(chs, "latest") == 10      # all of them
+    assert sync._skip_through(chs, "4") == 4            # read through #4
+    assert sync._skip_through(chs, "https://rr/chapter/103/ch-4") == 4
 
 
 def test_series_cfg_prefers_per_series_lexicon(tmp_path):
@@ -193,12 +192,11 @@ def test_add_and_sync_offline(tmp_path, monkeypatch):
     assert info["provider"] == "royalroad" and info["pending"] == 2
     db = DB(cfg.royalroad.state_db)
     s = db.get_series("424242")
-    assert s["progress_order"] == 3
     assert len(db.pending(s["id"])) == 2                    # chapters 5, 6 (1-4 skipped)
 
     summ = db.summary()[0]
     assert summ["slug"] == "salvage-run" and summ["provider"] == "royalroad"
-    assert summ["pending"] == 2 and summ["progress"] == 4
+    assert summ["pending"] == 2 and summ["stages"]["skipped"] == 4
     assert summ["next"]["number"] == 5
     db.close()
 
@@ -214,9 +212,6 @@ def test_add_and_sync_offline(tmp_path, monkeypatch):
 
     db = DB(cfg.royalroad.state_db)
     s = db.get_series("424242")
-    # 0.2: rendering does NOT move the reader's position — that conflation is
-    # what used to hide un-rendered chapters behind the marker.
-    assert s["progress_order"] == 3                         # unchanged by render
     done = [c for c in db.chapters(s["id"]) if c["status"] == "rendered"]
     assert len(done) == 1 and os.path.exists(done[0]["audio_path"])
     db.close()

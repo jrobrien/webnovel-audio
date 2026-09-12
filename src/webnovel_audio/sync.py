@@ -111,24 +111,28 @@ def _chapter_view(c) -> tuple[int, str, bool]:
     return c["ord"], c["rr_id"], bool(c["unlocked"])
 
 
-def _resolve_start(chapters, start: str) -> int:
-    """A --from / set value -> the progress_order to store."""
-    start = (start or "latest").strip().lower()
+def _skip_through(chapters, start: str) -> int:
+    """A `--from` value -> the 1-based chapter number to mark `skipped` up to.
+
+    0 means "skip nothing". This is the only thing `--from` does now: there is
+    no separate reader-position marker, just per-chapter status.
+    """
+    start = (start or "start").strip().lower()
     view = [_chapter_view(c) for c in chapters]
     unlocked = [o for o, _, u in view if u]
+    if start in ("start", "begin", "0", "all", ""):
+        return 0
     if start in ("latest", "current", "caught-up"):
-        return max(unlocked) if unlocked else -1
-    if start in ("start", "begin", "0", "all"):
-        return -1
+        return (max(unlocked) + 1) if unlocked else 0
     if "/chapter/" in start:
         cid = re.search(r"/chapter/(\d+)", start)
         for o, rid, _ in view:
             if cid and rid == cid.group(1):
-                return o
-        return -1
+                return o + 1
+        return 0
     if start.isdigit():
-        return int(start) - 1        # "you've heard through chapter N"
-    return max(unlocked) if unlocked else -1
+        return int(start)              # "I've already read through chapter N"
+    return 0
 
 
 @dataclass
@@ -354,23 +358,20 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
             raise SystemExit(f"could not read a fiction + chapter list from {url}")
         sid = db.upsert_series(fi)
         new = db.replace_chapters(sid, fi.chapters)
-        order = _resolve_start(fi.chapters, start)
-        db.force_progress(sid, order)
-        # "--from 40" = "I've read 40" -> say so per chapter, rather than leaving
-        # a marker that silently hides them from every later command.
-        if order >= 0:
-            db.set_status([c["id"] for c in db.range(sid, None, order + 1)
+        through = _skip_through(fi.chapters, start)
+        if through:
+            db.set_status([c["id"] for c in db.range(sid, None, through)
                            if c["status"] == "new"], "skipped")
         _cache_cover(cfg, fi.slug, fi.cover_url)
         row = db.get_series(fi.rr_id)
         pend = len(db.pending(sid))
         log(f"added: {fi.title}")
         log(f"  {len(fi.chapters)} chapters ({new} new), "
-            f"{order + 1} marked already-read, {pend} outstanding")
+            f"{through} skipped, {pend} outstanding")
         log(f"  next:  webnovel-audio fetch {row['slug']} 1-10")
         return {"slug": fi.slug, "title": fi.title, "provider": fi.provider,
                 "chapters": len(fi.chapters), "new": new,
-                "progress": order + 1, "pending": pend}
+                "skipped": through, "pending": pend}
     finally:
         db.close()
 

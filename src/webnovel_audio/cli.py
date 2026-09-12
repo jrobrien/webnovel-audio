@@ -619,7 +619,7 @@ def _cmd_series(args) -> int:
             _jprint({"ok": True, "series": results or []})
         return 0
 
-    if args.action in ("set", "edit", "enable", "disable", "forget", "show"):
+    if args.action in ("edit", "enable", "disable", "forget", "show"):
         db = DB(cfg.royalroad.state_db)
         try:
             s = db.get_series(args.key)
@@ -652,22 +652,6 @@ def _cmd_series(args) -> int:
                     print(f"removed {d}")
                 db.forget(s["id"])
                 print(f"forgot {s['title']}")
-                return 0
-
-            if args.action == "set":
-                chs = db.chapters(s["id"])
-                order = sync._resolve_start(chs, args.position)
-                db.force_progress(s["id"], order)
-                n = db.set_status(
-                    [c["id"] for c in db.range(s["id"], None, order + 1)
-                     if c["status"] in ("new", "error")], "skipped")
-                if want_json:
-                    _jprint({"ok": True, "slug": s["slug"], "progress": order + 1,
-                             "skipped": n, "pending": len(db.pending(s["id"]))})
-                else:
-                    print(f"{s['title']}: marked through #{order + 1} as read "
-                          f"({n} chapter(s) -> skipped, "
-                          f"{len(db.pending(s['id']))} outstanding)")
                 return 0
 
             # show
@@ -957,18 +941,15 @@ def main(argv=None) -> int:
     se_sub = se.add_subparsers(dest="action")
     a = se_sub.add_parser("add", help="start tracking (metadata only)")
     a.add_argument("url", help="fiction page URL or id")
-    a.add_argument("--from", dest="frm", default="latest",
-                   help="latest (default) | start | <N> | <chapter-url>")
+    a.add_argument("--from", dest="frm", default="start",
+                   help="mark chapters up to here as already-read and skip them: "
+                        "start (default) | latest | <N> | <chapter-url>")
     _cfg_json(a)
     for name, helptext in (("list", "all tracked series"),):
         _cfg_json(se_sub.add_parser(name, help=helptext))
     sh = se_sub.add_parser("show", help="one series in detail")
     sh.add_argument("key")
     _cfg_json(sh)
-    st = se_sub.add_parser("set", help="mark everything through <position> as read")
-    st.add_argument("key")
-    st.add_argument("position", help="latest | start | <N> | <chapter-url>")
-    _cfg_json(st)
     ed = se_sub.add_parser("edit", help="open data/series/<slug>.toml in $EDITOR")
     ed.add_argument("key")
     _cfg_json(ed)
@@ -984,7 +965,7 @@ def main(argv=None) -> int:
     rf.add_argument("key", nargs="?")
     _cfg_json(rf)
     _cfg_json(se)
-    se.set_defaults(func=_cmd_series, action=None, frm="latest", purge=False)
+    se.set_defaults(func=_cmd_series, action=None, frm="start", purge=False)
 
     # -- state (plumbing) ---------------------------------------------------
     stt = sub.add_parser("state", help="the per-chapter stage machine, by hand")

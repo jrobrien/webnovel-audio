@@ -4,9 +4,9 @@ A chapter walks one ordered path — new -> fetched -> parsed -> rendered — pl
 two off-path states: `error` (with `error_stage` naming which stage broke, so a
 render failure doesn't lose the fact that it *was* fetched and parsed) and
 `skipped` (deliberately not wanted: behind `series add --from N`, or set by
-hand). `status` alone decides what work is outstanding. The series-level
-`progress_order` is *only* "how far the reader has got" — it never gates work,
-which is the bug it used to cause when it doubled as a render high-water mark.
+hand). `status` is the *only* notion of progress in the system — there is no
+separate "how far the reader has got" marker, and nothing here talks to Royal
+Road about reading position.
 """
 from __future__ import annotations
 
@@ -37,7 +37,6 @@ CREATE TABLE IF NOT EXISTS series (
     author         TEXT,
     url            TEXT,
     cover_url      TEXT,
-    progress_order INTEGER DEFAULT -1,   -- reader position only; does NOT gate work
     enabled        INTEGER DEFAULT 1,    -- 0 = excluded from `sync`
     added_at       TEXT
 );
@@ -111,6 +110,12 @@ class DB:
                    WHERE status='new' AND ord <= (
                        SELECT progress_order FROM series WHERE id=chapters.series_id)""")
 
+        if "progress_order" in scols:
+            # 0.2.1: the separate reader-position marker is gone. Its only real
+            # job — "I've already read 1..N" — is now per-chapter `skipped`,
+            # folded in just above.
+            self.con.execute("ALTER TABLE series DROP COLUMN progress_order")
+
     # -- series ------------------------------------------------------------
     def upsert_series(self, fi) -> int:
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
@@ -164,26 +169,12 @@ class DB:
                 "chapters": len(chs), "rendered": len(rendered),
                 "stages": by_stage,
                 "pending": len(pending), "errors": by_stage["error"],
-                "progress": s["progress_order"] + 1,
                 "next": {"number": nxt["ord"] + 1, "title": nxt["title"]} if nxt else None,
                 "last_rendered": {"number": last["ord"] + 1, "title": last["title"],
                                   "at": last["rendered_at"]} if last else None,
                 "added_at": s["added_at"],
             })
         return out
-
-    def set_progress(self, series_id: int, order: int) -> None:
-        self.con.execute(
-            "UPDATE series SET progress_order=MAX(progress_order, ?) WHERE id=?",
-            (order, series_id),
-        )
-        self.con.commit()
-
-    def force_progress(self, series_id: int, order: int) -> None:
-        self.con.execute(
-            "UPDATE series SET progress_order=? WHERE id=?", (order, series_id)
-        )
-        self.con.commit()
 
     # -- chapters --------------------------------------------------------
     def replace_chapters(self, series_id: int, chapters) -> int:
@@ -234,9 +225,7 @@ class DB:
                     limit: int | None = None) -> list[sqlite3.Row]:
         """Unlocked chapters not yet at `stage` — the *declarative* set.
 
-        Status alone decides; the reader's `progress_order` is deliberately not
-        consulted. `skipped` is honoured (that's its whole job), `error` is
-        retried.
+        `skipped` is honoured (that's its whole job) and `error` is retried.
         """
         want = stage_rank(stage)
         rows = [

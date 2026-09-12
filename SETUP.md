@@ -84,9 +84,9 @@ it showing every line's voice/style/pause.
 ```sh
 # start tracking a fiction; --from says where you already are
 uv run webnovel-audio series add <royal-road-fiction-url> --from start
-#   --from start   render from chapter 1
-#   --from latest  you're caught up; only future chapters
-#   --from 42      you've heard through chapter 42
+#   --from start   (default) nothing skipped
+#   --from latest  you're caught up; skip everything that exists now
+#   --from 42      you've already read through chapter 42
 #   --from <chapter-url>
 
 uv run webnovel-audio series list
@@ -106,8 +106,9 @@ uv run webnovel-audio sync                               # everything, every ena
 
 `sync` works oldest-first and records failures as `error` (retried next run,
 with `error_stage` naming what broke) without stopping the batch. A chapter's
-`status` alone decides whether it's outstanding — `series set <slug> N` marks
-1..N `skipped`, and `state show <slug>` prints the per-chapter stage table.
+`status` alone decides whether it's outstanding — `state set <slug> -40 skipped`
+marks 1..40 as already-dealt-with, and `state show <slug>` prints the
+per-chapter stage table.
 Finished a series? `series disable <slug>` drops it out of `sync`.
 
 Each chapter writes three files into `library/<slug>/`:
@@ -224,7 +225,7 @@ forgets it. Personal use only — respect authors who sell their own audiobooks.
 |---|---|---|
 | `config.toml` | your settings | no (that's your config) |
 | `~/.local/state/webnovel-audio/state.db` | tracked series + per-chapter status | no (loses progress) |
-| `library/<slug>/*.opus` + `.m4b` | rendered audio | yes (re-render with `sync` after `series set … start`) |
+| `library/<slug>/*.opus` + `.m4b` | rendered audio | yes (re-render with `render <slug> <range>`) |
 | `library/<slug>/*.md` | readable story text (archive / ebook source) | yes, but it's the cheapest thing to keep |
 | `library/<slug>/*.segments.json` | internal narration script | yes |
 | `library/<slug>/.raw/*.html` | cached chapter HTML (provenance) | yes (re-fetched on next `sync`) |
@@ -276,8 +277,8 @@ paths above. Nothing else is touched; no system packages are installed.
   range is imperative — it re-renders whatever the recorded state, so there's no
   separate "mark these dirty" step.
 - **`sync` re-renders something you already have** — its status is `error` or its
-  `ord` is past your `progress_order`. `series list` shows the mark;
-  `series set <slug> N` fixes it (it marks 1..N `skipped`).
+  status says so. `state show <slug>` shows every chapter's stage;
+  `state set <slug> <range> skipped` takes one out of the queue.
 - **`sync` refuses immediately with "another sync is already running"** — only
   one `sync` runs at a time per state DB (a `flock` on `<state-db-dir>/sync.lock`),
   whether the other one was launched from the UI, a second UI window, or a

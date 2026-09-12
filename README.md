@@ -144,10 +144,9 @@ them first.
 
 | command | what |
 |---|---|
-| `series add <url> [--from N]` | start tracking — metadata only, no chapter downloads |
+| `series add <url> [--from N]` | start tracking — metadata only; `--from` marks 1..N `skipped` |
 | `series list` | dashboard: per-stage counts, what's next, errors |
 | `series show <slug>` | one series in detail |
-| `series set <slug> <pos>` | mark everything through `<pos>` as already dealt with |
 | `series edit <slug>` | open `data/series/<slug>.toml` in `$EDITOR` |
 | `series enable\|disable <slug>` | include / exclude from `sync` (finished a series? disable it) |
 | `series refresh [slug]` | re-fetch chapter lists |

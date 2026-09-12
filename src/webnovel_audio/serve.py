@@ -183,8 +183,8 @@ class _Handler(BaseHTTPRequestHandler):
         for s in db.list_series():
             chs = db.chapters(s["id"])
             done = sum(1 for c in chs if c["status"] == "rendered")
-            pend = sum(1 for c in chs if c["ord"] > s["progress_order"]
-                       and c["status"] in ("new", "error"))
+            pend = sum(1 for c in chs if c["status"] in ("new", "fetched",
+                                                         "parsed", "error"))
             slug = _safe_slug(s["slug"], "")
             if not slug:
                 continue

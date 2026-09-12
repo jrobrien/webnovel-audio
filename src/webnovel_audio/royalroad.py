@@ -48,14 +48,6 @@ class FictionInfo:
     provider: str = "royalroad"
 
 
-@dataclass
-class FollowInfo:
-    rr_id: str
-    title: str
-    url: str
-    unread: int = 0
-
-
 # --- session cookie ------------------------------------------------------------
 
 def load_session() -> dict:
@@ -303,26 +295,3 @@ def parse_fiction(html: str, url: str = "") -> FictionInfo:
         rr_id=rr_id, slug=slug, title=title, author=author, author_url=author_url,
         cover_url=cover, url=url or f"{BASE}/fiction/{rr_id}/{slug}", chapters=chapters,
     )
-
-
-def parse_follows(html: str) -> list[FollowInfo]:
-    """Best-effort parse of /my/follows (requires auth; structure may drift)."""
-    soup = BeautifulSoup(html, "lxml")
-    out: list[FollowInfo] = []
-    seen: set[str] = set()
-    for a in soup.select('a[href^="/fiction/"]'):
-        m = re.match(r"/fiction/(\d+)/([^/?#]+)/?$", a["href"])
-        if not m or m.group(1) in seen:
-            continue
-        title = a.get_text(" ", strip=True)
-        if not title:
-            continue
-        seen.add(m.group(1))
-        row = a.find_parent(["li", "tr", "div"])
-        unread = 0
-        if row:
-            um = re.search(r"(\d+)\s*(?:unread|new)", row.get_text(" ", strip=True), re.I)
-            if um:
-                unread = int(um.group(1))
-        out.append(FollowInfo(rr_id=m.group(1), title=title, url=BASE + a["href"], unread=unread))
-    return out
