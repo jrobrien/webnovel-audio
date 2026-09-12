@@ -1,235 +1,431 @@
 #!/usr/bin/env wish
-# webnovel-audio — control / status UI.
+# webnovel-audio — control UI.
 #
-# A thin Tcl/Tk front end over the `webnovel-audio` CLI (`--json`). It adds and
-# tracks series, runs `sync` on demand or on a schedule, and streams the output.
-# No DB or network access of its own — everything goes through the CLI.
+# Layout follows gitk: a vertical panedwindow whose top pane spans the width
+# (series), with a horizontal panedwindow below it (chapters | notebook).
 #
-#   wish ui/control.tcl              # from the project root
-#   WEBNOVEL_AUDIO=/path/to/exe wish ui/control.tcl
+# It shells the `webnovel-audio` CLI and parses `--json`. No DB or network
+# access of its own — every capability here is one you also have from a
+# terminal, which is what keeps the two honest.
+#
+#   webnovel-audio ui          # preferred: finds and exports the CLI path
+#   wish ui/control.tcl        # direct
 
 package require Tk
 source [file join [file dirname [info script]] json.tcl]
 
-# `[file normalize ~]` silently falls back to a literal "~" path component if
-# $HOME isn't set in this process's environment (e.g. launched from cron or a
-# stripped systemd unit) — go straight to $env(HOME) so a missing one is loud.
 if {![info exists ::env(HOME)] || $::env(HOME) eq ""} {
-    puts stderr "webnovel-audio ui: \$HOME is not set — can't find ~/.config"
+    puts stderr "webnovel-audio ui: \$HOME is not set"
     exit 1
 }
 set ::CFGDIR [file join $::env(HOME) .config webnovel-audio]
 set ::UICONF [file join $::CFGDIR ui.conf]
 
-# filled in at startup from `webnovel-audio config --json`
-set ::CFGPATH "" ; set ::LEXDIR "data/lexicons" ; set ::SERIESDIR "data/series"
-set ::BASELEX "data/lexicons/_base.csv" ; set ::VOICES {(default)}
+;# platform context button — gitk does the same dance for macOS
+set ::CTXBUT <Button-3>
+if {[tk windowingsystem] eq "aqua"} { set ::CTXBUT <Button-2> }
 
-# ---------------------------------------------------------------- exe + paths --
+array set ::geom {main 1280x820 topheight 230 botwidth 760}
+
+set ::CFGPATH "" ; set ::LEXDIR "data/lexicons" ; set ::SERIESDIR "data/series"
+set ::BASELEX ""
+set ::SERIES "" ; set ::RUNNING 0 ; set ::PIPE "" ; set ::SERVEPID ""
+set ::SERVEPIPE "" ; set ::STATUS "ready" ; set ::LIMIT 10
+array set ::EDIT {}          ;# tab -> path / mtime / dirty
+
+# ---------------------------------------------------------------- exe ---------
 proc find_exe {} {
     if {[info exists ::env(WEBNOVEL_AUDIO)] && [file executable $::env(WEBNOVEL_AUDIO)]} {
         return [file normalize $::env(WEBNOVEL_AUDIO)]
     }
     set here [file dirname [file normalize [info script]]]
-    foreach c [list \
-        [file join $here .. .venv bin webnovel-audio] \
-        [lindex [auto_execok webnovel-audio] 0]] {
+    foreach c [list [file join $here .. .venv bin webnovel-audio] \
+                    [lindex [auto_execok webnovel-audio] 0]] {
         if {$c ne "" && [file executable $c]} { return [file normalize $c] }
     }
     return webnovel-audio
 }
 set ::EXE [find_exe]
 
-# run the CLI and parse one JSON object of output. Returns "" on failure.
 proc run_json {args} {
     if {[catch {exec -- $::EXE {*}$args --json 2>@1} out]} {
-        log "! [lindex [split $out \n] 0]"
-        return ""
+        log "! [lindex [split $out \n] 0]" ; return ""
     }
     if {[catch {json::parse [string trim $out]} d]} {
-        log "! bad JSON from: $args"
-        return ""
+        log "! bad JSON from: $args" ; return ""
     }
     return $d
 }
 
-# ---------------------------------------------------------------- log pane -----
+proc status {msg} { set ::STATUS $msg }
+
 proc log {msg} {
-    .body.log configure -state normal
-    .body.log insert end "$msg\n"
-    .body.log see end
-    .body.log configure -state disabled
+    .br.log.t configure -state normal
+    .br.log.t insert end "$msg\n"
+    .br.log.t see end
+    .br.log.t configure -state disabled
 }
 
-# ---------------------------------------------------------------- series list --
+# ---------------------------------------------------------------- series ------
 proc refresh_series {} {
-    .tools.status configure -text "loading…"
+    set keep [selected_series]
     set d [run_json series list]
-    .series delete [.series children {}]
-    if {$d eq ""} { .tools.status configure -text "error" ; return }
+    .top.tv delete [.top.tv children {}]
+    if {$d eq ""} { status "series list failed" ; return }
     set rows [dict get $d series]
     foreach r $rows {
-        set nxt [json::get $r next title]
-        .series insert {} end -id [dict get $r slug] -values [list \
+        set st [dict get $r stages]
+        .top.tv insert {} end -id [dict get $r slug] -values [list \
             [dict get $r title] \
-            [json::get $r stages rendered] \
+            [json::get $r status] \
+            [json::get $st rendered] \
             [dict get $r pending] \
             [dict get $r errors] \
-            [json::get $r provider] \
-            $nxt]
+            [json::get $r next title]] \
+            -tags [expr {[json::get $r enabled] eq "0" ? "off" : "on"}]
     }
-    .tools.status configure -text "[llength $rows] series · exe $::EXE"
+    .top.tv tag configure off -foreground gray55
+    status "[llength $rows] series"
+    if {$keep ne "" && [.top.tv exists $keep]} {
+        .top.tv selection set $keep
+    } elseif {[llength $rows]} {
+        .top.tv selection set [dict get [lindex $rows 0] slug]
+    }
 }
 
-proc selected_slug {} {
-    set s [.series selection]
+proc selected_series {} {
+    set s [.top.tv selection]
     return [expr {[llength $s] ? [lindex $s 0] : ""}]
 }
 
-# ---------------------------------------------------------------- add series ---
-proc dlg_add {} {
-    set w .add
-    catch {destroy $w}
-    toplevel $w
-    wm title $w "Add series"
-    wm transient $w .
-    grid [ttk::label $w.l1 -text "Fiction URL:"] -row 0 -column 0 -sticky e -padx 6 -pady 6
-    grid [ttk::entry $w.url -width 60] -row 0 -column 1 -padx 6 -pady 6
-    grid [ttk::label $w.l2 -text "Start from:"] -row 1 -column 0 -sticky e -padx 6
-    grid [ttk::combobox $w.from -width 12 -values {latest start 1 10 50} ] -row 1 -column 1 -sticky w -padx 6
-    $w.from set latest
-    grid [ttk::frame $w.b] -row 2 -column 0 -columnspan 2 -pady 8
-    ttk::button $w.b.ok -text Add -command [list do_add $w]
-    ttk::button $w.b.cancel -text Cancel -command [list destroy $w]
-    pack $w.b.ok $w.b.cancel -side left -padx 4
-    focus $w.url
-    bind $w <Return> [list do_add $w]
-    bind $w <Escape> [list destroy $w]
+proc on_series_select {} {
+    set slug [selected_series]
+    if {$slug eq "" || $slug eq $::SERIES} return
+    set ::SERIES $slug
+    refresh_chapters
+    load_editor cast
+    load_editor lex
 }
-proc do_add {w} {
-    set url [string trim [$w.url get]]
-    set from [string trim [$w.from get]]
-    if {$url eq ""} return
-    destroy $w
-    log "\$ series add $url --from $from"
-    set d [run_json series add $url --from $from]
-    if {$d ne "" && [json::get $d ok] ne "0"} {
-        log "added \"[json::get $d title]\" — [json::get $d chapters] chapters, [json::get $d pending] pending"
+
+# ---------------------------------------------------------------- chapters ----
+proc refresh_chapters {} {
+    set keep [.bl.tv selection]
+    .bl.tv delete [.bl.tv children {}]
+    if {$::SERIES eq ""} return
+    set d [run_json state show $::SERIES]
+    if {$d eq ""} return
+    foreach c [dict get $d chapters] {
+        set n [dict get $c number]
+        set dur [json::get $c duration_s]
+        if {$dur ne "" && $dur > 0} { set dur "[expr {int($dur/60)}]m" } else { set dur "" }
+        set st [dict get $c status]
+        set note [json::get $c error_stage]
+        if {$note ne ""} { append note ": [string range [json::get $c error] 0 48]" }
+        .bl.tv insert {} end -id ch$n -values \
+            [list $n [dict get $c title] $st $dur $note] -tags $st
     }
-    refresh_series
+    foreach {tag col} {rendered #2a7d4f error #b03030 skipped gray55
+                       fetched #4a6fa5 parsed #6a5fa5} {
+        .bl.tv tag configure $tag -foreground $col
+    }
+    foreach id $keep { if {[.bl.tv exists $id]} { .bl.tv selection add $id } }
+    status "$::SERIES — [llength [.bl.tv children {}]] chapters"
 }
 
-# ---------------------------------------------------------------- sync (stream) -
-set ::RUNNING 0
-set ::PIPE ""
+;# selected chapter numbers -> a CLI range like "1-3,7,20-25"
+proc selected_range {} {
+    set nums {}
+    foreach id [.bl.tv selection] { lappend nums [.bl.tv set $id n] }
+    if {![llength $nums]} { return "" }
+    set nums [lsort -integer -unique $nums]
+    set spans {} ; set lo [lindex $nums 0] ; set prev $lo
+    foreach n [lrange $nums 1 end] {
+        if {$n == $prev + 1} { set prev $n ; continue }
+        lappend spans [expr {$lo == $prev ? $lo : "$lo-$prev"}]
+        set lo $n ; set prev $n
+    }
+    lappend spans [expr {$lo == $prev ? $lo : "$lo-$prev"}]
+    return [join $spans ","]
+}
 
-proc sync_start {args} { sync_start_cmd [concat sync $args] }
+proc chapter_ctx {X Y x y} {
+    set id [.bl.tv identify row $x $y]
+    if {$id ne "" && [lsearch -exact [.bl.tv selection] $id] < 0} {
+        .bl.tv selection set $id
+    }
+    set n [llength [.bl.tv selection]]
+    .ctx entryconfigure 0 -label "Fetch ($n)"
+    .ctx entryconfigure 1 -label "Parse ($n)"
+    .ctx entryconfigure 2 -label "Check ($n)"
+    .ctx entryconfigure 3 -label "Render ($n)"
+    tk_popup .ctx $X $Y
+}
 
-proc sync_start_cmd {argv} {
-    if {$::RUNNING} { log "a sync is already running" ; return }
-    set ::RUNNING 1
+# ---------------------------------------------------------------- commands ----
+;# Run a CLI subcommand, streaming --json events into the log + panes.
+proc run_cmd {argv {onfinish ""}} {
+    if {$::RUNNING} { log "! busy: a command is already running" ; return }
+    set ::RUNNING 1 ; set ::FINISH $onfinish
     ui_busy 1
-    log "\$ $argv"
+    .br select .br.log
+    log "\$ webnovel-audio $argv"
     set pipe "| [list $::EXE {*}$argv --json 2>@1]"
     if {[catch {open $pipe r} ::PIPE]} {
         log "! cannot launch: $::PIPE"
         set ::RUNNING 0 ; ui_busy 0 ; return
     }
     fconfigure $::PIPE -blocking 0 -buffering line
-    fileevent $::PIPE readable sync_readable
+    fileevent $::PIPE readable cmd_readable
 }
 
-proc sync_readable {} {
+proc cmd_readable {} {
     if {[gets $::PIPE line] < 0} {
-        if {[eof $::PIPE]} { sync_finish }
+        if {[eof $::PIPE]} { cmd_finish }
         return
     }
     set line [string trim $line]
     if {$line eq ""} return
     if {[catch {json::parse $line} ev]} { log $line ; return }
-    set slug [json::get $ev slug]
     switch -- [json::get $ev event] {
-        start        { log "start: [json::get $ev series] series[expr {[json::get $ev dry_run] eq {1} ? { (dry run)} : {}}]" }
-        locked       { log "! refused: another sync is already running against this library ([json::get $ev path])" }
-        series {
-            log "  [json::get $ev title]: [json::get $ev pending] pending"
-            if {$slug ne "" && [.series exists $slug]} {
-                .series set $slug pend [json::get $ev pending]
-            }
-        }
+        start  { log "start: [json::get $ev stage], [json::get $ev series] series" }
+        locked { log "! refused: another render/sync holds the lock"
+                 status "refused — another run is active" }
+        series { log "  [json::get $ev title]: [json::get $ev pending] to do" }
         chapter_begin {
-            log "    #[json::get $ev number] [json::get $ev title] …"
-            .series set $slug next "rendering #[json::get $ev number]…"
+            set n [json::get $ev number]
+            status "[json::get $ev stage] #$n — [json::get $ev title]"
+            log "    #$n [json::get $ev title] …"
         }
         chapter {
-            set r [json::get $ev result] ; set num [json::get $ev number]
-            if {$r eq "ok" || $r eq "rendered"} {
-                log "    #$num ok  ([json::get $ev audio_seconds]s audio, [json::get $ev elapsed_seconds]s)"
-                row_progress $slug $num
-            } elseif {$r eq "error"} {
-                log "    #$num ERROR: [json::get $ev error]"
-                if {$slug ne "" && [.series exists $slug]} {
-                    .series set $slug err [expr {[.series set $slug err] + 1}]
-                }
+            set n [json::get $ev number]
+            if {[json::get $ev result] eq "error"} {
+                log "    #$n ERROR: [json::get $ev error]"
             } else {
-                log "    #$num [json::get $ev title]  ->  [json::get $ev path]"
+                set a [json::get $ev audio_seconds]
+                set e [json::get $ev elapsed_seconds]
+                log "    #$n ok[expr {$a ne "" ? \" (${a}s audio, ${e}s)\" : \"\"}]"
             }
         }
-        done { log "done: [json::get $ev rendered] rendered, [json::get $ev errors] error(s), [json::get $ev skipped] pending" }
+        done {
+            log "done: [json::get $ev done] ok, [json::get $ev errors] error(s)"
+        }
         default { log $line }
     }
 }
 
-# advance a series row as each chapter lands, without a round-trip to the CLI
-proc row_progress {slug num} {
-    if {$slug eq "" || ![.series exists $slug]} return
-    .series set $slug prog [expr {[.series set $slug prog] + 1}]
-    set p [.series set $slug pend]
-    if {[string is integer -strict $p] && $p > 0} { .series set $slug pend [expr {$p - 1}] }
-    .series set $slug next ""
-}
-
-proc sync_finish {} {
+proc cmd_finish {} {
     catch {fileevent $::PIPE readable {}}
-    set ok [expr {![catch {close $::PIPE} err]}]
-    if {!$ok} { log "— sync exited: [lindex [split $err \n] 0] —" } else { log "— sync finished —" }
-    set ::RUNNING 0
-    ui_busy 0
-    refresh_series
-    schedule_next
-}
-
-proc sync_stop {} {
-    if {!$::RUNNING} return
-    log "stopping sync…"
-    catch {close $::PIPE}
-    set ::RUNNING 0 ; ui_busy 0
-}
-
-proc do_sync {which} {
-    set a {}
-    if {$which eq "selected"} {
-        set slug [selected_slug]
-        if {$slug eq ""} { log "select a series first" ; return }
-        lappend a $slug
+    if {[catch {close $::PIPE} err]} {
+        set tail [lindex [split $err \n] end]
+        if {[string trim $tail] ne ""} { log "— $tail —" }
     }
-    if {[.tools.dry instate selected]} { lappend a --dry-run }
-    set lim [string trim [.tools.limit get]]
-    if {[string is integer -strict $lim] && $lim > 0} { lappend a --limit $lim }
-    sync_start {*}$a
+    set ::RUNNING 0 ; ui_busy 0
+    status "ready"
+    refresh_series ; refresh_chapters
+    if {$::FINISH ne ""} { uplevel #0 $::FINISH ; set ::FINISH "" }
+}
+
+proc stop_cmd {} {
+    if {!$::RUNNING} return
+    log "stopping…"
+    catch {close $::PIPE}
+    set ::RUNNING 0 ; ui_busy 0 ; status "stopped"
 }
 
 proc ui_busy {on} {
     set st [expr {$on ? "disabled" : "!disabled"}]
-    foreach b {.tools.syncall .tools.syncsel .tools.refresh .tools.add} {
-        $b state $st
-    }
-    .tools.stop state [expr {$on ? "!disabled" : "disabled"}]
+    foreach b {.tool.sync .tool.refresh .tool.add} { $b state $st }
+    .tool.stop state [expr {$on ? "!disabled" : "disabled"}]
 }
 
-# ---------------------------------------------------------------- feed server --
-set ::SERVEPIPE "" ; set ::SERVEPID ""
+;# stage actions over the current chapter selection
+proc do_stage {stage} {
+    if {$::SERIES eq ""} { log "select a series" ; return }
+    set r [selected_range]
+    if {$r eq ""} { log "select one or more chapters" ; return }
+    run_cmd [list $stage $::SERIES $r]
+}
 
+proc do_state {status} {
+    set r [selected_range]
+    if {$::SERIES eq "" || $r eq ""} { log "select chapters first" ; return }
+    run_json state set $::SERIES $r $status
+    refresh_chapters ; refresh_series
+}
+
+proc do_reset_errors {} {
+    if {$::SERIES eq ""} return
+    set r [selected_range]
+    if {$r eq ""} { run_json state reset $::SERIES } else { run_json state reset $::SERIES $r }
+    refresh_chapters ; refresh_series
+}
+
+# ---------------------------------------------------------------- sync --------
+proc dlg_sync {} {
+    if {$::SERIES eq ""} { log "select a series" ; return }
+    set w .sync ; catch {destroy $w}
+    toplevel $w ; wm title $w "Sync" ; wm transient $w .
+    ttk::label $w.l -text "Sync $::SERIES — chapters to render:"
+    ttk::spinbox $w.n -from 0 -to 999 -width 5 -textvariable ::LIMIT
+    ttk::label $w.h -text "(0 = everything outstanding)"
+    ttk::label $w.est -text "estimating…" -foreground "#2a7d4f"
+    ttk::frame $w.b
+    ttk::button $w.b.ok -text "Sync" -command [list do_sync $w]
+    ttk::button $w.b.cx -text "Cancel" -command [list destroy $w]
+    pack $w.b.ok $w.b.cx -side left -padx 4
+    grid $w.l -row 0 -column 0 -columnspan 3 -padx 10 -pady {10 4} -sticky w
+    grid $w.n -row 1 -column 0 -padx 10 -sticky w
+    grid $w.h -row 1 -column 1 -sticky w
+    grid $w.est -row 2 -column 0 -columnspan 3 -padx 10 -pady 6 -sticky w
+    grid $w.b -row 3 -column 0 -columnspan 3 -pady 8
+    bind $w <Escape> [list destroy $w]
+    trace add variable ::LIMIT write [list sync_estimate $w]
+    sync_estimate $w
+}
+
+proc sync_estimate {w args} {
+    if {![winfo exists $w]} return
+    set a [list sync $::SERIES --estimate]
+    if {$::LIMIT > 0} { lappend a --limit $::LIMIT }
+    set d [run_json {*}$a]
+    if {$d eq ""} { $w.est configure -text "estimate unavailable" ; return }
+    $w.est configure -text "[json::get $d chapters] chapter(s), ~[json::get $d human] of CPU"
+}
+
+proc do_sync {w} {
+    set lim $::LIMIT ; destroy $w
+    set a [list sync $::SERIES --yes]
+    if {$lim > 0} { lappend a --limit $lim }
+    run_cmd $a
+}
+
+proc dlg_add {} {
+    set w .add ; catch {destroy $w}
+    toplevel $w ; wm title $w "Add series" ; wm transient $w .
+    ttk::label $w.l -text "Fiction URL:"
+    ttk::entry $w.u -width 62
+    ttk::label $w.l2 -text "Already read through:"
+    ttk::combobox $w.f -width 12 -values {start latest 10 25 50}
+    $w.f set start
+    ttk::frame $w.b
+    ttk::button $w.b.ok -text Add -command [list do_add $w]
+    ttk::button $w.b.cx -text Cancel -command [list destroy $w]
+    pack $w.b.ok $w.b.cx -side left -padx 4
+    grid $w.l $w.u -padx 8 -pady {10 4} -sticky w
+    grid $w.l2 $w.f -padx 8 -sticky w
+    grid $w.b -columnspan 2 -pady 8
+    focus $w.u ; bind $w <Return> [list do_add $w] ; bind $w <Escape> [list destroy $w]
+}
+proc do_add {w} {
+    set url [string trim [$w.u get]] ; set from [$w.f get]
+    if {$url eq ""} return
+    destroy $w
+    set d [run_json series add $url --from $from]
+    if {$d ne ""} { log "added [json::get $d title] — [json::get $d chapters] chapters" }
+    refresh_series
+}
+
+# ---------------------------------------------------------------- editors ----
+;# The cast/lexicon files are small and hand-owned, so edit them in-pane. But
+;# `cast update` appends to the cast file behind our back — so track mtime and
+;# refuse to clobber a file that changed on disk since we loaded it.
+proc editor_path {which} {
+    if {$::SERIES eq ""} { return "" }
+    if {$which eq "cast"} { return [file join $::SERIESDIR $::SERIES.toml] }
+    return [file join $::LEXDIR $::SERIES.csv]
+}
+
+proc load_editor {which {force 0}} {
+    set t .br.$which.t
+    set path [editor_path $which]
+    if {$path eq ""} { $t delete 1.0 end ; return }
+    if {!$force && [info exists ::EDIT($which,dirty)] && $::EDIT($which,dirty)} {
+        if {![confirm_discard $which]} return
+    }
+    set text ""
+    if {[file exists $path]} {
+        set fh [open $path r] ; set text [read $fh] ; close $fh
+        set ::EDIT($which,mtime) [file mtime $path]
+    } else {
+        set ::EDIT($which,mtime) 0
+    }
+    set ::EDIT($which,path) $path
+    set ::EDIT($which,text) [string trimright $text "\n"]   ;# the dirty baseline
+    $t delete 1.0 end
+    $t insert 1.0 $text
+    $t edit modified 0
+    $t edit reset
+    set ::EDIT($which,dirty) 0
+    editor_title $which
+}
+
+;# Offer to keep unsaved work before a load/series-switch throws it away.
+proc confirm_discard {which} {
+    set a [tk_messageBox -type yesnocancel -icon question -title "Unsaved changes" \
+        -message "Save changes to $::EDIT($which,path)?" \
+        -detail "No discards them; Cancel keeps the pane as it is."]
+    if {$a eq "cancel"} { return 0 }
+    if {$a eq "yes"} { save_editor $which }
+    return 1
+}
+
+proc editor_title {which} {
+    set names {cast Cast lex Lexicon}
+    set base [dict get $names $which]
+    set mark [expr {[info exists ::EDIT($which,dirty)] && $::EDIT($which,dirty) ? " *" : ""}]
+    .br tab .br.$which -text "$base$mark"
+}
+
+proc editor_modified {which} {
+    ;# <<Modified>> is delivered asynchronously, so a "we're loading" flag has
+    ;# already cleared by the time it arrives. Compare against the text we
+    ;# loaded instead — timing-independent, and undoing back to the original
+    ;# correctly reads as clean. These files are a few KB; the compare is free.
+    .br.$which.t edit modified 0
+    if {![info exists ::EDIT($which,text)]} return
+    set cur [string trimright [.br.$which.t get 1.0 end] "\n"]
+    set ::EDIT($which,dirty) [expr {$cur ne $::EDIT($which,text)}]
+    editor_title $which
+}
+
+proc save_editor {which} {
+    set path $::EDIT($which,path)
+    if {$path eq ""} return
+    if {[file exists $path] && [file mtime $path] != $::EDIT($which,mtime)} {
+        set a [tk_messageBox -type yesnocancel -icon warning -title "Changed on disk" \
+            -message "$path changed on disk since you opened it." \
+            -detail "Yes = overwrite with what's in the pane.\nNo = discard your edits and reload." ]
+        if {$a eq "cancel"} return
+        if {$a eq "no"} { load_editor $which 1 ; return }
+    }
+    file mkdir [file dirname $path]
+    set fh [open $path w]
+    puts -nonewline $fh [string trimright [.br.$which.t get 1.0 end] "\n"]
+    puts $fh ""
+    close $fh
+    set ::EDIT($which,mtime) [file mtime $path]
+    set ::EDIT($which,text) [string trimright [.br.$which.t get 1.0 end] "\n"]
+    set ::EDIT($which,dirty) 0
+    editor_title $which
+    log "saved $path"
+}
+
+proc external_editor {which} {
+    set path $::EDIT($which,path)
+    if {$path eq ""} return
+    foreach v {WEBNOVEL_AUDIO_EDITOR VISUAL EDITOR} {
+        if {[info exists ::env($v)] && [string trim $::env($v)] ne ""} {
+            if {[catch {exec {*}[string trim $::env($v)] $path &} e]} { log "! $e" }
+            return
+        }
+    }
+    if {[catch {exec xdg-open $path &} e]} { log "! $e" }
+}
+
+# ---------------------------------------------------------------- server ------
+proc server_toggle {} {
+    if {$::SERVEPID ne ""} { server_stop } else { server_start }
+}
 proc server_start {} {
     if {$::SERVEPID ne ""} return
     if {[catch {open "| [list $::EXE serve 2>@1]" r} ::SERVEPIPE]} {
@@ -238,12 +434,9 @@ proc server_start {} {
     set ::SERVEPID [pid $::SERVEPIPE]
     fconfigure $::SERVEPIPE -blocking 0 -buffering line
     fileevent $::SERVEPIPE readable server_readable
-    .srv.start state disabled
-    .srv.stop  state !disabled
-    .srv.status configure -text "running (pid $::SERVEPID)" -foreground "#2a9d5c"
+    .tool.srv configure -text "Stop server"
     log "feed server started (pid $::SERVEPID)"
 }
-
 proc server_readable {} {
     if {[gets $::SERVEPIPE line] < 0} {
         if {[eof $::SERVEPIPE]} { server_gone }
@@ -251,241 +444,28 @@ proc server_readable {} {
     }
     if {[string trim $line] ne ""} { log "\[serve\] $line" }
 }
-
 proc server_gone {} {
     catch {fileevent $::SERVEPIPE readable {}}
     catch {close $::SERVEPIPE}
     set ::SERVEPIPE "" ; set ::SERVEPID ""
-    .srv.start state !disabled
-    .srv.stop  state disabled
-    .srv.status configure -text "off" -foreground "#a33"
+    .tool.srv configure -text "Start server"
     log "feed server stopped"
 }
-
 proc server_stop {} {
     if {$::SERVEPID eq ""} return
     catch {exec kill -INT {*}$::SERVEPID}
     after 1000 {if {$::SERVEPID ne ""} {catch {exec kill {*}$::SERVEPID} ; server_gone}}
 }
 
-# ---------------------------------------------------------------- file edits ---
-# WEBNOVEL_AUDIO_EDITOR (a command, may include args) overrides xdg-open — use it
-# when xdg-open guesses wrong (a header-only .csv sniffs as text/plain, a filled
-# one as text/csv, so the two can open in different apps).
-proc open_file {path {stub ""}} {
-    file mkdir [file dirname $path]
-    if {![file exists $path] && $stub ne ""} {
-        set fh [open $path w] ; puts -nonewline $fh $stub ; close $fh
-    }
-    set ed ""
-    if {[info exists ::env(WEBNOVEL_AUDIO_EDITOR)]} { set ed [string trim $::env(WEBNOVEL_AUDIO_EDITOR)] }
-    if {$ed ne ""} {
-        if {[catch {exec -- {*}$ed $path &} err]} { log "! $ed: $err" } \
-        else { log "opened $path  ($ed)" }
-        return
-    }
-    if {[catch {exec xdg-open $path &} err]} { log "! xdg-open: $err" } \
-    else { log "opened $path" }
-}
-
-proc edit_base_lexicon {} {
-    open_file $::BASELEX "surface,respell,ipa,notes\n"
-}
-
-# ---------------------------------------------------------- pronunciation test -
-# every slug we could apply a lexicon for: tracked series + data/lexicons/*.csv
-proc lexicon_slugs {} {
-    set s {}
-    foreach id [.series children {}] { lappend s $id }
-    foreach f [glob -nocomplain -directory $::LEXDIR *.csv] {
-        set stem [file rootname [file tail $f]]
-        if {$stem ne "_base"} { lappend s $stem }
-    }
-    return [lsort -unique $s]
-}
-proc dlg_pron {} {
-    set w .pron ; catch {destroy $w}
-    toplevel $w ; wm title $w "Pronunciation check" ; wm transient $w .
-    ttk::label  $w.l  -text "Word or phrase:"
-    ttk::entry  $w.e  -width 44
-    ttk::button $w.go -text "Check" -command [list do_pron $w]
-    ttk::label  $w.sl -text "Series lexicon:"
-    ttk::combobox $w.sr -width 24 -values [linsert [lexicon_slugs] 0 "(none — base only)"]
-    $w.sr set [expr {[selected_slug] ne "" ? [selected_slug] : "(none — base only)"}]
-    ttk::button $w.ck -text "Audit lexicon" -command [list do_pron $w --check]
-    text $w.out -width 70 -height 14 -wrap none -state disabled \
-        -font TkFixedFont -yscrollcommand [list $w.sb set]
-    ttk::scrollbar $w.sb -orient vertical -command [list $w.out yview]
-    grid $w.l $w.e $w.go -padx 6 -pady {8 4} -sticky w
-    grid $w.sl $w.sr $w.ck -row 1 -padx 6 -pady {0 4} -sticky w
-    grid $w.out $w.sb -row 2 -column 0 -columnspan 3 -padx 6 -pady 6 -sticky nsew
-    grid configure $w.sb -column 3 -sticky ns
-    grid rowconfigure $w 2 -weight 1 ; grid columnconfigure $w 1 -weight 1
-    focus $w.e ; bind $w <Return> [list do_pron $w] ; bind $w <Escape> [list destroy $w]
-}
-proc do_pron {w {mode ""}} {
-    set slug [$w.sr get]
-    if {[string match "(none*" $slug]} { set slug "" }
-    set t [string trim [$w.e get]]
-    if {$mode eq "--check"} {
-        set a [list pron --check]
-    } else {
-        if {$t eq ""} return
-        set a [list pron $t]
-    }
-    if {$slug ne ""} { lappend a --series $slug }
-    if {[catch {exec -- $::EXE {*}$a 2>@1} out]} { set out "error: $out" }
-    $w.out configure -state normal
-    $w.out delete 1.0 end ; $w.out insert end $out
-    $w.out configure -state disabled
-}
-
-proc edit_config {} {
-    if {![file exists $::CFGPATH]} {
-        set ex [file join [file dirname $::CFGPATH] config.example.toml]
-        if {[file exists $ex]} {
-            file copy $ex $::CFGPATH ; log "created $::CFGPATH from config.example.toml"
-        }
-    }
-    open_file $::CFGPATH
-}
-
-proc edit_lexicon {} {
-    set slug [selected_slug]
-    if {$slug eq ""} { log "select a series first" ; return }
-    open_file [file join $::LEXDIR "$slug.csv"] "surface,respell,ipa,notes\n"
-}
-
-proc edit_overlay {} {
-    set slug [selected_slug]
-    if {$slug eq ""} { log "select a series first" ; return }
-    open_file [file join $::SERIESDIR "$slug.toml"] \
-        "# per-series overrides for $slug (merged over config.toml by sync)\n\n\[cast\]\n"
-}
-
-# read/set one "key = \"value\"" line inside a TOML section, preserving the rest
-proc toml_get {path section key} {
-    if {![file exists $path]} { return "" }
-    set fh [open $path r] ; set lines [split [read $fh] "\n"] ; close $fh
-    set insec 0
-    foreach ln $lines {
-        if {[regexp {^\s*\[} $ln]} { set insec [regexp "^\\s*\\\[$section\\\]" $ln] ; continue }
-        if {$insec && [regexp "^\\s*$key\\s*=\\s*\"?(\[^\"\]*)\"?" $ln -> v]} { return [string trim $v] }
-    }
-    return ""
-}
-proc toml_upsert {path section key value} {
-    set lines {}
-    if {[file exists $path]} {
-        set fh [open $path r] ; set lines [split [string trimright [read $fh] "\n"] "\n"] ; close $fh
-    }
-    set out {} ; set insec 0 ; set done 0
-    foreach ln $lines {
-        if {[regexp {^\s*\[} $ln]} {
-            if {$insec && !$done} { lappend out "$key = \"$value\"" ; set done 1 }
-            set insec [regexp "^\\s*\\\[$section\\\]" $ln]
-            lappend out $ln ; continue
-        }
-        if {$insec && !$done && [regexp "^\\s*$key\\s*=" $ln]} {
-            lappend out "$key = \"$value\"" ; set done 1 ; continue
-        }
-        lappend out $ln
-    }
-    if {$insec && !$done} { lappend out "$key = \"$value\"" ; set done 1 }
-    if {!$done} {
-        if {[llength $out] && [lindex $out end] ne ""} { lappend out "" }
-        lappend out "\[$section\]" "$key = \"$value\"" ; set done 1
-    }
-    file mkdir [file dirname $path]
-    set fh [open $path w] ; puts $fh [join $out "\n"] ; close $fh
-}
-
-proc set_narrator {} {
-    set slug [selected_slug]
-    if {$slug eq ""} return
-    set v [.sel.voice get]
-    if {$v eq "" || $v eq "(default)"} return
-    set f [file join $::SERIESDIR "$slug.toml"]
-    toml_upsert $f cast narrator $v
-    log "$slug narrator -> $v   (Re-render to apply)"
-}
-
-proc dlg_redo {} {
-    set slug [selected_slug]
-    if {$slug eq ""} { log "select a series first" ; return }
-    set w .redo ; catch {destroy $w}
-    toplevel $w ; wm title $w "Re-render: $slug" ; wm transient $w .
-    grid [ttk::label $w.l -text "Chapters (blank = all rendered; N or N-M):"] \
-        -row 0 -column 0 -columnspan 2 -padx 8 -pady {8 4} -sticky w
-    grid [ttk::entry $w.r -width 16] -row 1 -column 0 -padx 8 -sticky w
-    grid [ttk::checkbutton $w.s -text "sync now"] -row 1 -column 1 -padx 8
-    $w.s state selected
-    grid [ttk::frame $w.b] -row 2 -column 0 -columnspan 2 -pady 8
-    ttk::button $w.b.ok -text "Re-queue" -command [list do_redo $w [list $slug]]
-    ttk::button $w.b.cx -text Cancel -command [list destroy $w]
-    pack $w.b.ok $w.b.cx -side left -padx 4
-    focus $w.r ; bind $w <Escape> [list destroy $w] ; bind $w <Return> [list do_redo $w [list $slug]]
-}
-proc do_redo {w slug} {
-    set rng [string trim [$w.r get]]
-    set sync [$w.s instate selected]
-    destroy $w
-    ;# 0.2: an explicit range IS the re-render — no DB round-trip to schedule it
-    if {$rng eq ""} { log "give a chapter range, e.g. 12-15" ; return }
-    log "\$ render $slug $rng"
-    sync_start_cmd [list render $slug $rng]
-    refresh_series
-}
-
-proc on_select {} {
-    set slug [selected_slug]
-    set on [expr {$slug ne "" ? "!disabled" : "disabled"}]
-    foreach b {.sel.lex .sel.ovl .sel.redo .sel.voice} { $b state $on }
-    if {$slug eq ""} { .sel.title configure -text "—" ; return }
-    .sel.title configure -text [.series set $slug title]
-    set n [toml_get [file join $::SERIESDIR "$slug.toml"] cast narrator]
-    .sel.voice set [expr {$n ne "" ? $n : "(default)"}]
-}
-
-# ---------------------------------------------------------------- scheduler ----
-set ::AUTO 0 ; set ::MODE interval ; set ::IVAL 180 ; set ::DAILY 03:00
-set ::AFTERID "" ; set ::NEXTRUN "off"
-
-proc schedule_next {} {
-    catch {after cancel $::AFTERID} ; set ::AFTERID ""
-    if {!$::AUTO} { set ::NEXTRUN "off" ; save_conf ; return }
-    if {$::MODE eq "interval"} {
-        set mins $::IVAL
-        if {![string is double -strict $mins] || $mins < 1} { set mins 1 }
-        set ms [expr {int($mins * 60000)}]
-    } else {
-        if {![regexp {^(\d{1,2}):(\d{2})$} $::DAILY -> h m]} { set ::NEXTRUN "bad time" ; return }
-        set now [clock seconds]
-        set t [clock scan [format %02d:%02d $h $m] -base $now -format %H:%M]
-        if {$t <= $now} { incr t 86400 }
-        set ms [expr {($t - $now) * 1000}]
-    }
-    set ::NEXTRUN [clock format [expr {[clock seconds] + $ms / 1000}] -format "%a %H:%M"]
-    set ::AFTERID [after $ms auto_fire]
-    save_conf
-}
-
-proc auto_fire {} {
-    if {$::RUNNING} {
-        log "auto-sync: a sync is already running, skipping this tick"
-        schedule_next
-        return
-    }
-    log "auto-sync firing"
-    sync_start
-    # schedule_next is called from sync_finish
-}
-
-# ---------------------------------------------------------------- persistence --
+# ---------------------------------------------------------------- persistence -
 proc save_conf {} {
     file mkdir $::CFGDIR
     if {[catch {open $::UICONF w} fh]} return
-    foreach k {AUTO MODE IVAL DAILY} { puts $fh "$k [set ::$k]" }
+    catch {set ::geom(main) [wm geometry .]}
+    catch {set ::geom(topheight) [.ctop sashpos 0]}
+    catch {set ::geom(botwidth) [.bot sashpos 0]}
+    foreach k {main topheight botwidth} { puts $fh "$k $::geom($k)" }
+    puts $fh "limit $::LIMIT"
     close $fh
 }
 proc load_conf {} {
@@ -494,131 +474,146 @@ proc load_conf {} {
         set line [string trim $line]
         if {$line eq "" || [string index $line 0] eq "#"} continue
         set k [lindex $line 0] ; set v [lrange $line 1 end]
-        if {$k in {AUTO MODE IVAL DAILY}} { set ::$k $v }
+        if {$k in {main topheight botwidth}} { set ::geom($k) $v }
+        if {$k eq "limit"} { set ::LIMIT $v }
     }
     close $fh
 }
 
-# ---------------------------------------------------------------- build UI -----
-wm title . "webnovel-audio"
-wm minsize . 720 480
-
-ttk::frame .tools -padding 6
-ttk::button .tools.add     -text "Add series…"   -command dlg_add
-ttk::button .tools.refresh -text "Refresh"       -command refresh_series
-ttk::button .tools.editcfg -text "Edit config…"  -command edit_config
-ttk::button .tools.editbase -text "Base lexicon…" -command edit_base_lexicon
-ttk::button .tools.pron    -text "Test word…"     -command dlg_pron
-ttk::separator .tools.s1 -orient vertical
-ttk::button .tools.syncall -text "Sync all"      -command {do_sync all}
-ttk::button .tools.syncsel -text "Sync selected" -command {do_sync selected}
-ttk::button .tools.stop    -text "Stop"          -command sync_stop
-ttk::label  .tools.ll -text "limit"
-ttk::spinbox .tools.limit -from 0 -to 999 -width 4
-.tools.limit set 0
-ttk::checkbutton .tools.dry -text "dry run"
-ttk::label .tools.status -text ""
-grid .tools.add .tools.refresh .tools.editcfg .tools.editbase .tools.pron .tools.s1 \
-     .tools.syncall .tools.syncsel .tools.stop .tools.ll .tools.limit .tools.dry \
-     -row 0 -padx 3 -pady 2 -sticky w
-grid .tools.status -row 1 -column 0 -columnspan 12 -sticky w -pady {6 0}
-grid .tools.s1 -sticky ns -padx 8
-grid .tools.ll -padx {12 3}
-grid columnconfigure .tools 20 -weight 1
-grid .tools -row 0 -sticky ew
-
-ttk::panedwindow .body -orient vertical
-frame .body.sf
-ttk::treeview .series -columns {title prog pend err prov next} -show headings \
-     -selectmode browse -yscrollcommand {.body.sf.sb set}
-foreach {c t w} {title Title 260 prog Rendered 80 pend Pending 70 err Err 50 prov Provider 90 next "Next up" 220} {
-    .series heading $c -text $t
-    .series column $c -width $w -anchor [expr {$c in {prog pend err} ? "center" : "w"}]
+proc quit {} {
+    foreach w {cast lex} {
+        if {[info exists ::EDIT($w,dirty)] && $::EDIT($w,dirty)} {
+            set a [tk_messageBox -type yesnocancel -icon question \
+                -message "Save changes to $::EDIT($w,path)?"]
+            if {$a eq "cancel"} return
+            if {$a eq "yes"} { save_editor $w }
+        }
+    }
+    server_stop ; save_conf ; exit
 }
-ttk::scrollbar .body.sf.sb -orient vertical -command {.series yview}
-grid .series .body.sf.sb -in .body.sf -sticky nsew
-grid rowconfigure .body.sf 0 -weight 1
-grid columnconfigure .body.sf 0 -weight 1
-bind .series <<TreeviewSelect>> on_select
 
-frame .body.lf
-text .body.log -height 12 -wrap word -state disabled -yscrollcommand {.body.lf.sb set}
-ttk::scrollbar .body.lf.sb -orient vertical -command {.body.log yview}
-grid .body.log .body.lf.sb -in .body.lf -sticky nsew
-grid rowconfigure .body.lf 0 -weight 1
-grid columnconfigure .body.lf 0 -weight 1
+# ================================================================ build UI ====
+load_conf
+wm title . "webnovel-audio"
+wm minsize . 900 560
+wm protocol . WM_DELETE_WINDOW quit
 
-.body add .body.sf -weight 3
-.body add .body.lf -weight 2
-grid .body -row 1 -sticky nsew
+# -- toolbar
+ttk::frame .tool -padding {6 5}
+ttk::button .tool.add     -text "Add series…" -command dlg_add
+ttk::button .tool.refresh -text "Refresh"     -command {refresh_series ; refresh_chapters}
+ttk::separator .tool.s1 -orient vertical
+ttk::button .tool.sync    -text "Sync…"       -command dlg_sync
+ttk::button .tool.stop    -text "Stop"        -command stop_cmd
+ttk::separator .tool.s2 -orient vertical
+ttk::button .tool.srv     -text "Start server" -command server_toggle
+pack .tool.add .tool.refresh -side left -padx 2
+pack .tool.s1 -side left -fill y -padx 6
+pack .tool.sync .tool.stop -side left -padx 2
+pack .tool.s2 -side left -fill y -padx 6
+pack .tool.srv -side left -padx 2
+grid .tool -row 0 -column 0 -sticky ew
 
-ttk::labelframe .sel -text "Selected series" -padding {10 8}
-ttk::label  .sel.title -text "—"
-ttk::button .sel.lex   -text "Edit lexicon"   -command edit_lexicon
-ttk::button .sel.ovl   -text "Edit cast"      -command edit_overlay
-ttk::button .sel.redo  -text "Re-render…"     -command dlg_redo
-ttk::label  .sel.vl    -text "Narrator:"
-ttk::combobox .sel.voice -width 16 -state readonly -values $::VOICES
-bind .sel.voice <<ComboboxSelected>> set_narrator
-pack .sel.title -side left -padx {0 14}
-pack .sel.lex .sel.ovl .sel.redo -side left -padx {0 6}
-pack .sel.voice -side right
-pack .sel.vl    -side right -padx {12 4}
-grid .sel -row 2 -sticky ew -padx 6 -pady {4 4}
-
-ttk::labelframe .sched -text "Auto-sync" -padding {10 8}
-ttk::checkbutton .sched.on -text "enabled" -variable ::AUTO -command schedule_next
-ttk::radiobutton .sched.mi -text "every" -variable ::MODE -value interval -command schedule_next
-ttk::spinbox .sched.iv -from 1 -to 1440 -width 5 -textvariable ::IVAL -command schedule_next
-ttk::label .sched.mm -text "min"
-ttk::radiobutton .sched.md -text "daily at" -variable ::MODE -value daily -command schedule_next
-ttk::entry .sched.dt -width 7 -textvariable ::DAILY
-ttk::label .sched.nl -text "next run:"
-ttk::label .sched.next -textvariable ::NEXTRUN -foreground "#2a9d5c"
-bind .sched.iv <FocusOut> schedule_next
-bind .sched.dt <Return>   schedule_next
-bind .sched.dt <FocusOut> schedule_next
-pack .sched.on -side left -padx {0 16}
-pack .sched.mi -side left -padx {0 4}
-pack .sched.iv -side left
-pack .sched.mm -side left -padx {4 16}
-pack .sched.md -side left -padx {0 4}
-pack .sched.dt -side left
-pack .sched.next -side right -padx {8 0}
-pack .sched.nl -side right
-grid .sched -row 3 -sticky ew -padx 6 -pady {4 4}
-
-ttk::labelframe .srv -text "Feed server" -padding {10 8}
-ttk::button .srv.start -text "Start" -command server_start
-ttk::button .srv.stop  -text "Stop"  -command server_stop -state disabled
-ttk::label  .srv.status -text "off" -foreground "#a33"
-pack .srv.start -side left -padx {0 6}
-pack .srv.stop  -side left -padx {0 12}
-pack .srv.status -side left
-grid .srv -row 4 -sticky ew -padx 6 -pady {0 8}
-
+# -- vertical split: series on top, everything else below
+ttk::panedwindow .ctop -orient vertical
+grid .ctop -row 1 -column 0 -sticky nsew
 grid rowconfigure . 1 -weight 1
 grid columnconfigure . 0 -weight 1
 
-# ---------------------------------------------------------------- start --------
-load_conf
+ttk::frame .top
+ttk::treeview .top.tv -columns {title status rendered pending err next} \
+    -show headings -selectmode browse -yscrollcommand {.top.sb set}
+foreach {c t w a} {title Title 300 w  status Status 90 center  rendered Rendered 80 center
+                   pending Pending 80 center  err Err 50 center  next "Next up" 280 w} {
+    .top.tv heading $c -text $t
+    .top.tv column $c -width $w -anchor $a
+}
+ttk::scrollbar .top.sb -orient vertical -command {.top.tv yview}
+grid .top.tv .top.sb -sticky nsew
+grid rowconfigure .top 0 -weight 1
+grid columnconfigure .top 0 -weight 1
+bind .top.tv <<TreeviewSelect>> on_series_select
+
+# -- horizontal split: chapters | notebook
+ttk::panedwindow .bot -orient horizontal
+.ctop add .top
+.ctop add .bot
+
+ttk::frame .bl
+ttk::treeview .bl.tv -columns {n title status dur note} -show headings \
+    -selectmode extended -yscrollcommand {.bl.sb set}
+foreach {c t w a} {n "#" 55 center  title Title 330 w  status Stage 85 center
+                   dur Audio 65 center  note "" 200 w} {
+    .bl.tv heading $c -text $t
+    .bl.tv column $c -width $w -anchor $a
+}
+ttk::scrollbar .bl.sb -orient vertical -command {.bl.tv yview}
+grid .bl.tv .bl.sb -sticky nsew
+grid rowconfigure .bl 0 -weight 1
+grid columnconfigure .bl 0 -weight 1
+bind .bl.tv $::CTXBUT {chapter_ctx %X %Y %x %y}
+
+menu .ctx -tearoff 0
+.ctx add command -label "Fetch"  -command {do_stage fetch}
+.ctx add command -label "Parse"  -command {do_stage parse}
+.ctx add command -label "Check"  -command {do_stage check}
+.ctx add command -label "Render" -command {do_stage render}
+.ctx add separator
+.ctx add command -label "Mark skipped" -command {do_state skipped}
+.ctx add command -label "Mark new (re-do)" -command {do_state new}
+.ctx add command -label "Reset errors" -command do_reset_errors
+
+# -- notebook: Cast | Lexicon | Log
+ttk::notebook .br
+foreach {w label} {cast Cast lex Lexicon} {
+    ttk::frame .br.$w
+    text .br.$w.t -wrap none -undo 1 -font TkFixedFont \
+        -yscrollcommand ".br.$w.sb set" -xscrollcommand ".br.$w.hb set"
+    ttk::scrollbar .br.$w.sb -orient vertical   -command ".br.$w.t yview"
+    ttk::scrollbar .br.$w.hb -orient horizontal -command ".br.$w.t xview"
+    ttk::frame .br.$w.b
+    ttk::button .br.$w.b.save -text Save    -command [list save_editor $w]
+    ttk::button .br.$w.b.rev  -text Reload  -command [list load_editor $w 1]
+    ttk::button .br.$w.b.ext  -text "Open in \$EDITOR" -command [list external_editor $w]
+    pack .br.$w.b.save .br.$w.b.rev .br.$w.b.ext -side left -padx 3
+    grid .br.$w.t  .br.$w.sb -sticky nsew
+    grid .br.$w.hb -sticky ew
+    grid .br.$w.b  -columnspan 2 -sticky w -pady 4
+    grid rowconfigure .br.$w 0 -weight 1
+    grid columnconfigure .br.$w 0 -weight 1
+    .br add .br.$w -text $label
+    bind .br.$w.t <<Modified>> [list editor_modified $w]
+}
+ttk::frame .br.log
+text .br.log.t -wrap word -state disabled -font TkFixedFont \
+    -yscrollcommand {.br.log.sb set}
+ttk::scrollbar .br.log.sb -orient vertical -command {.br.log.t yview}
+grid .br.log.t .br.log.sb -sticky nsew
+grid rowconfigure .br.log 0 -weight 1
+grid columnconfigure .br.log 0 -weight 1
+.br add .br.log -text Log
+
+.bot add .bl
+.bot add .br
+
+# -- status bar
+ttk::label .status -textvariable ::STATUS -relief sunken -anchor w -padding {6 3}
+grid .status -row 2 -column 0 -sticky ew
+
+# sashpos before the window is mapped silently does nothing (gitk:2748) — set it
+# from a one-shot Map binding that removes itself.
+bind .ctop <Map> { bind %W <Map> {} ; after idle [list %W sashpos 0 $::geom(topheight)] }
+bind .bot  <Map> { bind %W <Map> {} ; after idle [list %W sashpos 0 $::geom(botwidth)] }
+catch {wm geometry . $::geom(main)}
+
+# ---------------------------------------------------------------- start ------
 ui_busy 0
-log "webnovel-audio control — exe: $::EXE"
+log "webnovel-audio control — $::EXE"
 if {[set c [run_json config]] ne ""} {
     set ::CFGPATH   [json::get $c config_path]
     set ::LEXDIR    [json::get $c lexicon_dir]
     set ::SERIESDIR [json::get $c series_config_dir]
-    if {[json::get $c base_lexicon] ne ""} { set ::BASELEX [json::get $c base_lexicon] }
-    set v [json::get $c voices]
-    if {[llength $v]} { set ::VOICES [linsert $v 0 "(default)"] }
-    .sel.voice configure -values $::VOICES
-    if {$::CFGPATH eq ""} { set ::CFGPATH [file join [json::get $c project_dir] config.toml] }
-    set ::CFGPATH [file normalize $::CFGPATH]
-    log "config   : $::CFGPATH"
-    log "state db : [json::get $c state_db]"
-    log "library  : [json::get $c library_dir]"
+    set ::BASELEX   [json::get $c base_lexicon]
+    log "library: [json::get $c library_dir]"
 }
-on_select
 refresh_series
-schedule_next
-wm protocol . WM_DELETE_WINDOW {server_stop ; save_conf ; exit}
