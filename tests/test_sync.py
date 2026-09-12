@@ -245,8 +245,14 @@ def test_series_add_registers_only(tmp_path, monkeypatch):
                            start="2", log=lambda *_: None)
     assert info["chapters"] == 6
     assert not any("/chapter/" in u for u in hits)          # no chapter fetched
-    assert not os.path.exists(os.path.join(cfg.general.series_config_dir,
-                                           f"{info['slug']}.toml"))
+    # ...but the resolved voices ARE pinned, so the series can't drift when the
+    # global defaults change later
+    overlay = os.path.join(cfg.general.series_config_dir, f"{info['slug']}.toml")
+    assert os.path.exists(overlay)
+    import tomllib
+    pinned = tomllib.loads(open(overlay).read())
+    assert pinned["voices"]["narrator"] == Config().voices.narrator
+    assert pinned["cast"]["voices"] == {}                   # no speakers yet
     # "--from 2" is recorded per chapter, not as an invisible cutoff
     db = DB(cfg.royalroad.state_db)
     s = db.get_series("salvage-run")
@@ -307,7 +313,7 @@ def test_suggest_cast_appends_new_speaker_on_a_later_range(tmp_path, monkeypatch
 
     r1 = sync.suggest_cast(cfg, "salvage-run", lo=1, hi=3, apply_cast=True,
                            log=lambda *_: None)
-    assert r1["overlay_action"] == "created"
+    assert r1["overlay_action"] == "appended"      # into the pinned file from `add`
     assert set(r1["cast"]) == {"Resk"}
 
     r2 = sync.suggest_cast(cfg, "salvage-run", lo=4, hi=6, apply_cast=True,
@@ -327,7 +333,7 @@ def test_suggest_cast_appends_new_speaker_on_a_later_range(tmp_path, monkeypatch
     assert r3["overlay_action"] == "unchanged"                   # both already mapped
 
 
-def test_cmd_check_json_and_write(tmp_path, monkeypatch, capsys):
+def test_cmd_check_is_report_only(tmp_path, monkeypatch, capsys):
     import json
     import types
 
@@ -353,18 +359,17 @@ def test_cmd_check_json_and_write(tmp_path, monkeypatch, capsys):
                     start="start", log=lambda *_: None)
 
     rc = cli._cmd_check(types.SimpleNamespace(
-        target="salvage-run", range="1-3", write=True, context=6,
+        target="salvage-run", range="1-3", context=6, top=15,
         config=str(cfgp), json=True))
     assert rc == 0
     out = json.loads(capsys.readouterr().out)
     assert out["ok"] and out["slug"] == "salvage-run"
     assert "Resk" in out["cast"] and out["cast"]["Resk"]["new"]
     assert isinstance(out["heteronyms"], list) and isinstance(out["lexicon_candidates"], list)
-    lex_path = tmp_path / "lex" / "salvage-run.csv"
-    if out["lexicon_candidates"]:
-        assert lex_path.exists()
-        for name in out["lexicon_candidates"]:
-            assert name in lex_path.read_text()
+    # `check` is report-only now: it must not have written the lexicon...
+    assert not (tmp_path / "lex" / "salvage-run.csv").exists()
+    # ...nor added anything to the cast
+    assert out["overlay_action"] == "would-add"
 
 
 def test_suggest_voices_moved_to_dialogue():
@@ -373,3 +378,31 @@ def test_suggest_voices_moved_to_dialogue():
     cfg = Config()
     out = suggest_voices({"Mara": 5, "Resk": 3}, {"Mara": "f", "Resk": "m"}, cfg)
     assert out["Mara"].startswith(("af_", "bf_")) and out["Resk"].startswith(("am_", "bm_"))
+
+
+def test_pin_defaults_text_is_valid_toml_and_records_resolved_voices():
+    """`series add` pins the resolved voices so the series can't drift when the
+    global defaults are retuned later (lockfile reasoning)."""
+    import tomllib
+
+    cfg = Config()
+    cfg.voices.narrator = "bm_lewis"
+    cfg.cast.default = "am_onyx"
+    data = tomllib.loads(sync.pin_defaults_text(cfg, "demo"))
+    assert data["voices"]["narrator"] == "bm_lewis"
+    assert data["voices"]["thought"] == cfg.voices.thought
+    assert data["cast"]["default"] == "am_onyx"
+    assert data["cast"]["voices"] == {}
+    assert data["chat"]["voices"] == cfg.chat.voices
+    # timing/DSP deliberately not pinned — those are global taste
+    assert "pauses" not in data and "dsp" not in data
+
+
+def test_pinned_series_ignores_later_global_change(tmp_path):
+    cfg = Config()
+    cfg.general.series_config_dir = str(tmp_path)
+    (tmp_path / "demo.toml").write_text(sync.pin_defaults_text(cfg, "demo"))
+    original = cfg.voices.narrator
+
+    cfg.voices.narrator = "bf_emma"                  # retune the global default
+    assert sync._series_cfg(cfg, "demo").voices.narrator == original

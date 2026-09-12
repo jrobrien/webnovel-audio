@@ -109,7 +109,10 @@ def _voice_for(line, cfg) -> tuple[str, str]:
         return cfg.voices.thought, "thought"
     if line.kind == "dialogue":
         cast = cfg.cast.voices
-        if line.speaker and line.speaker in cast:
+        # An empty value is a deliberate "listed but unassigned" — `cast update`
+        # writes those for speakers whose gender it couldn't guess, so they're
+        # visible to edit rather than silently given a coin-flip voice.
+        if line.speaker and cast.get(line.speaker):
             return cast[line.speaker], "dialogue"
         return (cfg.cast.default or cfg.voices.dialogue_default), "dialogue"
     return (cfg.cast.narrator or cfg.voices.narrator), "narration"

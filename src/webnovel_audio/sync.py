@@ -178,21 +178,22 @@ def _fetch_chapter_blocks(cfg: Config, prov, slug: str, refs, log=print):
     return blocks, fetched
 
 
-def _cast_voices_lines(named, voices, gender, counts, default_voice, header: list[str]):
-    """The `[cast.voices]` block (as a list of lines) for the given speakers."""
+def _cast_voices_lines(named, voices, gender, counts, default_voice, provenance: str):
+    """The rows to splice into `[cast.voices]`, with provenance as a comment
+    *inside* the table (not a file header) so repeated `cast update` runs leave a
+    readable history of where each speaker came from."""
     shown, extra = named[:MAX_SEED_CAST_ENTRIES], named[MAX_SEED_CAST_ENTRIES:]
-    lines = list(header) + ["", "[cast.voices]"]
+    lines = [f"# {provenance}"]
     for name, count in shown:
-        g = {"m": "male", "f": "female"}.get(gender.get(name), "gender unclear")
-        lines.append(f'{_toml_str(name):<18} = "{voices[name]}"   # {count} line(s), {g}')
+        g = {"m": "male", "f": "female"}.get(gender.get(name), "")
+        note = f"{count} line(s)" + (f", {g}" if g else ", gender unclear — pick one")
+        lines.append(f'{_toml_str(name):<18} = "{voices[name]}"   # {note}')
     if extra:
-        lines.append(f"# + {len(extra)} more speaker(s) with fewer lines each, "
-                     f"omitted for brevity -> [cast] default")
+        lines.append(f"#   + {len(extra)} rarer speaker(s) omitted -> [cast] default")
     unattributed = counts.get("", 0)
     if unattributed:
-        lines.append(f"# {unattributed} line(s) went unattributed -> "
-                     f"[cast] default (currently {default_voice!r})")
-    lines.append("")
+        lines.append(f"#   {unattributed} line(s) unattributed -> "
+                     f"[cast] default ({default_voice})")
     return shown, lines
 
 
@@ -222,6 +223,43 @@ def _append_cast_voices(text: str, new_lines: list[str]) -> str:
     while end > hdr + 1 and not lines[end - 1].strip():
         end -= 1                              # insert before trailing blank lines
     return "\n".join([*lines[:end], *new_lines, *lines[end:]]) + "\n"
+
+
+def pin_defaults_text(cfg: Config, slug: str) -> str:
+    """The starting content for a series config: the *resolved* voices, written
+    out explicitly.
+
+    Pinning them at init is what keeps a series sounding the same. Global
+    `[voices]`/`[cast]` defaults get retuned as you start new series; without a
+    pin, re-rendering chapter 12 of an old one a year later would come out in a
+    different voice than 11 and 13. Same reasoning as a lockfile: record what was
+    resolved, so a later change to the source doesn't silently alter the result.
+    Timing/DSP are deliberately not pinned — they're global taste, and a change
+    there is one you want everywhere.
+    """
+    v, cast = cfg.voices, cfg.cast
+    lines = [
+        f"# {slug} — voices pinned at `series add` so this series keeps sounding",
+        "# the same even if the global defaults in config.toml change later.",
+        "",
+        "[voices]",
+        f'narrator         = "{v.narrator}"',
+        f'thought          = "{v.thought}"',
+        f'dialogue_default = "{v.dialogue_default}"',
+        f'system_ui        = "{v.system_ui}"',
+        "",
+        "[cast]",
+        f'default = "{cast.default or v.dialogue_default}"',
+    ]
+    if cast.narrator:
+        lines.append(f'narrator = "{cast.narrator}"')
+    if cfg.chat.voices:
+        pool = ", ".join(f'"{x}"' for x in cfg.chat.voices)
+        lines += ["", "[chat]", f"voices = [{pool}]"]
+    lines += ["", "[cast.voices]",
+              "# speaker -> voice. `cast update <slug> <range>` appends new ones;",
+              '# an empty "" means "found, not yet assigned" -> [cast] default.', ""]
+    return "\n".join(lines) + "\n"
 
 
 def suggest_cast(cfg: Config, key: str, *, lo: int | None = None, hi: int | None = None,
@@ -301,35 +339,18 @@ def suggest_cast(cfg: Config, key: str, *, lo: int | None = None, hi: int | None
             overlay_action = "would-add"
         elif new_named:
             default_voice = scfg.cast.default or scfg.voices.dialogue_default
-            if existing_text:
-                _, new_lines = _cast_voices_lines(
-                    new_named, voices, gender, counts, default_voice,
-                    [f"# + cast-seed over chapters {sample[0]['ord'] + 1}-"
-                     f"{sample[-1]['ord'] + 1} ({len(fetched)} sampled)"])
-                # only the [cast.voices] table lines, not another header/table wrapper
-                new_lines = [ln for ln in new_lines if ln not in ("", "[cast.voices]")]
-                new_lines = [ln for ln in new_lines if ln]
-                with open(overlay_path, "w", encoding="utf-8") as fh:
-                    fh.write(_append_cast_voices(existing_text, new_lines))
-                overlay_action = "appended"
-            else:
-                header = [
-                    f"# per-series overrides for {slug} (merged over config.toml by sync)",
-                    "#",
-                    f"# [cast.voices] below was auto-suggested from chapters "
-                    f"{sample[0]['ord'] + 1}-{sample[-1]['ord'] + 1} ({len(fetched)} sampled) —",
-                    "# review and adjust freely; re-running `check` on a later range",
-                    "# only adds new speakers, it never touches lines already here.",
-                ]
+            lo_n, hi_n = sample[0]["ord"] + 1, sample[-1]["ord"] + 1
+            _, new_lines = _cast_voices_lines(
+                new_named, voices, gender, counts, default_voice,
+                f"from chapters {lo_n}-{hi_n} ({len(fetched)} sampled)")
+            if not existing_text:
                 os.makedirs(os.path.dirname(overlay_path), exist_ok=True)
-                _, lines = _cast_voices_lines(new_named, voices, gender, counts,
-                                              default_voice, header)
-                with open(overlay_path, "w", encoding="utf-8") as fh:
-                    fh.write("\n".join(lines))
+                existing_text = pin_defaults_text(scfg, slug)
                 overlay_action = "created"
-
-        if write_lexicon and candidates:
-            Lexicon.append_candidates(series_lex, candidates)
+            else:
+                overlay_action = "appended"
+            with open(overlay_path, "w", encoding="utf-8") as fh:
+                fh.write(_append_cast_voices(existing_text, new_lines))
 
         log(f"{s['title']}: sampled chapters {sample[0]['ord'] + 1}-{sample[-1]['ord'] + 1} "
             f"({len(fetched)} chapter(s), {len(sample) - len(fetched)} failed)")
@@ -365,10 +386,22 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
         _cache_cover(cfg, fi.slug, fi.cover_url)
         row = db.get_series(fi.rr_id)
         pend = len(db.pending(sid))
+
+        # pin the resolved voices now, so this series keeps sounding the same
+        # when the global defaults are retuned later (see pin_defaults_text)
+        slug = _dir_slug(row)
+        overlay = os.path.join(
+            os.path.expanduser(cfg.general.series_config_dir or "data/series"),
+            f"{slug}.toml")
+        if not os.path.exists(overlay):
+            os.makedirs(os.path.dirname(overlay), exist_ok=True)
+            with open(overlay, "w", encoding="utf-8") as fh:
+                fh.write(pin_defaults_text(cfg, slug))
+            log(f"  voices pinned -> {overlay}")
         log(f"added: {fi.title}")
         log(f"  {len(fi.chapters)} chapters ({new} new), "
             f"{through} skipped, {pend} outstanding")
-        log(f"  next:  webnovel-audio fetch {row['slug']} 1-10")
+        log(f"  next:  webnovel-audio fetch {slug} 1-10")
         return {"slug": fi.slug, "title": fi.title, "provider": fi.provider,
                 "chapters": len(fi.chapters), "new": new,
                 "skipped": through, "pending": pend}

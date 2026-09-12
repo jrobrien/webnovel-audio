@@ -555,7 +555,7 @@ grid .body -row 1 -sticky nsew
 ttk::labelframe .sel -text "Selected series" -padding {10 8}
 ttk::label  .sel.title -text "—"
 ttk::button .sel.lex   -text "Edit lexicon"   -command edit_lexicon
-ttk::button .sel.ovl   -text "Edit overrides" -command edit_overlay
+ttk::button .sel.ovl   -text "Edit cast"      -command edit_overlay
 ttk::button .sel.redo  -text "Re-render…"     -command dlg_redo
 ttk::label  .sel.vl    -text "Narrator:"
 ttk::combobox .sel.voice -width 16 -state readonly -values $::VOICES

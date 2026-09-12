@@ -210,9 +210,8 @@ def _cmd_check(args) -> int:
         return _explain(args.target, cfg)
 
     lo, hi = _parse_range(getattr(args, "range", ""))
-    report = sync.suggest_cast(cfg, args.target, lo=lo, hi=hi,
-                               write_lexicon=args.write, context=args.context,
-                               apply_cast=args.write,
+    report = sync.suggest_cast(cfg, args.target, lo=lo, hi=hi, context=args.context,
+                               write_lexicon=False, apply_cast=False,
                                log=(lambda *_: None) if want_json else print)
     if want_json:
         _jprint({"ok": True, **report})
@@ -220,28 +219,30 @@ def _cmd_check(args) -> int:
     if not report["chapters_sampled"]:
         return 0
 
-    action = report["overlay_action"]
-    print(f"\ncast — {report['overlay_path'] or '(nothing written)'}"
-          f"{'  [' + action + ']' if action != 'none' else ''}")
-    for name, info in sorted(report["cast"].items(), key=lambda kv: -kv[1]["count"]):
+    new = [n for n, i in report["cast"].items() if i["new"]]
+    print(f"\ncast — {len(report['cast'])} speaker(s), {len(new)} not yet assigned a voice")
+    for name, info in sorted(report["cast"].items(), key=lambda kv: -kv[1]["count"])[:15]:
         g = {"m": "male", "f": "female"}.get(info["gender"], "gender unclear")
         tag = "NEW" if info["new"] else "mapped"
-        print(f'  {"\"" + name + "\"":<18} = "{info["voice"]}"   '
-              f'# {info["count"]} line(s), {g}  [{tag}]')
-    if not args.write and any(i["new"] for i in report["cast"].values()):
-        print("  (re-run with --write to add the NEW ones to the series config)")
+        print(f'  {name:<20} {info["count"]:>4} line(s), {g:<14} [{tag}]')
+    if new:
+        print(f"  add them:  webnovel-audio cast update {report['slug']} {args.range or ''}".rstrip())
 
     if report["heteronyms"]:
         print("\nheteronyms — context-dependent, judge by ear:")
         for h in report["heteronyms"]:
             print(f"  {h['word']:<10} x{h['count']:<3} \"...{h['context']}...\"")
-        print("  (pin one with a phrase entry:  lex add <slug> \"a tear in\" \"a tair in\")")
+        print(f'  pin one:  webnovel-audio lex add {report["slug"]} "a tear in" "a tair in"')
 
-    if report["lexicon_candidates"]:
-        print(f"\nproper nouns not in any lexicon ({len(report['lexicon_candidates'])}):")
-        print(f"  {', '.join(report['lexicon_candidates'][:30])}")
-        if not args.write:
-            print(f"  (--write queues them in data/lexicons/{report['slug']}.csv)")
+    cands = report["lexicon_candidates"]
+    if cands:
+        shown = cands[:max(0, args.top)]
+        print(f"\nproper nouns in no lexicon ({len(cands)}, most frequent first):")
+        print(f"  {', '.join(shown)}" + (f"  … +{len(cands) - len(shown)} more"
+                                         if len(cands) > len(shown) else ""))
+        print(f'  fix one:     webnovel-audio lex add {report["slug"]} Kaelith kay-lith')
+        print(f'  silence one: webnovel-audio lex ignore {report["slug"]} '
+              f'{" ".join(shown[:3])}')
     return 0
 
 
@@ -519,6 +520,24 @@ def _cmd_lex(args) -> int:
     if args.action == "edit":
         return _editor_open(base if args.base else series, _LEX_HEADER)
 
+    if args.action == "ignore":
+        # A row with a blank `respell` is already a no-op substitution that
+        # `surfaces()` counts as known — so "I looked at this and it reads fine"
+        # needs no new machinery, and shrinks the `check` report next time.
+        # Same idea as codespell's ignore-list / cspell's custom dictionary.
+        import csv
+        path = base if args.base else series
+        exists = os.path.exists(path)
+        os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
+        with open(path, "a", newline="", encoding="utf-8") as fh:
+            if not exists:
+                fh.write(_LEX_HEADER)
+            w = csv.writer(fh)
+            for word in args.words:
+                w.writerow([word, "", "", "reads fine as-is"])
+        print(f"{path}: {len(args.words)} word(s) marked fine as-is")
+        return 0
+
     if args.action == "add":
         path = base if args.base else series
         import csv
@@ -544,6 +563,78 @@ def _cmd_lex(args) -> int:
         print(f"  {e.surface:<20} {e.respell or e.ipa or '(no respell)'}"
               f"{'   # ' + e.notes if e.notes else ''}")
     print(f"\n{len(lex.entries)} entr(ies) from: {', '.join(paths)}")
+    return 0
+
+
+def _series_config_path(cfg: Config, slug: str) -> str:
+    return os.path.join(
+        os.path.expanduser(cfg.general.series_config_dir or "data/series"), f"{slug}.toml")
+
+
+def _cmd_cast(args) -> int:
+    """The series' voice assignments: edit / merge-in-new / show effective."""
+    from . import sync
+    from .db import DB
+
+    cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
+    db = DB(cfg.royalroad.state_db)
+    try:
+        s = db.get_series(args.key)
+        if not s:
+            print(f"no tracked series matching {args.key!r}")
+            return 1
+        slug = sync._dir_slug(s)
+    finally:
+        db.close()
+    path = _series_config_path(cfg, slug)
+
+    if args.action == "edit":
+        return _editor_open(path, sync.pin_defaults_text(cfg, slug))
+
+    if args.action == "show":
+        scfg = sync._series_cfg(cfg, slug)
+        assigned = {k: v for k, v in scfg.cast.voices.items() if v}
+        unassigned = [k for k, v in scfg.cast.voices.items() if not v]
+        if want_json:
+            _jprint({"slug": slug, "file": path if os.path.exists(path) else None,
+                     "narrator": scfg.cast.narrator or scfg.voices.narrator,
+                     "thought": scfg.voices.thought,
+                     "default": scfg.cast.default or scfg.voices.dialogue_default,
+                     "assigned": assigned, "unassigned": unassigned})
+            return 0
+        print(f"{s['title']}  [{slug}]   {path if os.path.exists(path) else '(no config yet)'}")
+        print(f"  narrator {scfg.cast.narrator or scfg.voices.narrator} · "
+              f"thought {scfg.voices.thought} · "
+              f"default {scfg.cast.default or scfg.voices.dialogue_default}")
+        for k, v in sorted(assigned.items()):
+            print(f"    {k:<20} {v}")
+        for k in sorted(unassigned):
+            print(f"    {k:<20} —  unassigned, falls back to default")
+        return 0
+
+    # update: sample a range and merge in speakers we don't have yet
+    lo, hi = _parse_range(getattr(args, "range", ""))
+    report = sync.suggest_cast(cfg, args.key, lo=lo, hi=hi, apply_cast=not args.diff,
+                               write_lexicon=False,
+                               log=(lambda *_: None) if want_json else print)
+    if want_json:
+        _jprint({"ok": True, **report})
+        return 0
+    if not report["chapters_sampled"]:
+        return 0
+    new = {n: i for n, i in report["cast"].items() if i["new"]}
+    if not new:
+        print(f"\nno new speakers in that range — {path}")
+        return 0
+    verb = "would add" if args.diff else report["overlay_action"]
+    print(f"\n{verb}: {path}")
+    for name, info in sorted(new.items(), key=lambda kv: -kv[1]["count"]):
+        g = {"m": "male", "f": "female"}.get(info["gender"], "gender unclear — pick one")
+        v = info["voice"] or "\"\"  <- unassigned"
+        print(f'  {name:<20} {v:<16} # {info["count"]} line(s), {g}')
+    if not args.diff:
+        print(f"\n  review it:  webnovel-audio cast edit {slug}")
     return 0
 
 
@@ -619,7 +710,7 @@ def _cmd_series(args) -> int:
             _jprint({"ok": True, "series": results or []})
         return 0
 
-    if args.action in ("edit", "enable", "disable", "forget", "show"):
+    if args.action in ("enable", "disable", "forget", "show"):
         db = DB(cfg.royalroad.state_db)
         try:
             s = db.get_series(args.key)
@@ -629,15 +720,6 @@ def _cmd_series(args) -> int:
                     if want_json else f"no tracked series matching {args.key!r}")
                 return 1
             slug = sync._dir_slug(s)
-
-            if args.action == "edit":
-                path = os.path.join(
-                    os.path.expanduser(cfg.general.series_config_dir or "data/series"),
-                    f"{slug}.toml")
-                return _editor_open(path,
-                                    f"# per-series overrides for {slug}\n"
-                                    f"# (merged over config.toml by every stage)\n\n"
-                                    f"[cast.voices]\n")
 
             if args.action in ("enable", "disable"):
                 db.set_enabled(s["id"], args.action == "enable")
@@ -926,8 +1008,8 @@ def main(argv=None) -> int:
     ck.add_argument("target", help="tracked series, or a file / URL")
     ck.add_argument("range", nargs="?", default="",
                     help="N | N-M   (omit: the first [cast] seed_chapters)")
-    ck.add_argument("--write", action="store_true",
-                    help="apply: add new cast entries + queue unknown names")
+    ck.add_argument("--top", type=int, default=15,
+                    help="how many unknown-name candidates to list (default 15)")
     ck.add_argument("--context", type=int, default=6,
                     help="words of context around a flagged heteronym (default 6)")
     _cfg_json(ck)
@@ -962,9 +1044,6 @@ def main(argv=None) -> int:
     sh = se_sub.add_parser("show", help="one series in detail")
     sh.add_argument("key")
     _cfg_json(sh)
-    ed = se_sub.add_parser("edit", help="open data/series/<slug>.toml in $EDITOR")
-    ed.add_argument("key")
-    _cfg_json(ed)
     for name in ("enable", "disable"):
         q = se_sub.add_parser(name, help=f"{name} this series for `sync`")
         q.add_argument("key")
@@ -998,6 +1077,23 @@ def main(argv=None) -> int:
     _cfg_json(stt)
     stt.set_defaults(func=_cmd_state, action="show", range="")
 
+    cs = sub.add_parser("cast", help="this series' voice assignments")
+    cs_sub = cs.add_subparsers(dest="action")
+    ce = cs_sub.add_parser("edit", help="open the series config in $EDITOR")
+    ce.add_argument("key")
+    _cfg_json(ce)
+    cu = cs_sub.add_parser("update", help="merge in speakers found in a chapter range")
+    cu.add_argument("key")
+    cu.add_argument("range", nargs="?", default="",
+                    help="N | N-M   (omit: the first [cast] seed_chapters)")
+    cu.add_argument("--diff", action="store_true", help="show what it would add, write nothing")
+    _cfg_json(cu)
+    cw = cs_sub.add_parser("show", help="the effective cast, including unassigned")
+    cw.add_argument("key")
+    _cfg_json(cw)
+    _cfg_json(cs)
+    cs.set_defaults(func=_cmd_cast, action="show", range="", diff=False)
+
     # -- lexicon / config / voices ------------------------------------------
     lx = sub.add_parser("lex", help="pronunciation lexicons")
     lx_sub = lx.add_subparsers(dest="action")
@@ -1012,6 +1108,11 @@ def main(argv=None) -> int:
     la.add_argument("--note")
     la.add_argument("--base", action="store_true", help="write to _base.csv instead")
     _cfg(la)
+    li = lx_sub.add_parser("ignore", help="mark words as 'reads fine' so `check` stops listing them")
+    li.add_argument("slug")
+    li.add_argument("words", nargs="+")
+    li.add_argument("--base", action="store_true", help="write to _base.csv instead")
+    _cfg(li)
     ll = lx_sub.add_parser("list", help="effective entries (base + series)")
     ll.add_argument("slug", nargs="?")
     ll.add_argument("--base", action="store_true")

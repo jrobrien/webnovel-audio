@@ -125,3 +125,30 @@ def test_real_fixture_cast_if_present():
     assert any(sp == "Resk" and t.startswith("Depth check") for sp, t in dlg)
     # pronoun tag: '"...," she said' -> Mara
     assert any(sp == "Mara" and "The ship still has a voice" in t for sp, t in dlg)
+
+
+def test_unclear_gender_is_left_unassigned():
+    """A speaker with no pronoun signal (descriptive referents, honorifics) gets
+    an empty voice, not a coin flip — a wrong guess reads as a decision, an
+    empty value reads as unfinished."""
+    from webnovel_audio.dialogue import suggest_voices
+
+    cfg = Config()
+    out = suggest_voices({"Mara": 9, "girl": 5, "Resk": 3},
+                         {"Mara": "f", "Resk": "m"}, cfg)
+    assert out["Mara"].startswith(("af_", "bf_"))
+    assert out["Resk"].startswith(("am_", "bm_"))
+    assert out["girl"] == ""                       # listed, deliberately unassigned
+
+
+def test_unassigned_voice_falls_back_to_default():
+    from webnovel_audio.dialogue import suggest_voices
+
+    cfg = _cfg(voices={"crone": ""}, default="am_onyx")
+    blocks = [Block("paragraph", 'The wrinkled crone smiled. "You have the gift, boy."')]
+    segs = {s.speaker: s.voice for s in build_segments(blocks, cfg)
+            if s.style == "dialogue"}
+    assert segs["crone"] == "am_onyx"              # empty -> [cast] default, not ""
+    # an unassigned entry must never be counted as a voice already in use
+    nxt = suggest_voices({"other": 2}, {"other": "f"}, cfg)
+    assert nxt["other"].startswith(("af_", "bf_"))

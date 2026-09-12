@@ -50,9 +50,10 @@ uv run webnovel-audio series add <royal-road-fiction-url> --from start
 uv run webnovel-audio fetch <slug> 1-10
 uv run webnovel-audio parse <slug> 1-10
 
-# 3. see what needs configuring, and write the starter config
-uv run webnovel-audio check <slug> 2-10 --write
-uv run webnovel-audio series edit <slug>       # adjust the cast by ear
+# 3. see what needs configuring, then apply what you want
+uv run webnovel-audio check <slug> 2-10        # report only, writes nothing
+uv run webnovel-audio cast update <slug> 2-10  # add the speakers it found
+uv run webnovel-audio cast edit <slug>         # adjust voices by ear
 uv run webnovel-audio lex edit <slug>          # fix pronunciations
 
 # 4. render (the only expensive step, ~3–5 min/chapter)
@@ -65,8 +66,8 @@ uv run webnovel-audio serve                    # http://<this-machine>:8080/
 Then the steady state is one command — `webnovel-audio sync` pulls, parses and
 renders everything new across every enabled series (`schedule --install` runs it
 nightly). When a new character shows up 40 chapters later, drop back to step 3
-with `check <slug> 50-55 --write`; it only ever *adds* cast entries, never
-rewrites the ones you've tuned.
+with `cast update <slug> 50-55`; it only ever *adds* speakers, never rewrites
+the ones you've tuned.
 
 ## The pipeline
 
@@ -82,9 +83,10 @@ flowchart TD
     RAW --> P["parse &lt;target&gt; [range]"]
     P --> MD[/"NNN-slug.md<br/>blocks + provenance"/]
     MD --> CK["check &lt;target&gt; [range]"]
-    CK --> REP{{"report<br/>cast · heteronyms · unknown names"}}
-    REP -->|"--write"| CFG[/"data/series/&lt;slug&gt;.toml<br/>data/lexicons/&lt;slug&gt;.csv"/]
-    CFG --> ED["series edit · lex edit<br/>pron · voices demo"]
+    CK --> REP{{"report — writes nothing<br/>cast · heteronyms · unknown names"}}
+    REP --> AP["cast update &lt;slug&gt; [range]<br/>lex add · lex ignore"]
+    AP --> CFG[/"data/series/&lt;slug&gt;.toml<br/>data/lexicons/&lt;slug&gt;.csv"/]
+    CFG --> ED["cast edit · lex edit<br/>pron · voices demo"]
     ED --> R["render &lt;target&gt; [range]"]
     MD --> R
     R --> OP[/"NNN-slug.opus<br/>+ NNN-slug.segments.json"/]
@@ -98,7 +100,7 @@ flowchart TD
 | `series add` | one page | yes | DB rows |
 | `fetch` | ~2.5 s (politeness delay, not work) | **yes** | `.raw/<id>.html` |
 | `parse` | ~30 ms | no | `NNN-slug.md` |
-| `check` | ~50 ms | no | report; `--write` → config + lexicon |
+| `check` | ~50 ms | no | nothing — report only (`cast update` / `lex add` apply) |
 | `render` | **~40 s per 3.6 min of audio** (88% TTS, 12% loudness) | no | `NNN-slug.opus` |
 
 `sync` is just `series refresh` + `render` with an implicit range, over every
@@ -136,7 +138,7 @@ them first.
 |---|---|
 | `fetch <target> [range]` | download chapter source into the raw cache |
 | `parse <target> [range]` | raw → blocks → readable `.md`. `--explain` dumps the parse |
-| `check <target> [range]` | cast / heteronyms / unknown names report. `--write` applies it |
+| `check <target> [range]` | cast / heteronyms / unknown names report. **Never writes** |
 | `render <target> [range]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only |
 | `sync [series] [--limit N]` | refresh + render everything outstanding, all enabled series |
 
@@ -147,7 +149,6 @@ them first.
 | `series add <url> [--from N]` | start tracking — metadata only; `--from` marks 1..N `skipped` |
 | `series list` | dashboard: per-stage counts, what's next, errors |
 | `series show <slug>` | one series in detail |
-| `series edit <slug>` | open `data/series/<slug>.toml` in `$EDITOR` |
 | `series enable\|disable <slug>` | include / exclude from `sync` (finished a series? disable it) |
 | `series refresh [slug]` | re-fetch chapter lists |
 | `series forget <slug> [--purge]` | untrack; `--purge` also deletes rendered files |
@@ -164,7 +165,11 @@ them first.
 
 | command | what |
 |---|---|
+| `cast edit <slug>` | open the series config (voices) in `$EDITOR` |
+| `cast update <slug> [range]` | merge in speakers found in that range (`--diff` to preview) |
+| `cast show <slug>` | the effective cast, including unassigned speakers |
 | `lex edit <slug>` / `lex edit --base` | open the per-series / always-on CSV in `$EDITOR` |
+| `lex ignore <slug> <word>…` | mark words "reads fine", so `check` stops listing them |
 | `lex add <slug> <surface> <respell>` | append a row without opening an editor |
 | `lex list [slug]` | show effective entries (base + series, merged) |
 | `config show` / `config edit` | resolved paths / open `config.toml` |
@@ -193,10 +198,11 @@ webnovel-audio state show some-fiction 1-20      # per-chapter detail
 # the cheap stages, ahead of time
 webnovel-audio fetch some-fiction 41-50
 webnovel-audio parse some-fiction 41-50
-webnovel-audio check some-fiction 41-50 --write  # cast + lexicon scaffolding
+webnovel-audio check some-fiction 41-50           # report: what needs deciding
+webnovel-audio cast update some-fiction 41-50    # add the speakers it found
 
 # tune, then render
-webnovel-audio series edit some-fiction          # cast voices
+webnovel-audio cast edit some-fiction            # adjust voices by ear
 webnovel-audio lex edit some-fiction             # pronunciations
 webnovel-audio render some-fiction 41-50
 
@@ -296,22 +302,38 @@ rules-only and deterministic — it gets tags, pronoun tags, volleys and untagge
 continuations right, and mis-assigns the occasional oddly-phrased line, which you
 fix in the cast map.
 
-`check <target> [range] --write` does this for a tracked series: it samples the
-range, then writes a `data/series/<slug>.toml` with a `[cast.voices]` entry per
-detected speaker, each commented with its line count and gender guess — e.g.
-`"Mara" = "af_heart"   # 8 line(s), female`. Re-running it on a later range
-(`check <slug> 50-55 --write`, once new characters appear) **only appends
-speakers it hasn't seen**; lines you've already tuned are never rewritten.
+`series add` writes `data/series/<slug>.toml` immediately, pinning the
+**resolved** voices — narrator, thought, dialogue default, system, chat pool.
+That's deliberate: global defaults get retuned as you start new series, and
+without a pin, re-rendering chapter 12 of an old one would come out in a
+different voice than 11 and 13. Same reasoning as a lockfile. (Timing and DSP
+are *not* pinned — those are global taste, and a change there is one you want
+everywhere.)
 
-The same pass reports two other things over that text:
+`cast update <slug> [range]` then samples the range and appends a
+`[cast.voices]` entry per speaker it hasn't seen, commented with line count and
+gender — `"Mara" = "af_heart"   # 48 line(s), female`. Run it again on a later
+range once new characters appear; it **only ever adds**, never rewrites what
+you've tuned. `--diff` shows what it would add.
+
+A speaker whose gender it can't infer — descriptive referents (`girl`, `man`)
+and honorifics — is written **unassigned**: `"girl" = ""   # 15 line(s), gender
+unclear — pick one`. It stays visible in the file to fix, and falls back to
+`[cast] default` until you do. A wrong guess reads like a decision somebody
+made; an empty value reads as unfinished.
+
+`check` reports two other things over the same text, and writes nothing:
 
 - **Heteronyms** — `tear`, `bow`, `wind`, `lead` … flagged with surrounding
   context. These are never auto-corrected: the right reading changes from
   sentence to sentence, so there's no safe blanket fix. Judge by ear, and if one
   matters, a **multi-word lexicon entry** (`a tear in,a tair in`) pins just that
   phrase.
-- **Unknown proper nouns** — names in no lexicon yet; `--write` queues them as
-  blank rows for you to fill in.
+- **Unknown proper nouns** — names in no lexicon yet, most frequent first
+  (`--top N`). Fix one with `lex add <slug> <word> <respell>`; silence one you've
+  checked with `lex ignore <slug> <word>…`, which records it as "reads fine" so
+  the list shrinks toward zero. Bulk-dumping candidates into the CSV was worse
+  than nothing — a spell-checker's allowlist, not a to-do list.
 
 To pick voice ids by ear, `webnovel-audio voices --demo -o voices.opus` renders
 one file that says each id then reads a sample paragraph in it (`--only a,b,c`

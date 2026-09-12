@@ -247,9 +247,15 @@ FEMALE_VOICE_POOL = [
 
 def suggest_voices(counts: dict, gender: dict, cfg) -> dict:
     """{speaker: Kokoro voice id} — round-robins the sex-matched pool by frequency,
-    skipping voices already spoken for in `[cast.voices]`. Used by `cast` and by
-    `check --write`'s cast scaffolding (see `sync.suggest_cast`)."""
-    used = set(cfg.cast.voices.values())
+    skipping voices already spoken for in `[cast.voices]`.
+
+    A speaker whose gender couldn't be inferred maps to **`""`** rather than a
+    guess. Descriptive referents ("girl", "man") and honorifics carry no pronoun
+    signal, and a wrong guess reads as a decision someone made — an empty value
+    is visibly unfinished, still shows up in the file to edit, and falls through
+    to `[cast] default` until you fill it in. Used by `cast update`.
+    """
+    used = set(v for v in cfg.cast.voices.values() if v)
     m = (v for v in MALE_VOICE_POOL if v not in used)
     f = (v for v in FEMALE_VOICE_POOL if v not in used)
     out: dict[str, str] = {}
@@ -259,7 +265,11 @@ def suggest_voices(counts: dict, gender: dict, cfg) -> dict:
         if name in cfg.cast.voices:
             out[name] = cfg.cast.voices[name]
             continue
-        pool = f if gender.get(name) == "f" else m
+        g = gender.get(name)
+        if g not in ("m", "f"):
+            out[name] = ""                      # listed, deliberately unassigned
+            continue
+        pool = f if g == "f" else m
         out[name] = next(pool, cfg.cast.default or cfg.voices.dialogue_default)
     return out
 

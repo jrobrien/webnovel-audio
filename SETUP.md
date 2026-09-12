@@ -94,8 +94,9 @@ uv run webnovel-audio series list
 # the cheap stages first, so you can configure before spending CPU
 uv run webnovel-audio fetch <slug> 1-10       # ~2.5 s/chapter, politeness delay
 uv run webnovel-audio parse <slug> 1-10       # ~30 ms/chapter
-uv run webnovel-audio check <slug> 2-10 --write   # cast + lexicon scaffolding
-uv run webnovel-audio series edit <slug>      # tune the cast by ear
+uv run webnovel-audio check <slug> 2-10       # report only, writes nothing
+uv run webnovel-audio cast update <slug> 2-10 # add the speakers it found
+uv run webnovel-audio cast edit <slug>        # tune the voices by ear
 uv run webnovel-audio render <slug> 1-10      # the expensive one
 
 # then the steady state
@@ -269,7 +270,7 @@ paths above. Nothing else is touched; no system packages are installed.
   `curl -sI http://<ip>:8080/feed/<slug>.xml` → `200`).
 - **A chapter mis-attributes dialogue or mispronounces a name** — that's per
   series: `webnovel-audio check <slug> <range>` for a `[cast.voices]` starter,
-  `webnovel-audio check <slug> <range> --write` to queue pronunciations into
+  `webnovel-audio cast update <slug> <range>` to queue pronunciations into
   `data/lexicons/<slug>.csv`. See `README.md`.
 - **Fixing a pronunciation** — for a name that's wrong everywhere (e.g.
   `Montgomery`, `Eleanor`), add a row to `data/lexicons/_base.csv` — it applies to
