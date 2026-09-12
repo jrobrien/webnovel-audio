@@ -140,7 +140,7 @@ them first.
 | `parse <target> [range]` | raw → blocks → readable `.md`. `--explain` dumps the parse |
 | `check <target> [range]` | cast / heteronyms / unknown names report. **Never writes** |
 | `render <target> [range]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only |
-| `sync [series] [--limit N]` | refresh + render everything outstanding, all enabled series |
+| `sync [series] [--limit N]` | refresh + render everything outstanding; shows a size estimate and confirms first (`-y` to skip) |
 
 **Series** (porcelain):
 

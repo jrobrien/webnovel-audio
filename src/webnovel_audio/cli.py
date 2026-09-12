@@ -787,6 +787,26 @@ def _cmd_sync(args) -> int:
         print(_json.dumps(d, ensure_ascii=False), flush=True)
 
     emit = emit if want_json else None
+
+    # `sync` is the one command that can silently start a multi-hour job off a
+    # short line, so say how big it is first. Never prompts when the answer
+    # can't be read (--json, --yes, --dry-run, or a non-tty: cron/systemd).
+    if not (want_json or args.dry_run or args.yes):
+        est = sync.estimate_render(cfg, args.key, limit=args.limit)
+        if est["chapters"]:
+            print(f"{est['chapters']} chapter(s) to render, "
+                  f"~{sync.human_duration(est['seconds'])} of CPU:")
+            for s in est["series"]:
+                note = "" if s["from_samples"] else "  (no samples yet — rough)"
+                print(f"  {s['title']:<32} {s['chapters']:>4} ch  "
+                      f"~{sync.human_duration(s['seconds'])}{note}")
+            if sys.stdin.isatty() and input("continue? [Y/n] ").strip().lower() in ("n", "no"):
+                print("nothing done.")
+                return 0
+        else:
+            print("nothing outstanding.")
+            return 0
+
     try:
         with sync.sync_lock(cfg):
             res = sync.run_sync(cfg, args.key, limit=args.limit, dry_run=args.dry_run,
@@ -931,9 +951,9 @@ def _cmd_schedule(args) -> int:
     project = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     venv_bin = os.path.join(project, ".venv", "bin", "webnovel-audio")
     if os.path.exists(venv_bin):
-        exec_start = f"{venv_bin} sync"
+        exec_start = f"{venv_bin} sync --yes"
     else:
-        exec_start = f"{shutil.which('uv') or 'uv'} run --project {project} webnovel-audio sync"
+        exec_start = f"{shutil.which('uv') or 'uv'} run --project {project} webnovel-audio sync --yes"
     service = (
         "[Unit]\nDescription=webnovel-audio: render new Royal Road chapters\n\n"
         "[Service]\nType=oneshot\n"
@@ -1027,6 +1047,8 @@ def main(argv=None) -> int:
     sy.add_argument("--backend", choices=["kokoro", "null"])
     sy.add_argument("--dry-run", action="store_true", help="list what would render")
     sy.add_argument("--no-refresh", action="store_true", help="skip re-fetching chapter lists")
+    sy.add_argument("-y", "--yes", action="store_true",
+                    help="skip the size estimate + confirmation (for scripts/timers)")
     _cfg_json(sy)
     sy.set_defaults(func=_cmd_sync)
 

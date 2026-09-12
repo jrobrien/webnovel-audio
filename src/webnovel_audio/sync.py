@@ -662,3 +662,53 @@ def run_sync(cfg: Config, key: str | None = None, *, limit: int | None = None,
     """The daily driver: refresh chapter lists, then render everything outstanding."""
     return run_stage(cfg, "rendered", key, limit=limit, backend=backend,
                      dry_run=dry_run, refresh_first=refresh_first, log=log, emit=emit)
+
+
+# Seconds of CPU per second of rendered audio, measured cold (empty segment
+# cache) on the target box: 88.4 s wall for 223 s of audio. A re-render of an
+# *unchanged* chapter is ~10x cheaper because every segment hits the cache, so
+# this is a deliberate over-estimate for that case.
+RENDER_COST_RATIO = 0.40
+_FALLBACK_CHAPTER_SECONDS = 900.0        # ~15 min, if we've never rendered any
+
+
+def estimate_render(cfg: Config, key: str | None = None, *,
+                    limit: int | None = None) -> dict:
+    """How much work an implicit-range render/sync is about to do.
+
+    Duration is predicted from the median of what this series has already
+    rendered — series differ a lot in chapter length — falling back to a global
+    guess for a series with nothing rendered yet.
+    """
+    import statistics
+
+    db = _db(cfg)
+    try:
+        rows = ([db.get_series(key)] if key
+                else [s for s in db.list_series() if s["enabled"]])
+        per_series, total_ch, total_s = [], 0, 0.0
+        for s in filter(None, rows):
+            todo = db.outstanding(s["id"], "rendered", limit)
+            if not todo:
+                continue
+            known = [c["duration_s"] for c in db.chapters(s["id"])
+                     if c["status"] == "rendered" and c["duration_s"]]
+            per_ch = statistics.median(known) if known else _FALLBACK_CHAPTER_SECONDS
+            secs = len(todo) * per_ch * RENDER_COST_RATIO
+            per_series.append({"slug": _dir_slug(s), "title": s["title"],
+                               "chapters": len(todo), "seconds": secs,
+                               "from_samples": len(known)})
+            total_ch += len(todo)
+            total_s += secs
+        return {"chapters": total_ch, "seconds": total_s, "series": per_series}
+    finally:
+        db.close()
+
+
+def human_duration(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds < 90:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    return f"{seconds // 3600}h {(seconds % 3600) // 60:02d}m"

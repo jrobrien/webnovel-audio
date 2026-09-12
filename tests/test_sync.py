@@ -406,3 +406,88 @@ def test_pinned_series_ignores_later_global_change(tmp_path):
 
     cfg.voices.narrator = "bf_emma"                  # retune the global default
     assert sync._series_cfg(cfg, "demo").voices.narrator == original
+
+
+def _sync_args(**kw):
+    import types
+    base = dict(key=None, limit=None, dry_run=False, backend="null", no_refresh=True,
+                json=False, yes=False)
+    base.update(kw)
+    return types.SimpleNamespace(**base)
+
+
+def _seeded(tmp_path, n_rendered=2, n_new=3):
+    """A library with some rendered chapters (for the median) and some outstanding."""
+    cfg = Config()
+    cfg.royalroad.state_db = str(tmp_path / "s.db")
+    cfg.royalroad.library_dir = str(tmp_path / "lib")
+    db = DB(cfg.royalroad.state_db)
+    sid = db.upsert_series(FictionInfo(rr_id="9", slug="demo", title="Demo",
+                                       url="https://rr/9"))
+    db.replace_chapters(sid, _chapters(n_rendered + n_new))
+    for c in db.chapters(sid)[:n_rendered]:
+        db.mark(c["id"], "rendered", audio_path="/x.opus", duration_s=600.0)
+    db.close()
+    return cfg
+
+
+def test_estimate_render_uses_series_median(tmp_path):
+    cfg = _seeded(tmp_path)
+    est = sync.estimate_render(cfg)
+    assert est["chapters"] == 3
+    # 3 chapters x 600 s median x RENDER_COST_RATIO
+    assert est["seconds"] == pytest.approx(3 * 600.0 * sync.RENDER_COST_RATIO)
+    assert est["series"][0]["from_samples"] == 2
+    # limit caps the estimate the same way it caps the run
+    assert sync.estimate_render(cfg, limit=1)["chapters"] == 1
+
+
+def test_estimate_falls_back_without_samples(tmp_path):
+    cfg = _seeded(tmp_path, n_rendered=0, n_new=2)
+    est = sync.estimate_render(cfg)
+    assert est["series"][0]["from_samples"] == 0
+    assert est["seconds"] == pytest.approx(2 * sync._FALLBACK_CHAPTER_SECONDS
+                                           * sync.RENDER_COST_RATIO)
+
+
+def test_human_duration():
+    assert sync.human_duration(45) == "45s"
+    assert sync.human_duration(600) == "10m"
+    assert sync.human_duration(3600 * 2 + 300) == "2h 05m"
+
+
+def test_sync_confirmation_declined(tmp_path, monkeypatch, capsys):
+    from webnovel_audio import cli
+
+    cfg = _seeded(tmp_path)
+    cfgp = tmp_path / "c.toml"
+    cfgp.write_text(f'[royalroad]\nstate_db = "{cfg.royalroad.state_db}"\n'
+                    f'library_dir = "{cfg.royalroad.library_dir}"\n')
+    monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda *_: "n")
+    called = []
+    monkeypatch.setattr(sync, "run_sync", lambda *a, **k: called.append(1))
+
+    rc = cli._cmd_sync(_sync_args(config=str(cfgp)))
+    out = capsys.readouterr().out
+    assert rc == 0 and not called                   # declined -> nothing ran
+    assert "3 chapter(s) to render" in out and "nothing done." in out
+
+
+def test_sync_yes_flag_skips_prompt(tmp_path, monkeypatch):
+    from webnovel_audio import cli
+
+    cfg = _seeded(tmp_path)
+    cfgp = tmp_path / "c.toml"
+    cfgp.write_text(f'[royalroad]\nstate_db = "{cfg.royalroad.state_db}"\n'
+                    f'library_dir = "{cfg.royalroad.library_dir}"\n')
+
+    def boom(*_a, **_k):
+        raise AssertionError("must not prompt with --yes")
+
+    monkeypatch.setattr("builtins.input", boom)
+    monkeypatch.setattr(sync, "run_sync", lambda *a, **k: sync.SyncResult())
+    assert cli._cmd_sync(_sync_args(config=str(cfgp), yes=True)) == 0
+    # ...and a non-tty (cron / systemd timer) must not prompt either
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    assert cli._cmd_sync(_sync_args(config=str(cfgp))) == 0

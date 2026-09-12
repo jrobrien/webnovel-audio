@@ -105,7 +105,10 @@ uv run webnovel-audio sync --dry-run                     # show what all series 
 uv run webnovel-audio sync                               # everything, every enabled series
 ```
 
-`sync` works oldest-first and records failures as `error` (retried next run,
+`sync` estimates how much CPU the run will take (from the median duration of
+what that series has already rendered) and asks before starting — `-y`/`--yes`
+skips that, and it's skipped automatically when stdin isn't a terminal, so the
+systemd timer is unaffected. It works oldest-first and records failures as `error` (retried next run,
 with `error_stage` naming what broke) without stopping the batch. A chapter's
 `status` alone decides whether it's outstanding — `state set <slug> -40 skipped`
 marks 1..40 as already-dealt-with, and `state show <slug>` prints the
