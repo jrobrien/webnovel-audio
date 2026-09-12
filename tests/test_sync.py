@@ -552,3 +552,32 @@ def test_opus_tags_carry_provenance(tmp_path):
     assert "CONTENT_WARNING" not in tags and "KEYWORDS" not in tags
     assert tags["TRACKNUMBER"] == "2"
     db.close()
+
+
+def test_stage_never_demotes_a_finished_chapter(tmp_path):
+    """Re-running an earlier stage on a rendered chapter must not move it back.
+    `parse <slug> 2-3` on already-rendered chapters used to reset them to
+    'parsed', which then made them look outstanding again."""
+    db = DB(str(tmp_path / "s.db"))
+    sid = db.upsert_series(FictionInfo(rr_id="9", slug="demo", title="Demo",
+                                       url="https://rr/9"))
+    db.replace_chapters(sid, _chapters(3))
+    c = db.chapters(sid)[0]
+
+    db.mark_stage(c["id"], "rendered", audio_path="/x.opus", duration_s=500.0)
+    assert db.chapters(sid)[0]["status"] == "rendered"
+
+    db.mark_stage(c["id"], "parsed", text_path="/x.md")
+    row = db.chapters(sid)[0]
+    assert row["status"] == "rendered"          # not demoted
+    assert row["text_path"] == "/x.md"          # but the re-run IS recorded
+    assert row["parsed_at"]                     # ...including its timestamp
+    assert row["audio_path"] == "/x.opus"       # and earlier work is intact
+
+    db.mark_stage(c["id"], "fetched", raw_path="/x.html")
+    assert db.chapters(sid)[0]["status"] == "rendered"
+    # a fresh chapter still advances normally
+    c2 = db.chapters(sid)[1]
+    db.mark_stage(c2["id"], "fetched", raw_path="/y.html")
+    assert db.chapters(sid)[1]["status"] == "fetched"
+    db.close()

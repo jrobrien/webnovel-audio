@@ -278,12 +278,27 @@ class DB:
     _STAGE_FIELD = {"fetched": "fetched_at", "parsed": "parsed_at",
                     "rendered": "rendered_at"}
 
+    def mark_stage(self, chapter_id: int, stage: str, **kw) -> None:
+        """Record that `stage` completed, without ever moving a chapter backwards.
+
+        Re-running an earlier stage on a finished chapter (`parse` on something
+        already rendered) must not demote it — the .opus is still there, and the
+        status is "furthest stage reached", not "last stage run". Timestamps and
+        paths are still updated, so the re-run is recorded.
+        """
+        row = self.con.execute("SELECT status FROM chapters WHERE id=?",
+                               (chapter_id,)).fetchone()
+        cur = row["status"] if row else "new"
+        keep = cur if stage_rank(cur) > stage_rank(stage) else stage
+        self.mark(chapter_id, keep, _stage_time=stage, **kw)
+
     def mark(self, chapter_id: int, status: str, *, raw_path: str | None = None,
              text_path: str | None = None, audio_path: str | None = None,
              duration_s: float | None = None, error: str | None = None,
              error_stage: str | None = None,
              render_started_at: str | None = None,
-             render_ended_at: str | None = None) -> None:
+             render_ended_at: str | None = None,
+             _stage_time: str | None = None) -> None:
         """Advance (or reset) one chapter. Only the fields you pass are touched —
         a re-render must not erase the raw/text paths from earlier stages."""
         sets = ["status=?", "error=?", "error_stage=?"]
@@ -295,7 +310,7 @@ class DB:
             if val is not None:
                 sets.append(f"{col}=?")
                 args.append(val)
-        field = self._STAGE_FIELD.get(status)
+        field = self._STAGE_FIELD.get(_stage_time or status)
         if field:
             sets.append(f"{field}=?")
             args.append(time.strftime("%Y-%m-%dT%H:%M:%S"))

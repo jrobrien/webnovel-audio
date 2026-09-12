@@ -520,7 +520,7 @@ def _do_fetch(cfg, db, prov, slug, c, *, force=False) -> str:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:
             fh.write(text)
-    db.mark(c["id"], "fetched", raw_path=path)
+    db.mark_stage(c["id"], "fetched", raw_path=path)
     return path
 
 
@@ -536,7 +536,8 @@ def _do_parse(cfg, db, prov, slug, c, raw_path, *, force=False) -> str:
             with open(md_path, "w", encoding="utf-8") as fh:
                 fh.write(render_markdown(doc, front_matter_extra={
                     "chapter": c["ord"] + 1, "published": c["published_at"] or ""}))
-    db.mark(c["id"], "parsed", text_path=md_path if os.path.exists(md_path) else None)
+    db.mark_stage(c["id"], "parsed",
+                  text_path=md_path if os.path.exists(md_path) else None)
     return md_path
 
 
@@ -580,10 +581,10 @@ def _do_render(cfg, db, scfg, slug, c, raw_path, *, backend="kokoro",
                                    "published": c["published_at"] or ""},
                           tags=_opus_tags(scfg, series_row, c) if series_row is not None else None,
                           log=lambda *_: None)
-    db.mark(c["id"], "rendered", audio_path=out_path,
-            duration_s=rep.audio_seconds or None,
-            render_started_at=started,
-            render_ended_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
+    db.mark_stage(c["id"], "rendered", audio_path=out_path,
+                  duration_s=rep.audio_seconds or None,
+                  render_started_at=started,
+                  render_ended_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
     return out_path, rep.audio_seconds
 
 
@@ -602,7 +603,7 @@ def _advance(cfg, db, prov, scfg, slug, c, *, upto, force=False, backend="kokoro
             raw = _do_fetch(cfg, db, prov, slug, c, force=force and upto == "fetched")
             ev["fetched"] = True
         elif have < stage_rank("fetched"):
-            db.mark(c["id"], "fetched", raw_path=raw)
+            db.mark_stage(c["id"], "fetched", raw_path=raw)
     if want >= stage_rank("parsed"):
         _do_parse(cfg, db, prov, slug, c, raw, force=force and upto == "parsed")
         ev["parsed"] = True
