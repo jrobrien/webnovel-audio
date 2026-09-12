@@ -40,92 +40,191 @@ Setup, deployment, automation, troubleshooting: [`SETUP.md`](SETUP.md).
 ```sh
 git clone <this-repo> ~/Projects/webnovel-audio && cd ~/Projects/webnovel-audio
 uv sync --extra kokoro                 # venv + deps + the Kokoro TTS engine
-uv run webnovel-audio fetch-models     # ~400 MB, once
+uv run webnovel-audio models fetch     # ~400 MB, once
 cp config.example.toml config.toml
 
-# track a series and render the first few chapters
+# 1. track it (metadata only — no chapter downloads)
 uv run webnovel-audio series add <royal-road-fiction-url> --from start
-uv run webnovel-audio sync <series-slug> --limit 3
 
-# serve the podcast feed to your phone / a podcast app
-uv run webnovel-audio serve            # http://<this-machine>:8080/
+# 2. pull + parse the first 10 (cheap: ~25 s, almost all politeness delay)
+uv run webnovel-audio fetch <slug> 1-10
+uv run webnovel-audio parse <slug> 1-10
+
+# 3. see what needs configuring, and write the starter config
+uv run webnovel-audio check <slug> 2-10 --write
+uv run webnovel-audio series edit <slug>       # adjust the cast by ear
+uv run webnovel-audio lex edit <slug>          # fix pronunciations
+
+# 4. render (the only expensive step, ~3–5 min/chapter)
+uv run webnovel-audio render <slug> 1-10
+
+# 5. listen
+uv run webnovel-audio serve                    # http://<this-machine>:8080/
 ```
 
-`--from`: `start` | `latest` (you're caught up) | `42` (heard through ch. 42) |
-`<chapter-url>`. Later, `webnovel-audio sync` renders everything new across all
-tracked series; `webnovel-audio schedule --install` runs it nightly.
+Then the steady state is one command — `webnovel-audio sync` pulls, parses and
+renders everything new across every enabled series (`schedule --install` runs it
+nightly). When a new character shows up 40 chapters later, drop back to step 3
+with `check <slug> 50-55 --write`; it only ever *adds* cast entries, never
+rewrites the ones you've tuned.
+
+## The pipeline
+
+Each stage is separately runnable, idempotent, and resumable. Everything before
+`render` is effectively free, which is the point: get the configuration right
+while iteration costs milliseconds, not minutes.
+
+```mermaid
+flowchart TD
+    A["series add &lt;url&gt; --from N"] --> DB[("state.db<br/>series + chapter list")]
+    DB --> F["fetch &lt;target&gt; [range]"]
+    F --> RAW[/".raw/&lt;id&gt;.html"/]
+    RAW --> P["parse &lt;target&gt; [range]"]
+    P --> MD[/"NNN-slug.md<br/>blocks + provenance"/]
+    MD --> CK["check &lt;target&gt; [range]"]
+    CK --> REP{{"report<br/>cast · heteronyms · unknown names"}}
+    REP -->|"--write"| CFG[/"data/series/&lt;slug&gt;.toml<br/>data/lexicons/&lt;slug&gt;.csv"/]
+    CFG --> ED["series edit · lex edit<br/>pron · voices demo"]
+    ED --> R["render &lt;target&gt; [range]"]
+    MD --> R
+    R --> OP[/"NNN-slug.opus<br/>+ NNN-slug.segments.json"/]
+    OP --> D["serve · feed · book"]
+    D -.->|"hear a problem"| ED
+    ED -.->|"render &lt;slug&gt; &lt;range&gt;"| R
+```
+
+| stage | cost per chapter | network | writes |
+|---|---|---|---|
+| `series add` | one page | yes | DB rows |
+| `fetch` | ~2.5 s (politeness delay, not work) | **yes** | `.raw/<id>.html` |
+| `parse` | ~30 ms | no | `NNN-slug.md` |
+| `check` | ~50 ms | no | report; `--write` → config + lexicon |
+| `render` | **~40 s per 3.6 min of audio** (88% TTS, 12% loudness) | no | `NNN-slug.opus` |
+
+`sync` is just `series refresh` + `render` with an implicit range, over every
+enabled series — the daily driver, not a special code path.
+
+## Calling convention
+
+Every pipeline verb takes the same two positional arguments:
+
+```
+webnovel-audio <verb> <target> [range]
+```
+
+**`<target>`** is a tracked series (slug, id, or title substring) *or* a path /
+URL for a one-off — the same way `git show` accepts a ref or a path.
+
+**`[range]`** is `N`, `N-M`, `N-`, or `-M`, and its presence changes the mood:
+
+| | with a range | without |
+|---|---|---|
+| `render <s> 20-30` | **imperative** — render those, whatever their recorded state | **declarative** — render whatever is outstanding |
+| `fetch <s> 20-30` | re-fetch those | fetch what's missing |
+| `parse <s> 20-30` | re-parse those | parse what's unparsed |
+
+So re-rendering after a config change is just `render <slug> 20-30` — there's no
+separate "mark these dirty" step, and no `--force`. Stages also pull their own
+inputs: `render <slug> 20-30` on chapters you never fetched will fetch and parse
+them first.
 
 ## Commands
 
+**Pipeline** — all take `<target> [range]`:
+
 | command | what |
 |---|---|
-| `render <txt\|html\|url> -o out.opus` | one chapter → `.opus` + `.md` + `.segments.json` |
-| `inspect <input>` | how it parsed: blocks, styles, cast, thought routing, lexicon queue |
-| `cast <input>` | detect speakers, print a `[cast.voices]` starter block |
-| `lexicon <input> --write` | queue unknown proper nouns into `data/lexicons/<slug>.csv` |
-| `pron <text> [--series S] [--check]` | how the TTS will say it: phonemes + a rough gloss, before/after the lexicon |
-| `voices [--demo -o f.opus]` | list the 28 voices; `--demo` renders one chaptered file (one chapter per voice) with a spoken label + sample |
-| `ui` | launch the Tcl/Tk control UI |
-| `series add\|list\|set\|refresh\|redo` | manage tracked series (`redo <key> [N-M]` re-queues rendered chapters after a lexicon/cast fix) |
-| `sync [key] [--limit N] [--dry-run]` | render new chapters into `library/` (one at a time per state DB — a second `sync` refuses with exit 2 while one's running) |
-| `config` | show resolved paths (state DB, library, executable, …) |
-| `login [--cookies-file … \| --check]` | store a Royal Road session cookie (optional) |
-| `serve` | localhost/LAN podcast feeds + audio |
-| `book <key> [--from N] [--to M]` | stitch chapters into a chapterised `.m4b` |
-| `feed <key> --base-url URL` | write a static RSS file for an external web server |
-| `schedule [--install]` | emit / install a systemd-user timer for nightly `sync` |
-| `fetch <url>` / `fetch-models` | save a chapter page / download the TTS model |
+| `fetch <target> [range]` | download chapter source into the raw cache |
+| `parse <target> [range]` | raw → blocks → readable `.md`. `--explain` dumps the parse |
+| `check <target> [range]` | cast / heteronyms / unknown names report. `--write` applies it |
+| `render <target> [range]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only |
+| `sync [series] [--limit N]` | refresh + render everything outstanding, all enabled series |
 
-`series list`, `series add/set/refresh`, `sync`, and `config` take **`--json`**
-(machine-readable; `sync --json` streams one JSON event per line). Input to
-`render`/`inspect`/`cast`/`lexicon` can be a chapter **URL**, a saved **`.html`**,
-or a plain **`.txt`**. Running `webnovel-audio` with no arguments just prints
-this help (`--help`) — it doesn't launch the UI or do anything on its own; use
-`webnovel-audio ui` (or `wish ui/control.tcl`) for that explicitly.
+**Series** (porcelain):
+
+| command | what |
+|---|---|
+| `series add <url> [--from N]` | start tracking — metadata only, no chapter downloads |
+| `series list` | dashboard: per-stage counts, what's next, errors |
+| `series show <slug>` | one series in detail |
+| `series set <slug> <pos>` | mark everything through `<pos>` as already dealt with |
+| `series edit <slug>` | open `data/series/<slug>.toml` in `$EDITOR` |
+| `series enable\|disable <slug>` | include / exclude from `sync` (finished a series? disable it) |
+| `series refresh [slug]` | re-fetch chapter lists |
+| `series forget <slug> [--purge]` | untrack; `--purge` also deletes rendered files |
+
+**State** (plumbing — the chapter state machine, by hand):
+
+| command | what |
+|---|---|
+| `state show <series> [range]` | per-chapter stage table |
+| `state set <series> <range> <status>` | `new` \| `fetched` \| `parsed` \| `rendered` \| `skipped` |
+| `state reset <series> [range]` | errors → `new`, to retry them |
+
+**Lexicon / config / voices:**
+
+| command | what |
+|---|---|
+| `lex edit <slug>` / `lex edit --base` | open the per-series / always-on CSV in `$EDITOR` |
+| `lex add <slug> <surface> <respell>` | append a row without opening an editor |
+| `lex list [slug]` | show effective entries (base + series, merged) |
+| `config show` / `config edit` | resolved paths / open `config.toml` |
+| `pron <text> [--series S]` | how the TTS will say it: phonemes + a rough gloss |
+| `voices list` / `voices demo` | the 28 ids / a chaptered audition file |
+
+**Delivery + misc:** `serve`, `feed <series>`, `book <series> [range]`,
+`models fetch`, `login`, `schedule [--install]`, `ui`.
+
+`--json` is available on `series`, `state`, `check`, `config`, and the pipeline
+verbs; `sync`/`fetch`/`render` stream one JSON event per line. Only one
+`sync`/`render` runs at a time per state DB (a `flock`), so a second one refuses
+with exit 2 rather than fighting for the CPU. Bare `webnovel-audio` prints help
+— it never launches the UI implicitly; use `webnovel-audio ui` for that.
 
 ### Command-line examples
 
 ```sh
-# track a new series, starting from the beginning
-webnovel-audio series add https://www.royalroad.com/fiction/12345/some-fiction --from start
-
-# ...or starting from where you've already read up to (skips 1-40)
+# start tracking; --from 40 means "I've already read 40, skip them"
 webnovel-audio series add https://www.royalroad.com/fiction/12345/some-fiction --from 40
 
-# see what's tracked and how far behind each one is
+# what's tracked, where each one is
 webnovel-audio series list
+webnovel-audio state show some-fiction 1-20      # per-chapter detail
 
-# render everything new, across every tracked series
-webnovel-audio sync
+# the cheap stages, ahead of time
+webnovel-audio fetch some-fiction 41-50
+webnovel-audio parse some-fiction 41-50
+webnovel-audio check some-fiction 41-50 --write  # cast + lexicon scaffolding
 
-# render just the next 3 chapters of one series
+# tune, then render
+webnovel-audio series edit some-fiction          # cast voices
+webnovel-audio lex edit some-fiction             # pronunciations
+webnovel-audio render some-fiction 41-50
+
+# heard a problem in 44-46? fix, then just render them again
+webnovel-audio lex add some-fiction Kaelith kay-lith
+webnovel-audio render some-fiction 44-46
+
+# the steady state
+webnovel-audio sync                              # everything new, everywhere
 webnovel-audio sync some-fiction --limit 3
 
-# preview what a sync would do without rendering anything
-webnovel-audio sync --dry-run
-
-# fix a mispronunciation, then re-render the chapters that already have it
-$EDITOR data/lexicons/some-fiction.csv          # add a respell row
-webnovel-audio series redo some-fiction 12-15
-webnovel-audio sync some-fiction
+# one-off file or URL, no tracking involved
+webnovel-audio check ./some-chapter.html
+webnovel-audio render ./some-chapter.html -o out.opus
 
 # hear how a name will be said before committing to a respelling
 webnovel-audio pron Kaelith --series some-fiction
+webnovel-audio voices demo -o voices.opus
 
-# browse the 28 voices before casting a character
-webnovel-audio voices --demo -o voices.opus
-
-# see how one chapter would be cast / parsed, without rendering it
-webnovel-audio cast some-chapter.html
-webnovel-audio inspect some-chapter.html
-
-# serve the library as a podcast feed on the LAN
+# delivery
 webnovel-audio serve
+webnovel-audio book some-fiction 1-40 -o some-fiction.m4b
 
-# a standalone chaptered audiobook file for one arc
-webnovel-audio book some-fiction --from 1 --to 40 -o some-fiction.m4b
+# done with a series? stop syncing it
+webnovel-audio series disable some-fiction
 
-# script against it: --json on series/sync/config gives structured output
+# script against it
 webnovel-audio series list --json | jq '.series[] | {slug, pending}'
 ```
 
@@ -189,7 +288,7 @@ HTML ingest keeps italic character ranges. A sentence that is ≥
 
 ### Casting
 
-`cast <chapter>` runs the attributor and prints `character → Kokoro voice id`
+`check <target>` runs the attributor and prints `character → Kokoro voice id`
 with line counts and a gender guess; paste into `config.toml`, adjust. Speakers
 referred to only descriptively ("the old woman") become a lowercase key
 (`woman`) you map like any other. `[cast] protagonist` catches untagged
@@ -197,6 +296,23 @@ first-person lines; unmapped speakers use `[cast] default`. Attribution is
 rules-only and deterministic — it gets tags, pronoun tags, volleys and untagged
 continuations right, and mis-assigns the occasional oddly-phrased line, which you
 fix in the cast map.
+
+`check <target> [range] --write` does this for a tracked series: it samples the
+range, then writes a `data/series/<slug>.toml` with a `[cast.voices]` entry per
+detected speaker, each commented with its line count and gender guess — e.g.
+`"Mara" = "af_heart"   # 8 line(s), female`. Re-running it on a later range
+(`check <slug> 50-55 --write`, once new characters appear) **only appends
+speakers it hasn't seen**; lines you've already tuned are never rewritten.
+
+The same pass reports two other things over that text:
+
+- **Heteronyms** — `tear`, `bow`, `wind`, `lead` … flagged with surrounding
+  context. These are never auto-corrected: the right reading changes from
+  sentence to sentence, so there's no safe blanket fix. Judge by ear, and if one
+  matters, a **multi-word lexicon entry** (`a tear in,a tair in`) pins just that
+  phrase.
+- **Unknown proper nouns** — names in no lexicon yet; `--write` queues them as
+  blank rows for you to fill in.
 
 To pick voice ids by ear, `webnovel-audio voices --demo -o voices.opus` renders
 one file that says each id then reads a sample paragraph in it (`--only a,b,c`
@@ -226,7 +342,7 @@ don't — use `book` for a `.m4b`.
 directory; `-c` for a different one):
 
 `[general]` `base_lexicon` (always-on) + `lexicon` / per-series-config paths · `[voices]` fallback voices · `[cast]` + `[cast.voices]`
-per-series casting · `[chat]` livestream-chat behaviour · `[synth]`
+per-series casting (`seed_chapters` = `check`'s default sample window) · `[chat]` livestream-chat behaviour · `[synth]`
 (`thought_threshold`, `system_rate`) · `[pauses]` · `[audio]` loudness ·
 `[dsp.*]` effect chains keyed by speaker / voice / style · `[royalroad]`
 (`library_dir`, `state_db`, `request_delay`) · `[serve]` (`host`, `port`) ·
@@ -235,7 +351,7 @@ per-series casting · `[chat]` livestream-chat behaviour · `[synth]`
 ## Development
 
 ```sh
-uv run pytest -q            # ~80 tests, fully offline
+uv run pytest -q            # ~84 tests, fully offline
 uv run python -m compileall -q src/
 ```
 
