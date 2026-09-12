@@ -72,3 +72,41 @@ class _FakeResp:
 
     def raise_for_status(self):
         return None
+
+
+def _fiction_fixture():
+    import os.path
+    p = os.path.join(os.path.dirname(__file__), "..", "samples", "salvage-run-fiction.html")
+    return open(p, encoding="utf-8").read() if os.path.exists(p) else ""
+
+
+def test_parse_fiction_metadata():
+    html = _fiction_fixture()
+    if not html:
+        return
+    fi = parse_fiction(html, url="https://www.royalroad.com/fiction/424242/salvage-run")
+    assert fi.status == "ONGOING"                 # "Original" must not win
+    assert fi.rating == 4.51
+    assert "Sci-fi" in fi.tags and "Space Opera" in fi.tags
+    assert fi.warnings == ["Graphic Violence", "Profanity"]
+
+
+def test_metadata_extractors_degrade_to_empty():
+    """Royal Road can rename any of these presentational classes; losing a tag
+    list must never break a sync, and empty is a truthful 'we don't know'."""
+    fi = parse_fiction("<html><body><h1>Bare</h1></body></html>", url="https://rr/fiction/1/x")
+    assert fi.tags == [] and fi.warnings == [] and fi.status == "" and fi.rating == 0.0
+
+    # malformed rating / weird label casing must not raise either
+    html = ('<html><head><meta property="books:rating:value" content="not-a-number">'
+            '</head><body><span class="label">ongoing</span></body></html>')
+    fi = parse_fiction(html, url="https://rr/fiction/1/x")
+    assert fi.rating == 0.0 and fi.status == "ONGOING"
+
+
+def test_no_synopsis_is_captured():
+    """We deliberately don't store the author's description — the source URL
+    stands in for it. Keeps their prose out of our DB and feed."""
+    from webnovel_audio.royalroad import FictionInfo
+
+    assert not hasattr(FictionInfo("1", "s", "t"), "description")

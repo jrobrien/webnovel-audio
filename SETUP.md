@@ -107,8 +107,8 @@ uv run webnovel-audio sync                               # everything, every ena
 
 `sync` estimates how much CPU the run will take (from the median duration of
 what that series has already rendered) and asks before starting — `-y`/`--yes`
-skips that, and it's skipped automatically when stdin isn't a terminal, so the
-systemd timer is unaffected. It works oldest-first and records failures as `error` (retried next run,
+skips that, and it's skipped automatically when stdin isn't a terminal, so
+scripted runs are unaffected. It works oldest-first and records failures as `error` (retried next run,
 with `error_stage` naming what broke) without stopping the batch. A chapter's
 `status` alone decides whether it's outstanding — `state set <slug> -40 skipped`
 marks 1..40 as already-dealt-with, and `state show <slug>` prints the
@@ -149,9 +149,8 @@ Standalone QR helper (installed at `~/.local/bin/qr`, uses `qrencode` +
 `img2sixel`): `qr <text>` for a block QR, `qr -s <text>` for a sixel image,
 `qr -p out.png <text>` to save one. `some-command | qr` reads stdin.
 
-To run it in the background permanently, use the same systemd approach as §8 with
-`ExecStart=…/.venv/bin/webnovel-audio serve` and a `[Install]`/`WantedBy` in a
-`.service` (no timer).
+To leave it running, start it from the control UI (Feed server → Start) or just
+background it in a terminal.
 
 Open the port if you have a firewall: `sudo ufw allow 8080/tcp` (or equivalent).
 
@@ -165,9 +164,7 @@ uv run webnovel-audio book <series-slug> 1-3 -o out/arc1.m4b
 Produces a single AAC `.m4b` with a chapter marker + title per chapter and the
 cover embedded — for any audiobook player.
 
-## 8. Run it: control UI or systemd timer
-
-### Option A — the Tcl/Tk control UI
+## 8. Run it: the control UI
 
 ```sh
 uv run webnovel-audio ui     # or just `uv run webnovel-audio`
@@ -191,21 +188,6 @@ two lexicons open differently — either fix the association
 (`xdg-mime default nvim.desktop text/csv application/csv text/x-csv`) or set
 `WEBNOVEL_AUDIO_EDITOR` before launching `wish` (a command with optional args:
 `WEBNOVEL_AUDIO_EDITOR="$EDITOR"`, `="foot -e nvim"`, `="code -w"`).
-
-### Option B — a systemd-user timer (unattended, headless)
-
-### the timer
-
-```sh
-uv run webnovel-audio schedule --install     # writes ~/.config/systemd/user/*
-systemctl --user daemon-reload
-systemctl --user enable --now webnovel-audio-sync.timer
-systemctl --user list-timers | grep webnovel   # check next run
-journalctl --user -u webnovel-audio-sync -f    # watch a run
-```
-
-Default schedule is 03:00 daily (`--calendar '*-*-* 03:00'` to change). For the
-timer to fire while you're logged out: `loginctl enable-linger $USER`.
 
 ## 9. Royal Road login (optional)
 

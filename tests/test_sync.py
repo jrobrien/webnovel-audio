@@ -491,3 +491,37 @@ def test_sync_yes_flag_skips_prompt(tmp_path, monkeypatch):
     # ...and a non-tty (cron / systemd timer) must not prompt either
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     assert cli._cmd_sync(_sync_args(config=str(cfgp))) == 0
+
+
+def test_opus_tags_carry_provenance(tmp_path):
+    """Series + chapter provenance for the Opus stream. Verified against real
+    ffmpeg output that custom Vorbis keys survive libopus."""
+    import json as _json
+
+    cfg = Config()
+    db = DB(str(tmp_path / "s.db"))
+    fi = FictionInfo(rr_id="9", slug="demo", title="Demo", author="A Writer",
+                     url="https://rr/9", tags=["Sci-fi", "Space Opera"],
+                     warnings=["Graphic Violence", "Profanity"],
+                     status="ONGOING", rating=4.5)
+    sid = db.upsert_series(fi)
+    db.replace_chapters(sid, _chapters(2))
+    s, c = db.get_series("demo"), db.chapters(sid)[1]
+
+    tags = sync._opus_tags(cfg, s, c)
+    assert tags["TRACKNUMBER"] == "2"
+    assert tags["DATE"] == "2026-01-01"
+    assert tags["PERFORMER"] == cfg.voices.narrator
+    assert tags["CONTENT_WARNING"] == "Graphic Violence; Profanity"
+    assert tags["KEYWORDS"] == "Sci-fi; Space Opera"
+    assert "RENDERED_AT" in tags and "ORGANIZATION" in tags
+    assert _json.loads(s["warnings"]) == ["Graphic Violence", "Profanity"]
+    assert s["status"] == "ONGOING" and s["rating"] == 4.5
+
+    # a series with no metadata (or corrupt JSON) must still produce valid tags
+    db.con.execute("UPDATE series SET tags='{bad', warnings=NULL WHERE id=?", (sid,))
+    db.con.commit()
+    tags = sync._opus_tags(cfg, db.get_series("demo"), c)
+    assert "CONTENT_WARNING" not in tags and "KEYWORDS" not in tags
+    assert tags["TRACKNUMBER"] == "2"
+    db.close()

@@ -51,7 +51,10 @@ def load_document(source: str, cfg: Config):
             "title": doc.chapter_title,
             "album": doc.fiction_title,
             "artist": doc.author,
-            "comment": doc.url,
+            "comment": doc.url,            # players show this; keep it the source link
+            "SOURCE_URL": doc.url,
+            "FETCHED_AT": doc.retrieved_at,
+            "RAW_SHA256": doc.raw_sha256,
         }.items() if v}
         return blocks, meta, doc
 
@@ -117,6 +120,7 @@ def render(
     dry_run: bool = False,
     jobs: int = 1,
     md_meta: dict | None = None,
+    tags: dict | None = None,
     log=print,
 ) -> Report:
     blocks, segs, doc_meta, doc = build_script(input_txt, cfg)
@@ -205,7 +209,7 @@ def render(
         wav, sr, out_path,
         bitrate=cfg.audio.opus_bitrate,
         loud=(cfg.audio.loudness_i, cfg.audio.loudness_tp, cfg.audio.loudness_lra),
-        meta={**cfg.metadata, "title": default_title, **doc_meta},
+        meta={**cfg.metadata, "title": default_title, **doc_meta, **(tags or {})},
     )
 
     wall = time.time() - t0

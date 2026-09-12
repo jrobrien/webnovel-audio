@@ -53,6 +53,10 @@ class FictionInfo:
     url: str = ""
     chapters: list[ChapterRef] = field(default_factory=list)
     provider: str = "royalroad"
+    tags: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)   # "Graphic Violence", ...
+    status: str = ""                                    # ONGOING | COMPLETED | ...
+    rating: float = 0.0
 
 
 # --- session cookie ------------------------------------------------------------
@@ -242,6 +246,48 @@ def _fiction_id_slug(soup: BeautifulSoup, fallback_url: str) -> tuple[str, str]:
     return (_safe_id(m.group(1)) if m else ""), ""
 
 
+_STATUS_LABELS = {"ONGOING", "COMPLETED", "HIATUS", "STUB", "DROPPED"}
+# Presentational classes Royal Road can rename at will. Every extractor below is
+# wrapped so that drift degrades to an empty value — losing a tag list must never
+# break a sync, and an empty list is a truthful "we don't know".
+_TAG_SEL = "a.fiction-tag"
+_WARN_SEL = ".text-center.font-red-sunglo li"
+
+
+def _soft(fn, default):
+    try:
+        return fn()
+    except Exception:  # noqa: BLE001 - metadata is decoration; never fatal
+        return default
+
+
+def _parse_tags(soup) -> list[str]:
+    return _soft(lambda: [t for t in (a.get_text(strip=True)
+                                      for a in soup.select(_TAG_SEL)) if t][:40], [])
+
+
+def _parse_warnings(soup) -> list[str]:
+    return _soft(lambda: [t for t in (li.get_text(strip=True)
+                                      for li in soup.select(_WARN_SEL)) if t][:20], [])
+
+
+def _parse_status(soup) -> str:
+    def go():
+        for sp in soup.select("span.label"):
+            t = sp.get_text(strip=True).upper()
+            if t in _STATUS_LABELS:
+                return t
+        return ""
+    return _soft(go, "")
+
+
+def _parse_rating(soup) -> float:
+    def go():
+        m = soup.find("meta", property="books:rating:value")
+        return round(float(m["content"]), 2) if m and m.get("content") else 0.0
+    return _soft(go, 0.0)
+
+
 def parse_fiction(html: str, url: str = "") -> FictionInfo:
     soup = BeautifulSoup(html, "lxml")
     rr_id, slug = _fiction_id_slug(soup, url)
@@ -309,4 +355,6 @@ def parse_fiction(html: str, url: str = "") -> FictionInfo:
     return FictionInfo(
         rr_id=rr_id, slug=slug, title=title, author=author, author_url=author_url,
         cover_url=cover, url=url or f"{BASE}/fiction/{rr_id}/{slug}", chapters=chapters,
+        tags=_parse_tags(soup), warnings=_parse_warnings(soup),
+        status=_parse_status(soup), rating=_parse_rating(soup),
     )

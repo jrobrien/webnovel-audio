@@ -12,7 +12,7 @@ no GPU, no cloud, no account required.
   continuations, descriptive referents ("the old woman"). No model download; every
   decision is visible and overridable in config.
 - **Library** — track a series, `sync` renders every new chapter past where you
-  left off; drive it from a **Tcl/Tk control UI** or a systemd timer.
+  left off; drive it from the CLI or a **Tcl/Tk control UI**.
 - **Provider seam** — Royal Road + local files today; a new source (webnovel.com,
   usenet/mbox, …) is one class producing the shared `Document`.
 - **Three outputs per chapter** — mastered Opus, a **readable Markdown** copy
@@ -64,8 +64,8 @@ uv run webnovel-audio serve                    # http://<this-machine>:8080/
 ```
 
 Then the steady state is one command — `webnovel-audio sync` pulls, parses and
-renders everything new across every enabled series (`schedule --install` runs it
-nightly). When a new character shows up 40 chapters later, drop back to step 3
+renders everything new across every enabled series, after showing you how much
+CPU that will cost. When a new character shows up 40 chapters later, drop back to step 3
 with `cast update <slug> 50-55`; it only ever *adds* speakers, never rewrites
 the ones you've tuned.
 
@@ -177,7 +177,7 @@ them first.
 | `voices list` / `voices demo` | the 28 ids / a chaptered audition file |
 
 **Delivery + misc:** `serve`, `feed <series>`, `book <series> [range]`,
-`models fetch`, `login`, `schedule [--install]`, `ui`.
+`models fetch`, `login`, `ui`.
 
 `--json` is available on `series`, `state`, `check`, `config`, and the pipeline
 verbs; `sync`/`fetch`/`render` stream one JSON event per line. Only one
@@ -244,7 +244,7 @@ Tcl/Tk (`--python` forces that). A Tcl/Tk front end over the CLI: add/track
 series, run `sync` on demand or on an in-app schedule (interval or daily),
 start/stop the feed **server**, edit the config / base + per-series lexicons,
 **Test word…** to preview a pronunciation, with a live log. It's a stand-alone
-alternative to the systemd timer — leave it open and it drives the batch runs.
+way to leave batch runs running — leave it open and it drives them.
 Launched via `wish` directly, set `WEBNOVEL_AUDIO=/path/to/webnovel-audio` if the
 CLI isn't found automatically.
 

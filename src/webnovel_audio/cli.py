@@ -945,42 +945,6 @@ def _cmd_feed(args) -> int:
     return 0
 
 
-def _cmd_schedule(args) -> int:
-    import shutil
-
-    project = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    venv_bin = os.path.join(project, ".venv", "bin", "webnovel-audio")
-    if os.path.exists(venv_bin):
-        exec_start = f"{venv_bin} sync --yes"
-    else:
-        exec_start = f"{shutil.which('uv') or 'uv'} run --project {project} webnovel-audio sync --yes"
-    service = (
-        "[Unit]\nDescription=webnovel-audio: render new Royal Road chapters\n\n"
-        "[Service]\nType=oneshot\n"
-        f"WorkingDirectory={project}\nExecStart={exec_start}\n"
-    )
-    timer = (
-        "[Unit]\nDescription=Run webnovel-audio sync\n\n"
-        f"[Timer]\nOnCalendar={args.calendar}\nPersistent=true\n\n"
-        "[Install]\nWantedBy=timers.target\n"
-    )
-    if not args.install:
-        print("# webnovel-audio-sync.service\n" + service)
-        print("# webnovel-audio-sync.timer\n" + timer)
-        print("# write these to ~/.config/systemd/user/ then:")
-        print("#   systemctl --user daemon-reload && systemctl --user enable --now webnovel-audio-sync.timer")
-        return 0
-    d = os.path.expanduser("~/.config/systemd/user")
-    os.makedirs(d, exist_ok=True)
-    for name, body in (("webnovel-audio-sync.service", service),
-                       ("webnovel-audio-sync.timer", timer)):
-        with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
-            fh.write(body)
-    print(f"installed unit files in {d}")
-    print("run:  systemctl --user daemon-reload && systemctl --user enable --now webnovel-audio-sync.timer")
-    return 0
-
-
 def main(argv=None) -> int:
     import sys
 
@@ -1208,13 +1172,6 @@ def main(argv=None) -> int:
                     help="report whether a session is stored (does not verify it)")
     lg.add_argument("--logout", action="store_true")
     lg.set_defaults(func=_cmd_login)
-
-    sc = sub.add_parser("schedule", help="systemd-user timer for nightly sync")
-    sc.add_argument("--install", action="store_true", help="write the unit files")
-    sc.add_argument("--calendar", default="*-*-* 03:00",
-                    help="systemd OnCalendar expression (default: 3am daily)")
-    _cfg(sc)
-    sc.set_defaults(func=_cmd_schedule)
 
     ui = sub.add_parser("ui", help="launch the Tcl/Tk control UI")
     ui.add_argument("--python", action="store_true",

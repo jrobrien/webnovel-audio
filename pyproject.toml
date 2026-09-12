@@ -1,6 +1,6 @@
 [project]
 name = "webnovel-audio"
-version = "0.3.0"
+version = "0.4.0"
 description = "Offline high-quality TTS for web novels, CPU-first (tuned for Ryzen 8745HS / Radeon 780M, no CUDA)"
 readme = "README.md"
 license = "0BSD"

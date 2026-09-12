@@ -5,6 +5,7 @@ import contextlib
 import copy
 import fcntl
 import os
+import json
 import re
 import time
 import tomllib
@@ -542,18 +543,52 @@ def _do_parse(cfg, db, prov, slug, c, raw_path, *, force=False) -> str:
     return md_path
 
 
-def _do_render(cfg, db, scfg, slug, c, raw_path, *, backend="kokoro") -> tuple[str, float]:
+def _opus_tags(scfg, series_row, c) -> dict:
+    """Series/chapter provenance for the Opus stream (Vorbis comments).
+
+    Verified to round-trip through libopus, custom keys included. No synopsis —
+    that's the author's text; the source URL stands in for it.
+    """
+    keys = series_row.keys()
+    warnings = []
+    if "warnings" in keys and series_row["warnings"]:
+        try:
+            warnings = json.loads(series_row["warnings"]) or []
+        except (ValueError, TypeError):
+            warnings = []
+    tags = []
+    if "tags" in keys and series_row["tags"]:
+        try:
+            tags = json.loads(series_row["tags"]) or []
+        except (ValueError, TypeError):
+            tags = []
+    out = {
+        "TRACKNUMBER": str(c["ord"] + 1),
+        "DATE": (c["published_at"] or "")[:10],      # the chapter's publish date
+        "PERFORMER": scfg.cast.narrator or scfg.voices.narrator,
+        "ORGANIZATION": "webnovel-audio (Kokoro-82M)",
+        "RENDERED_AT": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "CONTENT_WARNING": "; ".join(warnings),
+        "KEYWORDS": "; ".join(tags[:20]),
+    }
+    return {k: v for k, v in out.items() if v}
+
+
+def _do_render(cfg, db, scfg, slug, c, raw_path, *, backend="kokoro",
+               series_row=None) -> tuple[str, float]:
     out_path = _out_stem(cfg, slug, c) + ".opus"
     rep = pipeline.render(raw_path, out_path, scfg, backend=backend,
                           md_meta={"chapter": c["ord"] + 1,
                                    "published": c["published_at"] or ""},
+                          tags=_opus_tags(scfg, series_row, c) if series_row is not None else None,
                           log=lambda *_: None)
     db.mark(c["id"], "rendered", audio_path=out_path,
             duration_s=rep.audio_seconds or None)
     return out_path, rep.audio_seconds
 
 
-def _advance(cfg, db, prov, scfg, slug, c, *, upto, force=False, backend="kokoro"):
+def _advance(cfg, db, prov, scfg, slug, c, *, upto, force=False, backend="kokoro",
+             series_row=None):
     """Walk one chapter up to `upto`. Returns an event dict for the caller."""
     from .db import stage_rank
 
@@ -572,7 +607,8 @@ def _advance(cfg, db, prov, scfg, slug, c, *, upto, force=False, backend="kokoro
         _do_parse(cfg, db, prov, slug, c, raw, force=force and upto == "parsed")
         ev["parsed"] = True
     if want >= stage_rank("rendered"):
-        path, secs = _do_render(cfg, db, scfg, slug, c, raw, backend=backend)
+        path, secs = _do_render(cfg, db, scfg, slug, c, raw, backend=backend,
+                                series_row=series_row)
         ev["path"] = path
         ev["audio_seconds"] = round(secs, 1)
     ev["result"] = "ok"
@@ -638,7 +674,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                 try:
                     log(f"  #{num} {c['title']}")
                     ev = _advance(cfg, db, prov, scfg, slug, c, upto=stage,
-                                  force=explicit, backend=backend)
+                                  force=explicit, backend=backend, series_row=s)
                     res.rendered += 1
                     _emit({"event": "chapter", "slug": slug,
                            "elapsed_seconds": round(time.time() - t0, 1), **ev})

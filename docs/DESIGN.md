@@ -77,8 +77,8 @@ M4B export stays available for single-file arcs.
 No official API. Log in via browser once, export the session cookie, use it with
 `httpx`. Parse `div.chapter-content`, drop `.author-note` and hidden nodes. Be
 polite (1 req / 2–3 s, cache, back off on 429). SQLite tracks
-series/chapter/status; a `sync` command enqueues new chapters; a systemd-user
-timer runs it nightly. Personal use only — respect authors with official audio.
+series/chapter/status; a `sync` command renders new chapters. (Scheduling was
+dropped — with the CLI and data model settled, wiring a timer later is trivial.) Personal use only — respect authors with official audio.
 
 ## Roadmap
 
@@ -127,8 +127,7 @@ timer runs it nightly. Personal use only — respect authors with official audio
   (oldest first, caches raw HTML under `library/<slug>/.raw/`, calls
   `pipeline.render`, keeps going past errors). CLI: `series
   add|refresh|list`, `sync`, `login` (cookie header or Netscape cookies.txt →
-  `~/.config/webnovel-audio/session.json`), `schedule` (emits/installs a
-  systemd-user `.service` + `.timer`).
+  `~/.config/webnovel-audio/session.json`).
 - **Readable text output** *(done)*: `textout.render_markdown(doc)` turns the
   ingest `Document` into a Markdown file written next to every `.opus`
   (`NNN-<slug>.md`), and `render` does the same for one-off HTML/URL input. It's
@@ -229,7 +228,6 @@ Residual / accepted (single-user desktop tool):
   write endpoints (the planned add-series / schedule UI) MUST bind localhost
   only, carry CSRF tokens, and check `Origin`/`Host` to defeat DNS rebinding —
   or be a separate local GUI that calls the library functions directly.
-- `schedule --calendar` is interpolated into a unit file; it's the user's own CLI
   argument, not remote input.
 
 ## Provider seam & the `--json` contract
@@ -249,7 +247,7 @@ emits newline-delimited events (`start` / `series` / `chapter_begin` / `chapter`
 front end is self-configuring. `ui/control.tcl` is exactly that: a Tcl/Tk app
 that shells the CLI, parses the JSON (bundled `ui/json.tcl`), streams `sync`, and
 carries its own interval/daily scheduler (`after`-based) as an alternative to the
-systemd timer. It needs no `sqlite3`/`json`/`tls` Tcl packages — just `tk`.
+a terminal. It needs no `sqlite3`/`json`/`tls` Tcl packages — just `tk`.
 
 The DB opens WAL + a busy timeout so a reader (a second CLI, a future native UI)
 never blocks the `sync` writer.
@@ -326,6 +324,27 @@ cookie surfaces where it's actionable instead: `_do_fetch` raises `ChapterLocked
 for a chapter whose `unlocked` flag is false, naming `login` and saying whether a
 session exists at all. Nothing reads account state — the follows reader and
 reading-position sync were removed in 0.2.1.
+
+## Source metadata
+
+`parse_fiction` also lifts tags (`a.fiction-tag`), content warnings
+(`.text-center.font-red-sunglo li`), status (`span.label` against a known set)
+and rating (`meta[books:rating:value]`) into `FictionInfo` / the `series` table
+(lists JSON-encoded). Every extractor goes through `_soft()` so a Royal Road
+markup rename degrades to an empty value rather than breaking a sync — these are
+presentational classes with no stability guarantee, and empty is a truthful
+"we don't know".
+
+The synopsis is deliberately **not** captured: it's the author's prose, and the
+source URL stands in for it everywhere it would have been used. That also keeps
+their text out of the local DB and out of any feed we publish.
+
+Chapter provenance reaches the Opus stream as Vorbis comments — `SOURCE_URL`,
+`FETCHED_AT`, `RENDERED_AT`, `RAW_SHA256`, `PERFORMER` (the narrator voice),
+`CONTENT_WARNING`, `KEYWORDS`, plus standard `artist`/`album`/`title`/`track`/
+`DATE` (the chapter's *publish* date, not the render time). Verified against real
+ffmpeg output that custom keys survive libopus; note ffmpeg normalises
+`TRACKNUMBER` to `track`, and Ogg carries them as stream tags, not format tags.
 
 ## Sync lock
 

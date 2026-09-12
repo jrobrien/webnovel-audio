@@ -10,6 +10,7 @@ Road about reading position.
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 import time
@@ -38,6 +39,10 @@ CREATE TABLE IF NOT EXISTS series (
     url            TEXT,
     cover_url      TEXT,
     enabled        INTEGER DEFAULT 1,    -- 0 = excluded from `sync`
+    tags           TEXT,                 -- JSON array, from the source page
+    warnings       TEXT,                 -- JSON array: "Graphic Violence", ...
+    status         TEXT,                 -- ONGOING | COMPLETED | ...
+    rating         REAL,
     added_at       TEXT
 );
 CREATE TABLE IF NOT EXISTS chapters (
@@ -91,6 +96,10 @@ class DB:
             self.con.execute("ALTER TABLE series ADD COLUMN provider TEXT DEFAULT 'royalroad'")
         if "enabled" not in scols:
             self.con.execute("ALTER TABLE series ADD COLUMN enabled INTEGER DEFAULT 1")
+        for name, decl in (("tags", "TEXT"), ("warnings", "TEXT"),
+                           ("status", "TEXT"), ("rating", "REAL")):
+            if name not in scols:
+                self.con.execute(f"ALTER TABLE series ADD COLUMN {name} {decl}")
 
         if "error_stage" not in cols:
             # 0.1 -> 0.2. Old `status` only knew new|rendered|error|skipped, and
@@ -119,14 +128,20 @@ class DB:
     # -- series ------------------------------------------------------------
     def upsert_series(self, fi) -> int:
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
+        tags = json.dumps(getattr(fi, "tags", []) or [])
+        warnings = json.dumps(getattr(fi, "warnings", []) or [])
         cur = self.con.execute(
-            """INSERT INTO series (rr_id, provider, slug, title, author, url, cover_url, added_at)
-               VALUES (?,?,?,?,?,?,?,?)
+            """INSERT INTO series (rr_id, provider, slug, title, author, url, cover_url,
+                                   tags, warnings, status, rating, added_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(rr_id) DO UPDATE SET
                  provider=excluded.provider, slug=excluded.slug, title=excluded.title,
-                 author=excluded.author, url=excluded.url, cover_url=excluded.cover_url""",
+                 author=excluded.author, url=excluded.url, cover_url=excluded.cover_url,
+                 tags=excluded.tags, warnings=excluded.warnings,
+                 status=excluded.status, rating=excluded.rating""",
             (fi.rr_id, getattr(fi, "provider", "royalroad"), fi.slug, fi.title,
-             fi.author, fi.url, fi.cover_url, now),
+             fi.author, fi.url, fi.cover_url, tags, warnings,
+             getattr(fi, "status", ""), getattr(fi, "rating", 0.0), now),
         )
         self.con.commit()
         row = self.get_series(fi.rr_id)
@@ -161,11 +176,21 @@ class DB:
             nxt = pending[0] if pending else None
             last = rendered[-1] if rendered else None
             keys = s.keys()
+
+            def _jlist(col):
+                try:
+                    return json.loads(s[col]) if col in keys and s[col] else []
+                except (ValueError, TypeError):
+                    return []
+
             out.append({
                 "slug": s["slug"], "title": s["title"], "author": s["author"],
                 "url": s["url"], "rr_id": s["rr_id"],
                 "provider": s["provider"] if "provider" in keys else "royalroad",
                 "enabled": bool(s["enabled"]) if "enabled" in keys else True,
+                "tags": _jlist("tags"), "warnings": _jlist("warnings"),
+                "status": (s["status"] if "status" in keys else "") or "",
+                "rating": (s["rating"] if "rating" in keys else 0.0) or 0.0,
                 "chapters": len(chs), "rendered": len(rendered),
                 "stages": by_stage,
                 "pending": len(pending), "errors": by_stage["error"],
