@@ -45,6 +45,7 @@ def stamp_provenance(doc: Document, raw_text: str, *, source_path: str = "") -> 
 class Provider:
     name = "base"
     can_series = False
+    raw_ext = ".html"      # extension for the cached per-chapter artifact
 
     def handles(self, source: str) -> bool:  # pragma: no cover - abstract
         raise NotImplementedError
@@ -57,6 +58,18 @@ class Provider:
 
     def series(self, source: str, *, cfg):  # pragma: no cover - abstract
         raise NotImplementedError
+
+    def prefetch(self, fi, *, cfg, cache_dir: str) -> None:
+        """Optional: pull whatever the whole series needs, once, before the
+        per-chapter `raw()` calls.
+
+        A site with one page per chapter (Royal Road) does nothing here. A source
+        that arrives as a *single artifact* — a Project Gutenberg `.txt`, an mbox —
+        downloads it here and splits it, so `raw()` is then a pure local slice and
+        later fetches never touch the network. `run_stage` calls this once per
+        series before iterating chapters.
+        """
+        return None
 
 
 class RoyalRoadProvider(Provider):

@@ -32,13 +32,26 @@ def test_db_roundtrip_and_pending(tmp_path):
     assert db.replace_chapters(sid, _chapters(5)) == 5
     assert db.replace_chapters(sid, _chapters(7)) == 2      # 2 new, idempotent for the rest
 
-    db.force_progress(sid, 2)                                # heard through #3
-    pend = db.pending(sid)
-    assert [c["ord"] for c in pend] == [3, 4, 5, 6]
+    # 0.2: status alone gates work. The reader's progress marker is NOT consulted
+    # (when it was, a 'new' chapter behind it became invisible to every command).
+    db.force_progress(sid, 2)
+    assert [c["ord"] for c in db.pending(sid)] == [0, 1, 2, 3, 4, 5, 6]
 
-    db.mark(pend[0]["id"], "rendered", audio_path="/x/004.opus")
-    db.set_progress(sid, 3)
+    chs = db.chapters(sid)
+    db.set_status([c["id"] for c in chs[:3]], "skipped")     # explicitly not wanted
+    assert [c["ord"] for c in db.pending(sid)] == [3, 4, 5, 6]
+
+    db.mark(chs[3]["id"], "rendered", audio_path="/x/004.opus")
     assert [c["ord"] for c in db.pending(sid)] == [4, 5, 6]
+
+    # a mid-pipeline chapter is still outstanding for render, but not for fetch
+    db.mark(chs[4]["id"], "fetched", raw_path="/x/005.html")
+    assert [c["ord"] for c in db.pending(sid)] == [4, 5, 6]
+    assert [c["ord"] for c in db.outstanding(sid, "fetched")] == [5, 6]
+
+    # an error is retried, and remembers which stage broke
+    db.mark(chs[5]["id"], "error", error="boom", error_stage="render")
+    assert chs[5]["ord"] in [c["ord"] for c in db.pending(sid)]
     db.close()
 
 
@@ -52,40 +65,46 @@ def test_parse_range():
     assert _parse_range("-6") == (None, 6)
 
 
-def test_series_redo(tmp_path, capsys):
-    import json
-    import types
+def test_explicit_range_is_imperative(tmp_path, monkeypatch):
+    """0.2: `render <slug> 2-3` renders 2-3 whatever their status — the job
+    `series redo` used to do by rewriting DB state for a later sync."""
+    from webnovel_audio import providers
 
-    from webnovel_audio import cli
-    from webnovel_audio.royalroad import ChapterRef, FictionInfo
+    if not os.path.exists(FICTION_FIXTURE):
+        return
+    fiction_html = open(FICTION_FIXTURE, encoding="utf-8").read()
+    monkeypatch.setattr(
+        providers.RoyalRoadProvider, "raw",
+        lambda self, url, *, cfg: fiction_html if "/chapter/" not in url else CHAPTER_STUB)
+    monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
 
-    dbp = tmp_path / "s.db"
-    db = DB(str(dbp))
-    fi = FictionInfo(rr_id="9", slug="demo", title="Demo", url="https://rr/9")
-    sid = db.upsert_series(fi)
-    db.replace_chapters(sid, [
-        ChapterRef(rr_id=str(100 + i), order=i, title=f"C{i + 1}", slug=f"c{i + 1}",
-                   url=f"https://rr/c/{100 + i}", published_at="2025-01-01")
-        for i in range(6)
-    ])
-    for c in db.chapters(sid)[:4]:               # #1-#4 rendered
-        db.mark(c["id"], "rendered", audio_path="/x.opus")
-    db.force_progress(sid, 3)
+    cfg = Config()
+    cfg.royalroad.state_db = str(tmp_path / "state.db")
+    cfg.royalroad.library_dir = str(tmp_path / "lib")
+    cfg.synth.backend = "null"
+    sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run",
+                    start="3", log=lambda *_: None)          # 1-3 skipped
+
+    db = DB(cfg.royalroad.state_db)
+    s = db.get_series("salvage-run")
+    assert [c["status"] for c in db.range(s["id"], 1, 3)] == ["skipped"] * 3
     db.close()
 
-    cfg = tmp_path / "c.toml"
-    cfg.write_text(f'[royalroad]\nstate_db = "{dbp}"\n')
-    cli._cmd_series(types.SimpleNamespace(action="redo", key="demo", range="2-3",
-                                          config=str(cfg), json=True))
-    out = json.loads(capsys.readouterr().out)
-    assert out["requeued"] == [2, 3]
+    # declarative: skipped chapters are left alone
+    sync.run_stage(cfg, "rendered", "salvage-run", backend="null", log=lambda *_: None)
+    db = DB(cfg.royalroad.state_db)
+    s = db.get_series("salvage-run")
+    assert [c["status"] for c in db.range(s["id"], 1, 3)] == ["skipped"] * 3
+    assert all(c["status"] == "rendered" for c in db.range(s["id"], 4, 6))
+    db.close()
 
-    db = DB(str(dbp))
-    s = db.get_series("demo")
-    assert s["progress_order"] == 0                              # rewound to before #2
-    st = {c["ord"] + 1: c["status"] for c in db.chapters(s["id"])}
-    assert st[2] == "new" and st[3] == "new" and st[1] == "rendered" and st[4] == "rendered"
-    assert [c["ord"] + 1 for c in db.pending(s["id"])] == [2, 3, 5, 6]
+    # imperative: an explicit range renders them regardless
+    res = sync.run_stage(cfg, "rendered", "salvage-run", lo=1, hi=3, backend="null",
+                         log=lambda *_: None)
+    assert res.rendered == 3
+    db = DB(cfg.royalroad.state_db)
+    s = db.get_series("salvage-run")
+    assert all(c["status"] == "rendered" for c in db.range(s["id"], 1, 3))
     db.close()
 
 
@@ -175,7 +194,7 @@ def test_add_and_sync_offline(tmp_path, monkeypatch):
     db = DB(cfg.royalroad.state_db)
     s = db.get_series("424242")
     assert s["progress_order"] == 3
-    assert len(db.pending(s["id"])) == 2                    # chapters 5, 6
+    assert len(db.pending(s["id"])) == 2                    # chapters 5, 6 (1-4 skipped)
 
     summ = db.summary()[0]
     assert summ["slug"] == "salvage-run" and summ["provider"] == "royalroad"
@@ -190,15 +209,172 @@ def test_add_and_sync_offline(tmp_path, monkeypatch):
     kinds = [e["event"] for e in events]
     assert kinds[0] == "start" and kinds[-1] == "done"
     assert "chapter_begin" in kinds
-    ch = next(e for e in events if e["event"] == "chapter" and e.get("result") == "rendered")
+    ch = next(e for e in events if e["event"] == "chapter" and e.get("result") == "ok")
     assert ch["number"] == 5 and "path" in ch and ch["audio_seconds"] >= 0
 
     db = DB(cfg.royalroad.state_db)
     s = db.get_series("424242")
-    assert s["progress_order"] == 4                         # advanced by one
+    # 0.2: rendering does NOT move the reader's position — that conflation is
+    # what used to hide un-rendered chapters behind the marker.
+    assert s["progress_order"] == 3                         # unchanged by render
     done = [c for c in db.chapters(s["id"]) if c["status"] == "rendered"]
     assert len(done) == 1 and os.path.exists(done[0]["audio_path"])
     db.close()
 
     raw = tmp_path / "lib" / s["slug"] / ".raw"
     assert raw.is_dir() and any(raw.iterdir())              # chapter html cached
+
+
+def test_series_add_registers_only(tmp_path, monkeypatch):
+    """0.2: `add` is pure registration — no chapter downloads, no cast seeding."""
+    from webnovel_audio import providers
+
+    if not os.path.exists(FICTION_FIXTURE):
+        return
+    fiction_html = open(FICTION_FIXTURE, encoding="utf-8").read()
+    hits = []
+
+    def fake_raw(self, url, *, cfg):
+        hits.append(url)
+        return fiction_html if "/chapter/" not in url else CHAPTER_STUB
+
+    monkeypatch.setattr(providers.RoyalRoadProvider, "raw", fake_raw)
+    monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
+
+    cfg = Config()
+    cfg.royalroad.state_db = str(tmp_path / "state.db")
+    cfg.royalroad.library_dir = str(tmp_path / "lib")
+    cfg.general.series_config_dir = str(tmp_path / "series")
+
+    info = sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run",
+                           start="2", log=lambda *_: None)
+    assert info["chapters"] == 6
+    assert not any("/chapter/" in u for u in hits)          # no chapter fetched
+    assert not os.path.exists(os.path.join(cfg.general.series_config_dir,
+                                           f"{info['slug']}.toml"))
+    # "--from 2" is recorded per chapter, not as an invisible cutoff
+    db = DB(cfg.royalroad.state_db)
+    s = db.get_series("salvage-run")
+    st = {c["ord"] + 1: c["status"] for c in db.chapters(s["id"])}
+    assert st[1] == st[2] == "skipped" and st[3] == "new"
+    assert [c["ord"] + 1 for c in db.pending(s["id"])] == [3, 4, 5, 6]
+    db.close()
+
+
+def test_append_cast_voices_inserts_into_existing_table():
+    text = (
+        '# a comment above\n\n[cast.voices]\n"Mara" = "af_heart"   # 8 line(s), female\n\n'
+        "[chat]\nspeak_username = \"first\"\n"
+    )
+    out = sync._append_cast_voices(text, ['"Resk"           = "am_michael"   # 3 line(s), male'])
+    assert '"Mara"' in out and '"Resk"' in out
+    assert out.index('"Mara"') < out.index('"Resk"')          # existing entry untouched, kept first
+    assert "[chat]" in out and "speak_username" in out         # unrelated section preserved verbatim
+    assert out.index('"Resk"') < out.index("[chat]")           # inserted into the right table
+
+
+def test_append_cast_voices_adds_table_if_missing():
+    out = sync._append_cast_voices("[general]\nspeak_title = true\n", ['"Mara" = "af_heart"'])
+    assert "[cast.voices]" in out and '"Mara"' in out
+    assert out.index("[general]") < out.index("[cast.voices]")
+
+
+def test_existing_cast_voice_keys():
+    text = '[cast.voices]\n"Mara" = "af_heart"\nResk = "am_michael"\n'
+    assert sync._existing_cast_voice_keys(text) == {"Mara", "Resk"}
+    assert sync._existing_cast_voice_keys("not valid toml [[[") == set()
+
+
+def test_suggest_cast_appends_new_speaker_on_a_later_range(tmp_path, monkeypatch):
+    from webnovel_audio import providers
+
+    if not os.path.exists(FICTION_FIXTURE):
+        return
+    fiction_html = open(FICTION_FIXTURE, encoding="utf-8").read()
+    stub_a = CHAPTER_STUB                                       # chapters 1-3: "Resk"
+    stub_b = CHAPTER_STUB.replace("Resk", "Mara")                # chapters 4-6: "Mara"
+
+    def fake_raw(self, url, *, cfg):
+        if "/chapter/" not in url:
+            return fiction_html
+        return stub_a if any(f"/{n}/" in url for n in (1001, 1002, 1003)) else stub_b
+
+    monkeypatch.setattr(providers.RoyalRoadProvider, "raw", fake_raw)
+    monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
+
+    cfg = Config()
+    cfg.royalroad.state_db = str(tmp_path / "state.db")
+    cfg.royalroad.library_dir = str(tmp_path / "lib")
+    cfg.general.series_config_dir = str(tmp_path / "series")
+
+    sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run",
+                    start="start", log=lambda *_: None)
+
+    r1 = sync.suggest_cast(cfg, "salvage-run", lo=1, hi=3, apply_cast=True,
+                           log=lambda *_: None)
+    assert r1["overlay_action"] == "created"
+    assert set(r1["cast"]) == {"Resk"}
+
+    r2 = sync.suggest_cast(cfg, "salvage-run", lo=4, hi=6, apply_cast=True,
+                           log=lambda *_: None)
+    assert r2["overlay_action"] == "appended"
+    assert r2["cast"]["Mara"]["new"] and not r2["cast"].get("Resk", {}).get("new", False)
+
+    text = open(r1["overlay_path"]).read()
+    assert '"Resk"' in text and '"Mara"' in text
+    import tomllib
+    voices = tomllib.loads(text)["cast"]["voices"]
+    assert voices["Resk"] == r1["cast"]["Resk"]["voice"]        # first pass's choice kept
+    assert voices["Mara"] == r2["cast"]["Mara"]["voice"]
+
+    r3 = sync.suggest_cast(cfg, "salvage-run", lo=1, hi=6, apply_cast=True,
+                           log=lambda *_: None)
+    assert r3["overlay_action"] == "unchanged"                   # both already mapped
+
+
+def test_cmd_check_json_and_write(tmp_path, monkeypatch, capsys):
+    import json
+    import types
+
+    from webnovel_audio import cli, providers
+
+    if not os.path.exists(FICTION_FIXTURE):
+        return
+    fiction_html = open(FICTION_FIXTURE, encoding="utf-8").read()
+    monkeypatch.setattr(
+        providers.RoyalRoadProvider, "raw",
+        lambda self, url, *, cfg: fiction_html if "/chapter/" not in url else CHAPTER_STUB,
+    )
+    monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
+
+    cfgp = tmp_path / "c.toml"
+    cfgp.write_text(
+        f'[royalroad]\nstate_db = "{tmp_path / "s.db"}"\nlibrary_dir = "{tmp_path / "lib"}"\n'
+        f'[general]\nseries_config_dir = "{tmp_path / "series"}"\n'
+        f'lexicon_dir = "{tmp_path / "lex"}"\n'
+    )
+    cfg = Config.load(str(cfgp))
+    sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run",
+                    start="start", log=lambda *_: None)
+
+    rc = cli._cmd_check(types.SimpleNamespace(
+        target="salvage-run", range="1-3", write=True, context=6,
+        config=str(cfgp), json=True))
+    assert rc == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["ok"] and out["slug"] == "salvage-run"
+    assert "Resk" in out["cast"] and out["cast"]["Resk"]["new"]
+    assert isinstance(out["heteronyms"], list) and isinstance(out["lexicon_candidates"], list)
+    lex_path = tmp_path / "lex" / "salvage-run.csv"
+    if out["lexicon_candidates"]:
+        assert lex_path.exists()
+        for name in out["lexicon_candidates"]:
+            assert name in lex_path.read_text()
+
+
+def test_suggest_voices_moved_to_dialogue():
+    from webnovel_audio.dialogue import suggest_voices
+
+    cfg = Config()
+    out = suggest_voices({"Mara": 5, "Resk": 3}, {"Mara": "f", "Resk": "m"}, cfg)
+    assert out["Mara"].startswith(("af_", "bf_")) and out["Resk"].startswith(("am_", "bm_"))

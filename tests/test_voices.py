@@ -43,7 +43,7 @@ def test_voices_listing(capsys):
     assert rc == 0
     assert "American male" in out and "am_michael" in out
     assert "British female" in out
-    assert "voices --demo" in out
+    assert "voices demo" in out
 
 
 def test_voices_listing_subset(capsys):

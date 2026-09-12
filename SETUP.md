@@ -26,14 +26,14 @@ git clone <this repo> ~/Projects/webnovel-audio      # or copy it there
 cd ~/Projects/webnovel-audio
 
 uv sync --extra kokoro           # create .venv, install deps + the Kokoro engine
-uv run webnovel-audio fetch-models   # ~400 MB, once, into ~/.cache/webnovel-audio
+uv run webnovel-audio models fetch   # ~400 MB, once, into ~/.cache/webnovel-audio
 ```
 
 Verify:
 
 ```sh
 uv run webnovel-audio --version
-uv run pytest -q                 # ~61 tests, all offline
+uv run pytest -q                 # ~92 tests, all offline
 ```
 
 Every command below is `uv run webnovel-audio …`. If you'd rather type
@@ -73,7 +73,7 @@ Point `render` at a chapter URL, a saved `.html`, or a `.txt` file:
 ```sh
 uv run webnovel-audio render samples/salvage-run-ch1.html -o out/test.opus
 
-uv run webnovel-audio inspect <same input>     # see how it parsed, no audio
+uv run webnovel-audio parse <same input> --explain   # how it parsed, no audio
 ```
 
 `out/test.opus` is mono Opus, loudness-normalised, with a `.segments.json` beside
@@ -91,15 +91,24 @@ uv run webnovel-audio series add <royal-road-fiction-url> --from start
 
 uv run webnovel-audio series list
 
-# render the next chapters that are past your progress mark
+# the cheap stages first, so you can configure before spending CPU
+uv run webnovel-audio fetch <slug> 1-10       # ~2.5 s/chapter, politeness delay
+uv run webnovel-audio parse <slug> 1-10       # ~30 ms/chapter
+uv run webnovel-audio check <slug> 2-10 --write   # cast + lexicon scaffolding
+uv run webnovel-audio series edit <slug>      # tune the cast by ear
+uv run webnovel-audio render <slug> 1-10      # the expensive one
+
+# then the steady state
 uv run webnovel-audio sync <series-slug> --limit 3       # cap this run
 uv run webnovel-audio sync --dry-run                     # show what all series would do
-uv run webnovel-audio sync                               # everything, every series
+uv run webnovel-audio sync                               # everything, every enabled series
 ```
 
-`sync` fetches oldest-first, advances your progress **only on success**, and
-records failures as `error` (retried next run) without stopping the batch.
-Re-point progress any time with `series set <slug> <start|latest|N|url>`.
+`sync` works oldest-first and records failures as `error` (retried next run,
+with `error_stage` naming what broke) without stopping the batch. A chapter's
+`status` alone decides whether it's outstanding — `series set <slug> N` marks
+1..N `skipped`, and `state show <slug>` prints the per-chapter stage table.
+Finished a series? `series disable <slug>` drops it out of `sync`.
 
 Each chapter writes three files into `library/<slug>/`:
 
@@ -145,7 +154,7 @@ Open the port if you have a firewall: `sudo ufw allow 8080/tcp` (or equivalent).
 
 ```sh
 uv run webnovel-audio book <series-slug>                 # whole series -> one .m4b
-uv run webnovel-audio book <series-slug> --from 1 --to 3 -o out/arc1.m4b
+uv run webnovel-audio book <series-slug> 1-3 -o out/arc1.m4b
 ```
 
 Produces a single AAC `.m4b` with a chapter marker + title per chapter and the
@@ -220,7 +229,7 @@ forgets it. Personal use only — respect authors who sell their own audiobooks.
 | `library/<slug>/*.segments.json` | internal narration script | yes |
 | `library/<slug>/.raw/*.html` | cached chapter HTML (provenance) | yes (re-fetched on next `sync`) |
 | `.cache/segments/<backend>/*.wav` | per-sentence synth cache | yes (just re-synthesises) |
-| `~/.cache/webnovel-audio/` | the Kokoro model files (~400 MB) | yes (re-`fetch-models`) |
+| `~/.cache/webnovel-audio/` | the Kokoro model files (~400 MB) | yes (re-run `models fetch`) |
 | `~/.config/webnovel-audio/session.json` | RR session cookie | yes (re-`login`) |
 
 ## 11. Update / uninstall
@@ -237,7 +246,7 @@ paths above. Nothing else is touched; no system packages are installed.
 - **Podcast app won't play the audio** — it doesn't support Opus. Use AntennaPod
   / Podcast Addict, or make a `.m4b` with `book`.
 - **`ffmpeg not found`** — install it (`sudo pacman -S ffmpeg`).
-- **`fetch-models` fails** — network/proxy issue; the files are two GitHub-release
+- **`models fetch` fails** — network/proxy issue; the files are two GitHub-release
   URLs (see `src/webnovel_audio/synth/kokoro.py`), download them manually into
   `~/.cache/webnovel-audio/`.
 - **royalroad.com returns 429** — raise `[royalroad] request_delay`; `sync` also
@@ -248,8 +257,8 @@ paths above. Nothing else is touched; no system packages are installed.
   itself is fine — check the podcast app actually added it (test from a laptop:
   `curl -sI http://<ip>:8080/feed/<slug>.xml` → `200`).
 - **A chapter mis-attributes dialogue or mispronounces a name** — that's per
-  series: `webnovel-audio cast <chapter-url>` for a `[cast.voices]` starter,
-  `webnovel-audio lexicon <chapter-url> --write` to queue pronunciations into
+  series: `webnovel-audio check <slug> <range>` for a `[cast.voices]` starter,
+  `webnovel-audio check <slug> <range> --write` to queue pronunciations into
   `data/lexicons/<slug>.csv`. See `README.md`.
 - **Fixing a pronunciation** — for a name that's wrong everywhere (e.g.
   `Montgomery`, `Eleanor`), add a row to `data/lexicons/_base.csv` — it applies to
@@ -263,13 +272,12 @@ paths above. Nothing else is touched; no system packages are installed.
   rough gloss, then the same after the lexicon; `webnovel-audio pron --check`
   audits every row (add `--series <slug>` for that series' file). The UI's
   **Test word…** button does the same. To hear the fix in chapters you already
-  rendered: `webnovel-audio series redo <slug> [N | N-M]` (blank = every rendered
-  chapter) marks them back to *pending* and rewinds `progress_order`; then
-  `webnovel-audio sync <slug>`. The control UI does the same from **Selected
-  series → Edit lexicon** and **Re-render…**.
+  rendered, just name them: `webnovel-audio render <slug> 12-15`. An explicit
+  range is imperative — it re-renders whatever the recorded state, so there's no
+  separate "mark these dirty" step.
 - **`sync` re-renders something you already have** — its status is `error` or its
   `ord` is past your `progress_order`. `series list` shows the mark;
-  `series set <slug> N` fixes it.
+  `series set <slug> N` fixes it (it marks 1..N `skipped`).
 - **`sync` refuses immediately with "another sync is already running"** — only
   one `sync` runs at a time per state DB (a `flock` on `<state-db-dir>/sync.lock`),
   whether the other one was launched from the UI, a second UI window, or a

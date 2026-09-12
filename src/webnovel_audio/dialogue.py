@@ -235,6 +235,35 @@ def split_paragraph(block: Block, attr: Attributor, cfg) -> list[Line]:
     return lines
 
 
+MALE_VOICE_POOL = [
+    "am_michael", "bm_lewis", "am_puck", "bm_george", "am_eric", "am_onyx",
+    "bm_daniel", "am_fenrir", "am_liam", "bm_fable",
+]
+FEMALE_VOICE_POOL = [
+    "af_heart", "bf_emma", "af_bella", "af_nicole", "bf_alice", "af_sarah",
+    "af_sky", "bf_isabella", "af_aoede", "af_kore",
+]
+
+
+def suggest_voices(counts: dict, gender: dict, cfg) -> dict:
+    """{speaker: Kokoro voice id} — round-robins the sex-matched pool by frequency,
+    skipping voices already spoken for in `[cast.voices]`. Used by `cast` and by
+    `check --write`'s cast scaffolding (see `sync.suggest_cast`)."""
+    used = set(cfg.cast.voices.values())
+    m = (v for v in MALE_VOICE_POOL if v not in used)
+    f = (v for v in FEMALE_VOICE_POOL if v not in used)
+    out: dict[str, str] = {}
+    for name in sorted(counts, key=lambda n: -counts[n]):
+        if not name:
+            continue
+        if name in cfg.cast.voices:
+            out[name] = cfg.cast.voices[name]
+            continue
+        pool = f if gender.get(name) == "f" else m
+        out[name] = next(pool, cfg.cast.default or cfg.voices.dialogue_default)
+    return out
+
+
 def discover(blocks: list[Block], cfg) -> tuple[dict[str, int], dict[str, str]]:
     """Run attribution over a chapter; return {speaker: line count} and a gender guess."""
     from collections import Counter

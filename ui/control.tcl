@@ -146,12 +146,14 @@ proc do_setprog {w slug} {
 set ::RUNNING 0
 set ::PIPE ""
 
-proc sync_start {args} {
+proc sync_start {args} { sync_start_cmd [concat sync $args] }
+
+proc sync_start_cmd {argv} {
     if {$::RUNNING} { log "a sync is already running" ; return }
     set ::RUNNING 1
     ui_busy 1
-    log "\$ sync $args"
-    set pipe "| [list $::EXE sync {*}$args --json 2>@1]"
+    log "\$ $argv"
+    set pipe "| [list $::EXE {*}$argv --json 2>@1]"
     if {[catch {open $pipe r} ::PIPE]} {
         log "! cannot launch: $::PIPE"
         set ::RUNNING 0 ; ui_busy 0 ; return
@@ -184,7 +186,7 @@ proc sync_readable {} {
         }
         chapter {
             set r [json::get $ev result] ; set num [json::get $ev number]
-            if {$r eq "rendered"} {
+            if {$r eq "ok" || $r eq "rendered"} {
                 log "    #$num ok  ([json::get $ev audio_seconds]s audio, [json::get $ev elapsed_seconds]s)"
                 row_progress $slug $num
             } elseif {$r eq "error"} {
@@ -451,10 +453,11 @@ proc do_redo {w slug} {
     set rng [string trim [$w.r get]]
     set sync [$w.s instate selected]
     destroy $w
-    set d [run_json series redo $slug $rng]
-    if {$d ne ""} { log "$slug: re-queued [json::get $d requeued] ([json::get $d pending] pending)" }
+    ;# 0.2: an explicit range IS the re-render — no DB round-trip to schedule it
+    if {$rng eq ""} { log "give a chapter range, e.g. 12-15" ; return }
+    log "\$ render $slug $rng"
+    sync_start_cmd [list render $slug $rng]
     refresh_series
-    if {$sync} { .series selection set $slug ; do_sync selected }
 }
 
 proc on_select {} {

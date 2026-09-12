@@ -33,6 +33,8 @@ class Cast:
     narrator: str = ""              # overrides voices.narrator when set
     default: str = ""               # voice for dialogue whose speaker isn't mapped
     voices: dict = field(default_factory=dict)   # character name -> Kokoro voice id
+    seed_chapters: int = 5           # `series add` samples this many chapters to seed
+                                      # a per-series [cast.voices] starter; 0 disables it
 
 
 @dataclass

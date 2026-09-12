@@ -163,6 +163,18 @@ timer runs it nightly. Personal use only — respect authors with official audio
   Tcl/Tk control app (execs `wish`, else Python's bundled Tk). Bare
   `webnovel-audio` with no subcommand prints `--help` rather than guessing.
 
+- **`check` / cast seeding** *(done)*: `sync.suggest_cast` samples a chapter
+  range (default `[cast] seed_chapters`), concatenates their blocks and runs
+  `dialogue.discover` + the shared `dialogue.suggest_voices` (moved out of
+  `cli` so `sync` need not import from it). With `--write` it writes
+  `data/series/<slug>.toml`; re-run on a later range and it **only appends**
+  speakers not already mapped (`_append_cast_voices` splices into the existing
+  `[cast.voices]` table, leaving everything else in the file byte-identical), so
+  a curated cast survives. The same pass reports `heteronyms.find_heteronyms`
+  hits with context — never auto-corrected, since the right reading changes per
+  sentence; a multi-word lexicon surface (`a tear in`) pins one where it matters.
+  Entirely best-effort: any fetch/parse/write failure is logged, never raised.
+
 ## Royal Road ingest notes
 
 - Chapter body: `div.chapter-content` (fallbacks: `.chapter-inner`, densest
@@ -263,6 +275,45 @@ Python block-buffers a pipe, so without it the control UI (which reads their
 stdout through a Tcl pipe) sees nothing until the child exits. The UI's
 Feed-server button spawns `serve`, pipes its output to the log as `[serve] …`,
 and stops it with `SIGINT` (clean `httpd.server_close()`), `SIGKILL` after 1 s.
+
+## The 0.2 pipeline
+
+`fetch` -> `parse` -> `check` -> `render` are separable stages over the same
+`<target> [range]` signature, driven by one engine (`sync.run_stage` ->
+`_advance`). Measured on the sample chapter: parse 28 ms, segment 3.6 ms, synth
+35.3 s (88%), master+opus 4.9 s (12%) — so everything before `render` is free,
+and the point of splitting them is to let configuration converge while iteration
+costs milliseconds. `fetch`'s cost is politeness (`request_delay`), not compute.
+
+**Range mood.** An explicit range is imperative (do exactly these, whatever their
+status); no range is declarative (do what's outstanding). That's why `redo` is
+gone — `render <slug> 20-30` *is* the re-render. Stages pull their own inputs, so
+`render` on an unfetched chapter fetches and parses it first; `force` applies
+only to the named stage, so a re-render never re-downloads.
+
+**Chapter state.** `status` walks new -> fetched -> parsed -> rendered, plus
+`error` (with `error_stage`, so a render failure doesn't forget it was fetched)
+and `skipped` (deliberately not wanted). **`status` alone gates work.** In 0.1
+`pending()` also required `ord > progress_order`, so `progress_order` was doing
+two jobs — reader position *and* render high-water mark — and a `new` chapter
+behind the marker was invisible to every command. `--from N` now marks chapters
+`skipped` explicitly instead. Migration backfills `error_stage`, and marks
+never-rendered chapters below the old marker as `skipped`; nothing becomes
+unreachable, because an explicit range ignores `skipped`.
+
+**Segmentation is deliberately not a stage.** It's 3.6 ms and derived from
+blocks + config + lexicon + cast overlay — i.e. from exactly what the tuning loop
+edits — so persisting it would invent a staleness class `fetch`/`parse` don't
+have. It's recomputed each render and written beside the audio as
+`.segments.json`, which makes that file the provenance of *that* render and a
+diff baseline for "what would change if I re-rendered?".
+
+**Provider seam for single-artifact sources.** `Provider.prefetch(fi, cfg,
+cache_dir)` runs once per series before per-chapter `raw()` calls, and
+`raw_ext` names the cached artifact's extension. Royal Road ignores both. A
+Project Gutenberg `.txt` provider would download the whole book in `prefetch`,
+split it into chapters, and serve `raw()` from local slices — so later fetches
+never touch the network.
 
 ## Sync lock
 

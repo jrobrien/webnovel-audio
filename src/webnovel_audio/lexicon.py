@@ -27,13 +27,25 @@ class Entry:
 
 
 class Lexicon:
+    """Whole-word (or whole-phrase) substitution.
+
+    A `surface` may be several words — that's how a context-dependent heteronym
+    gets pinned without a tagger: `a tear in` -> `a tair in` fixes the cloth
+    sense while a bare `tear` elsewhere is left alone. Matching is one pass over
+    an alternation sorted longest-first, so the phrase wins over its own
+    substrings and a replacement can never be re-matched by a later rule.
+    """
+
     def __init__(self, entries: list[Entry]):
         self.entries = entries
-        self._subs = [
-            (re.compile(rf"\b{re.escape(e.surface)}\b"), e.respell)
-            for e in entries
-            if e.respell and e.respell != e.surface
-        ]
+        subs = [(e.surface, e.respell) for e in entries
+                if e.respell and e.respell != e.surface]
+        self._repl = {s: r for s, r in subs}
+        self._rx = None
+        if subs:
+            alts = "|".join(re.escape(s) for s, _ in
+                            sorted(subs, key=lambda sr: -len(sr[0])))
+            self._rx = re.compile(rf"(?<!\w)(?:{alts})(?!\w)")
 
     @classmethod
     def load_many(cls, paths: list[str]) -> "Lexicon":
@@ -68,9 +80,9 @@ class Lexicon:
         return cls(entries)
 
     def apply(self, text: str) -> str:
-        for pattern, repl in self._subs:
-            text = pattern.sub(repl, text)
-        return text
+        if self._rx is None:
+            return text
+        return self._rx.sub(lambda m: self._repl[m.group(0)], text)
 
     def surfaces(self) -> set[str]:
         out: set[str] = set()

@@ -18,10 +18,11 @@ system_ui         = "af_sky"      # LitRPG status boxes / stat lines
 
 [cast]
 # Per-series casting (example: the samples/salvage-run-ch1.html fixture).
-# `webnovel-audio cast <chapter>` prints a starter block for a real series.
+# `webnovel-audio check <series> <range> --write` writes one for a real series.
 protagonist = "Mara"               # POV char; catches untagged first-person lines
 # narrator  = "am_michael"         # optional: override [voices].narrator
 # default   = "am_adam"            # optional: override [voices].dialogue_default
+seed_chapters = 5                  # how many chapters `check` samples when given no range
 
 [cast.voices]
 Mara = "af_heart"
