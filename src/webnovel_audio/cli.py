@@ -769,17 +769,30 @@ def _cmd_config(args) -> int:
 
 
 def _cmd_login(args) -> int:
-    from .royalroad import (RRClient, clear_session, load_session,
+    """Store (or clear) a royalroad.com session cookie.
+
+    Deliberately does not verify: that would need an account page whose markup
+    drifts, and a bad cookie is reported honestly where it matters — `fetch`
+    says so when a chapter is locked.
+    """
+    from .royalroad import (SESSION_FILE, clear_session, load_session,
                             parse_cookie_header, parse_cookies_txt, save_session)
 
     if args.logout:
         clear_session()
         print("session cleared.")
         return 0
-    if args.check:
-        ok = RRClient().is_authenticated() if load_session() else False
-        print("authenticated." if ok else "not authenticated (no / stale cookie).")
-        return 0 if ok else 1
+    if args.status:
+        cookies = load_session()
+        if cookies:
+            import time
+            when = time.strftime("%Y-%m-%d %H:%M",
+                                 time.localtime(os.path.getmtime(SESSION_FILE)))
+            print(f"{len(cookies)} cookie(s) stored {when} -> {SESSION_FILE}")
+            print("  (not verified — a stale cookie shows up as a failed fetch)")
+        else:
+            print("no session stored; chapter fetches are anonymous.")
+        return 0 if cookies else 1
 
     if args.cookies_file:
         cookies = parse_cookies_txt(args.cookies_file)
@@ -792,9 +805,8 @@ def _cmd_login(args) -> int:
         print("no cookies parsed.")
         return 1
     save_session(cookies)
-    ok = RRClient(cookies=cookies).is_authenticated()
-    print(f"saved {len(cookies)} cookie(s) -> {'authenticated.' if ok else 'but NOT authenticated; check the cookie.'}")
-    return 0 if ok else 1
+    print(f"saved {len(cookies)} cookie(s) for royalroad.com -> {SESSION_FILE}")
+    return 0
 
 
 def _cmd_serve(args) -> int:
@@ -1065,9 +1077,12 @@ def main(argv=None) -> int:
     md.set_defaults(func=_cmd_models, action="fetch", cache_dir=None)
 
     lg = sub.add_parser("login", help="store a royalroad.com session cookie")
-    lg.add_argument("--cookies-file")
-    lg.add_argument("--cookie-header")
-    lg.add_argument("--check", action="store_true")
+    lg.add_argument("--cookies-file", metavar="PATH",
+                    help="Netscape cookies.txt exported from your browser")
+    lg.add_argument("--cookie-header", dest="cookie", metavar="STR",
+                    help="the raw Cookie: header value (devtools -> copy)")
+    lg.add_argument("--status", action="store_true",
+                    help="report whether a session is stored (does not verify it)")
     lg.add_argument("--logout", action="store_true")
     lg.set_defaults(func=_cmd_login)
 

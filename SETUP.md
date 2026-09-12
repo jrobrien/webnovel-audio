@@ -212,12 +212,22 @@ early-access). Credentials are never stored — only the session cookie.
    (a "cookies.txt" browser extension, or devtools → copy the `Cookie` header).
 2. ```sh
    uv run webnovel-audio login --cookies-file ~/Downloads/cookies.txt
-   # or:  uv run webnovel-audio login --cookie "name=value; name2=value2"
-   uv run webnovel-audio login --check
+   # or:  uv run webnovel-audio login --cookie-header "name=value; name2=value2"
+   uv run webnovel-audio login --status     # is one stored? (does NOT verify it)
    ```
 
 Stored at `~/.config/webnovel-audio/session.json` (mode 600). `login --logout`
-forgets it. Personal use only — respect authors who sell their own audiobooks.
+forgets it.
+
+The cookie is **never verified up front** — that would mean scraping an account
+page whose markup drifts, and the answer would be stale by the next fetch
+anyway. Instead a missing or expired cookie shows up where it's actionable:
+`fetch` refuses a chapter Royal Road marks locked and tells you to log in. If a
+fetch of a normal chapter starts returning a login page, `login --logout` then
+re-export. Nothing in this tool reads your account state — no follows, no
+reading position.
+
+Personal use only — respect authors who sell their own audiobooks.
 
 ## 10. Where things live
 
@@ -231,7 +241,7 @@ forgets it. Personal use only — respect authors who sell their own audiobooks.
 | `library/<slug>/.raw/*.html` | cached chapter HTML (provenance) | yes (re-fetched on next `sync`) |
 | `.cache/segments/<backend>/*.wav` | per-sentence synth cache | yes (just re-synthesises) |
 | `~/.cache/webnovel-audio/` | the Kokoro model files (~400 MB) | yes (re-run `models fetch`) |
-| `~/.config/webnovel-audio/session.json` | RR session cookie | yes (re-`login`) |
+| `~/.config/webnovel-audio/session.json` | RR session cookie, mode 600 | yes (re-`login`) |
 
 ## 11. Update / uninstall
 

@@ -126,10 +126,9 @@ timer runs it nightly. Personal use only — respect authors with official audio
   `--from latest|start|N|<chapter-url>` skip marker), `refresh`, `run_sync`
   (oldest first, caches raw HTML under `library/<slug>/.raw/`, calls
   `pipeline.render`, keeps going past errors). CLI: `series
-  add|set|refresh|list`, `sync`, `login` (cookie header or Netscape
-  cookies.txt → `~/.config/webnovel-audio/session.json`, verified against
-  `/my/follows`), `schedule` (emits/installs a systemd-user `.service` + `.timer`).
-  `parse_follows` exists but is best-effort (no auth fixture to test against).
+  add|refresh|list`, `sync`, `login` (cookie header or Netscape cookies.txt →
+  `~/.config/webnovel-audio/session.json`), `schedule` (emits/installs a
+  systemd-user `.service` + `.timer`).
 - **Readable text output** *(done)*: `textout.render_markdown(doc)` turns the
   ingest `Document` into a Markdown file written next to every `.opus`
   (`NNN-<slug>.md`), and `render` does the same for one-off HTML/URL input. It's
@@ -315,6 +314,18 @@ cache_dir)` runs once per series before per-chapter `raw()` calls, and
 Project Gutenberg `.txt` provider would download the whole book in `prefetch`,
 split it into chapters, and serve `raw()` from local slices — so later fetches
 never touch the network.
+
+## Auth
+
+A stored session cookie and nothing else. `login` parses cookies out of a
+browser export and saves them 0600; `RRClient` attaches them to content fetches
+so a subscriber-only chapter can be read. It is deliberately **not verified** —
+0.2.0 checked by GETting `/my/follows`, which meant depending on an account page
+whose markup drifts, and the answer was stale by the next request anyway. A bad
+cookie surfaces where it's actionable instead: `_do_fetch` raises `ChapterLocked`
+for a chapter whose `unlocked` flag is false, naming `login` and saying whether a
+session exists at all. Nothing reads account state — the follows reader and
+reading-position sync were removed in 0.2.1.
 
 ## Sync lock
 

@@ -471,9 +471,20 @@ def _out_stem(cfg: Config, slug: str, c) -> str:
     return os.path.join(os.path.expanduser(cfg.royalroad.library_dir), slug, name)
 
 
+class ChapterLocked(Exception):
+    """The source says this chapter needs an account we don't have."""
+
+
 def _do_fetch(cfg, db, prov, slug, c, *, force=False) -> str:
     path = _raw_path(cfg, prov, slug, c)
     if force or not os.path.exists(path):
+        # The session cookie is never verified up front (see royalroad.py) — a
+        # missing or stale one surfaces here, where it's actionable.
+        if not c["unlocked"]:
+            from .royalroad import load_session
+            hint = ("run `webnovel-audio login` first" if not load_session()
+                    else "stored session may be stale — re-run `webnovel-audio login`")
+            raise ChapterLocked(f"chapter is marked locked; {hint}")
         text = prov.raw(c["url"], cfg=cfg)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as fh:

@@ -1,5 +1,6 @@
 """Regression tests for injection / traversal hardening in HTML processing."""
 import json
+import pytest
 import os.path
 
 from webnovel_audio.royalroad import _safe_id, _safe_slug, fetch_asset, parse_fiction
@@ -57,3 +58,60 @@ def test_serve_html_escape_covers_quotes_and_angles():
 def test_yaml_strips_control_chars():
     assert _yaml("line1\nline2\ttab") == '"line1 line2 tab"'
     assert "\n" not in _yaml("a\r\nb")
+
+
+def test_login_does_not_verify(tmp_path, monkeypatch, capsys):
+    """0.2.1: `login` stores cookies and says so — it never claims to have
+    verified them (that needed an account page whose markup drifts)."""
+    import types
+
+    from webnovel_audio import cli, royalroad
+
+    monkeypatch.setattr(royalroad, "CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(royalroad, "SESSION_FILE", str(tmp_path / "session.json"))
+    monkeypatch.setattr(cli, "_cmd_login", cli._cmd_login)   # re-bind after patch
+
+    assert not hasattr(royalroad.RRClient, "is_authenticated")
+
+    rc = cli._cmd_login(types.SimpleNamespace(
+        logout=False, status=False, cookies_file=None,
+        cookie="__cfduid=abc; .AspNetCore.Identity.Application=xyz"))
+    out = capsys.readouterr().out
+    assert rc == 0 and "saved 2 cookie(s)" in out
+    assert "authenticated" not in out.lower()
+
+    rc = cli._cmd_login(types.SimpleNamespace(
+        logout=False, status=True, cookies_file=None, cookie=None))
+    out = capsys.readouterr().out
+    assert rc == 0 and "not verified" in out
+
+
+def test_locked_chapter_points_at_login(tmp_path):
+    """A locked chapter fails with an actionable message rather than silently
+    caching a paywall page."""
+    from webnovel_audio import sync
+    from webnovel_audio.config import Config
+    from webnovel_audio.db import DB
+    from webnovel_audio.royalroad import ChapterRef, FictionInfo
+
+    cfg = Config()
+    cfg.royalroad.state_db = str(tmp_path / "s.db")
+    cfg.royalroad.library_dir = str(tmp_path / "lib")
+    db = DB(cfg.royalroad.state_db)
+    sid = db.upsert_series(FictionInfo(rr_id="9", slug="demo", title="Demo",
+                                       url="https://rr/9"))
+    db.replace_chapters(sid, [ChapterRef(rr_id="1", order=0, title="Locked",
+                                         slug="locked", url="https://rr/c/1",
+                                         published_at="", unlocked=False)])
+    c = db.chapters(sid)[0]
+
+    class Prov:
+        raw_ext = ".html"
+
+        def raw(self, url, *, cfg):
+            raise AssertionError("must not fetch a locked chapter")
+
+    with pytest.raises(sync.ChapterLocked) as exc:
+        sync._do_fetch(cfg, db, Prov(), "demo", c)
+    assert "login" in str(exc.value)
+    db.close()

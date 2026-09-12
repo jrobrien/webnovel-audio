@@ -2,8 +2,14 @@
 
 The chapter list on a fiction page is authoritative in a `window.chapters = [...]`
 script (complete, ordered, with lock state); the visible <table> is only a page of
-it and is used as a fallback. Auth is a stored session cookie (see `login`), which
-unlocks private / adult / early-access chapters and read-progress on fiction pages.
+it and is used as a fallback.
+
+Auth is a stored session cookie and nothing more: `login` parses cookies out of a
+browser export and saves them; `RRClient` attaches them to content fetches so a
+subscriber-only chapter can be read. It is deliberately never *verified* up
+front — that needs an account page whose markup drifts, and a stale cookie shows
+up honestly at the point of use instead (a locked chapter fails to fetch).
+Nothing here reads account state.
 """
 from __future__ import annotations
 
@@ -159,10 +165,6 @@ class RRClient:
 
     def html(self, url: str) -> str:
         return self.get(url).text
-
-    def is_authenticated(self) -> bool:
-        r = self._c.get(BASE + "/my/follows")
-        return r.status_code == 200 and "/account/login" not in str(r.url)
 
     def close(self) -> None:
         self._c.close()
