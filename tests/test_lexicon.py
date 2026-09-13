@@ -90,3 +90,77 @@ def test_heteronym_respellings_hit_their_target_vowel():
     assert "ɛ" in _phonemize("tare")         # tear, as in rip
     assert "ɪ" in _phonemize("teer")         # tear, as in crying
     assert _phonemize("lyive") != _phonemize("lyve")     # the actual bug
+
+
+def test_comment_lines_are_ignored_everywhere(tmp_path):
+    """CSV has no comment convention, so the loader has to strip them. The
+    first line matters most: a comment there would otherwise become the header
+    row, making every `surface` lookup miss and silently voiding the file."""
+    p = tmp_path / "lex.csv"
+    p.write_text(
+        "# sky-pride lexicon\n"
+        "surface,respell,ipa,notes\n"
+        "# a comment after the header\n"
+        "# one containing a comma, like this\n"
+        "   # an indented one\n"
+        "Tian,tee-en,,\n")
+    lex = Lexicon.load(str(p))
+    assert [e.surface for e in lex.entries] == ["Tian"]
+    assert lex.apply("Tian walked") == "tee-en walked"
+    assert lex.surfaces() == {"Tian"}
+
+
+def test_comment_before_header_does_not_void_the_file(tmp_path):
+    """Regression: `csv.DictReader` took the comment as the field names, so
+    every row silently dropped and the pronunciations just stopped applying."""
+    p = tmp_path / "lex.csv"
+    p.write_text("# header comment\nsurface,respell,ipa,notes\nKael,kale,,\n")
+    assert Lexicon.load(str(p)).apply("Kael") == "kale"
+
+
+def test_empty_surface_row_is_still_skipped(tmp_path):
+    p = tmp_path / "lex.csv"
+    p.write_text("surface,respell,ipa,notes\n,,,just a note\nKael,kale,,\n")
+    assert [e.surface for e in Lexicon.load(str(p)).entries] == ["Kael"]
+
+
+def test_starter_text_is_named_and_parses_empty(tmp_path):
+    p = tmp_path / "lex.csv"
+    p.write_text(Lexicon.starter_text("sky-pride"))
+    assert "sky-pride" in p.read_text().splitlines()[0]
+    lex = Lexicon.load(str(p))
+    assert lex.entries == []
+    assert lex.apply("nothing is changed") == "nothing is changed"
+
+
+def test_append_candidates_keeps_comments_and_uses_lf(tmp_path):
+    p = tmp_path / "lex.csv"
+    p.write_text(Lexicon.starter_text("sky-pride"))
+    assert Lexicon.append_candidates(str(p), ["Tian", "Bai"]) == 2
+    raw = p.read_bytes()
+    assert b"\r\n" not in raw                     # LF, not the csv default CRLF
+    assert raw.decode().startswith("# sky-pride")  # header survived
+    assert Lexicon.append_candidates(str(p), ["Tian"]) == 0     # dedupes
+    assert {e.surface for e in Lexicon.load(str(p)).entries} == {"Tian", "Bai"}
+
+
+def test_lex_add_creates_a_named_file_with_lf(tmp_path, capsys):
+    """`lex add` on a series with no lexicon yet must produce the same named
+    starter the init path does, not a bare header — and LF, not csv's CRLF."""
+    from webnovel_audio import cli
+
+    lib = tmp_path / "library"
+    (lib / "demo").mkdir(parents=True)
+    cfgp = tmp_path / "cfg.toml"
+    cfgp.write_text(f'[royalroad]\nlibrary_dir = "{lib}"\n'
+                    f'state_db = "{tmp_path / "s.db"}"\n')
+    from webnovel_audio.db import DB
+    DB(str(tmp_path / "s.db")).close()
+
+    rc = cli.main(["lex", "add", "demo", "Kael", "kale", "--config", str(cfgp)])
+    assert rc == 0
+    p = lib / "demo" / "lexicon.csv"
+    raw = p.read_bytes()
+    assert raw.decode().startswith("# demo —")
+    assert b"\r\n" not in raw
+    assert Lexicon.load(str(p)).apply("Kael") == "kale"

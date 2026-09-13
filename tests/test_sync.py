@@ -280,6 +280,14 @@ def test_series_add_registers_only(tmp_path, monkeypatch):
     pinned = tomllib.loads(open(overlay).read())
     assert pinned["voices"]["narrator"] == Config().voices.narrator
     assert pinned["cast"]["voices"] == {}                   # no speakers yet
+
+    # and an empty but *named* lexicon, so an editor pane shows which series
+    # is open the way config.toml already does
+    lex = os.path.join(cfg.royalroad.library_dir, info["slug"], "lexicon.csv")
+    assert os.path.exists(lex)
+    assert open(lex).read().startswith(f"# {info['slug']} —")
+    from webnovel_audio.lexicon import Lexicon
+    assert Lexicon.load(lex).entries == []
     # "--from 2" is recorded per chapter, not as an invisible cutoff
     db = DB(cfg.royalroad.state_db)
     s = db.get_series("salvage-run")

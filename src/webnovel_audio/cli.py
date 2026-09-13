@@ -662,6 +662,16 @@ def _lex_paths(cfg: Config, slug: str | None = None) -> tuple[str, str]:
 _LEX_HEADER = "surface,respell,ipa,notes\n"
 
 
+def _lex_header_for(path: str, slug: str | None, cfg: Config) -> str:
+    """Header for a lexicon being created from scratch. A per-series file gets
+    the named, self-documenting starter so it is identifiable in an editor;
+    the base lexicon keeps its bare header."""
+    from .lexicon import Lexicon
+    if not slug:
+        return _LEX_HEADER
+    return Lexicon.starter_text(slug, cfg.general.base_lexicon)
+
+
 def _cmd_lex(args) -> int:
     from .lexicon import Lexicon
 
@@ -682,8 +692,8 @@ def _cmd_lex(args) -> int:
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         with open(path, "a", newline="", encoding="utf-8") as fh:
             if not exists:
-                fh.write(_LEX_HEADER)
-            w = csv.writer(fh)
+                fh.write(_lex_header_for(path, None if args.base else args.slug, cfg))
+            w = csv.writer(fh, lineterminator="\n")   # LF; csv defaults to CRLF
             for word in args.words:
                 w.writerow([word, "", "", "reads fine as-is"])
         print(f"{path}: {len(args.words)} word(s) marked fine as-is")
@@ -696,8 +706,9 @@ def _cmd_lex(args) -> int:
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         with open(path, "a", newline="", encoding="utf-8") as fh:
             if not exists:
-                fh.write(_LEX_HEADER)
-            csv.writer(fh).writerow([args.surface, args.respell, "", args.note or ""])
+                fh.write(_lex_header_for(path, None if args.base else args.slug, cfg))
+            csv.writer(fh, lineterminator="\n").writerow(
+                [args.surface, args.respell, "", args.note or ""])
         print(f"{path}: {args.surface} -> {args.respell}")
         return 0
 

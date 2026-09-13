@@ -1,6 +1,7 @@
 """Per-series pronunciation dictionary.
 
 CSV columns: surface,respell,ipa,notes
+Lines starting with `#` are comments (see `_uncommented`).
   surface : the word as it appears in the text (case-sensitive, whole-word match)
   respell : plain-English respelling fed to the TTS in place of `surface`
             (works with any backend; this is what Phase 1 uses)
@@ -16,6 +17,17 @@ import csv
 import os
 import re
 from dataclasses import dataclass
+
+
+def _uncommented(lines):
+    """Drop `#` comment lines before the CSV reader sees them.
+
+    CSV has no comment convention and `csv` has no option for one, so this is
+    the only place it can happen. It matters most for the *first* line: a
+    comment there would otherwise be taken as the header row, making every
+    `surface` lookup miss and silently voiding the whole lexicon.
+    """
+    return (ln for ln in lines if not ln.lstrip().startswith("#"))
 
 
 @dataclass
@@ -65,7 +77,7 @@ class Lexicon:
     def load(cls, path: str) -> "Lexicon":
         entries: list[Entry] = []
         with open(path, newline="", encoding="utf-8") as fh:
-            for row in csv.DictReader(fh):
+            for row in csv.DictReader(_uncommented(fh)):
                 surface = (row.get("surface") or "").strip()
                 if not surface:
                     continue
@@ -92,13 +104,36 @@ class Lexicon:
         return out
 
     @staticmethod
+    def starter_text(slug: str, base_lexicon: str = "") -> str:
+        """The lexicon a new series starts with: a named, self-documenting
+        header and nothing else. Named so that an editor pane makes it obvious
+        which series is open, the way `config.toml` already does."""
+        base = base_lexicon or "data/lexicons/_base.csv"
+        return (
+            f"# {slug} — pronunciation overrides for this series.\n"
+            f"# Hand-edited; `check {slug}` suggests candidates. Rows here beat\n"
+            f"# {base}, which is always applied underneath.\n"
+            "#\n"
+            "#   surface   the word as it appears (case-sensitive, whole word)\n"
+            "#   respell   plain-English respelling fed to the TTS\n"
+            "#   ipa       optional, for backends that take explicit phonemes\n"
+            "#   notes     free text for your own reference\n"
+            "#\n"
+            "# A multi-word surface pins a heteronym in context:\n"
+            '#   "a tear in" -> "a tair in"   fixes the cloth sense, while a\n'
+            "# bare \"tear\" elsewhere is left alone. Longest match wins.\n"
+            "#\n"
+            "# Quote any field containing a comma.\n"
+            "surface,respell,ipa,notes\n")
+
+    @staticmethod
     def append_candidates(path: str, names: list[str]) -> int:
         """Append `surface,,,` rows for names not already present. Returns count added."""
         existing: set[str] = set()
         header = "surface,respell,ipa,notes\n"
         if os.path.exists(path):
             with open(path, newline="", encoding="utf-8") as fh:
-                rows = list(csv.reader(fh))
+                rows = list(csv.reader(_uncommented(fh)))
             if rows:
                 header = ",".join(rows[0]) + "\n"
                 existing = {r[0].strip() for r in rows[1:] if r and r[0].strip()}
@@ -110,7 +145,10 @@ class Lexicon:
         with open(path, "a", newline="", encoding="utf-8") as fh:
             if write_header:
                 fh.write(header)
-            writer = csv.writer(fh)
+            # LF, not the csv default CRLF: these files are hand-edited on
+            # Linux and the starter header is LF, so a CRLF append would leave
+            # one file with mixed endings
+            writer = csv.writer(fh, lineterminator="\n")
             for name in new:
                 writer.writerow([name, "", "", "candidate — verify by ear"])
         return len(new)

@@ -472,6 +472,15 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
             with open(overlay, "w", encoding="utf-8") as fh:
                 fh.write(pin_defaults_text(cfg, slug))
             log(f"  voices pinned -> {overlay}")
+        # an empty but *named* lexicon, so the editor pane shows which series
+        # is open and the format is documented where it is used
+        lexicon = os.path.join(bdir, bundle.LAYOUT["lexicon"])
+        if not os.path.exists(lexicon):
+            from .lexicon import Lexicon
+            os.makedirs(os.path.dirname(lexicon), exist_ok=True)
+            with open(lexicon, "w", encoding="utf-8") as fh:
+                fh.write(Lexicon.starter_text(slug, cfg.general.base_lexicon))
+            log(f"  lexicon    -> {lexicon}")
         bundle.sync_bundle(cfg, db, row)
         log(f"added: {fi.title}")
         log(f"  {len(fi.chapters)} chapters ({new} new), "
