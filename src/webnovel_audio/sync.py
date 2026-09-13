@@ -762,6 +762,11 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                                   force=explicit, backend=backend, series_row=s,
                                   vol_map=vol_map)
                     res.rendered += 1
+                    hit, tot = ev.get("cached_segments"), ev.get("total_segments")
+                    if hit:
+                        # a fully cached re-render finishes in seconds; without
+                        # this it just looks like the render silently skipped
+                        log(f"      {hit}/{tot} segments from cache")
                     _emit({"event": "chapter", "slug": slug,
                            "elapsed_seconds": round(time.time() - t0, 1), **ev})
                 except Exception as exc:  # noqa: BLE001 - keep the batch going
