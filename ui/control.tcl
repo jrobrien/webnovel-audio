@@ -187,6 +187,13 @@ proc cmd_readable {} {
     set line [string trim $line]
     if {$line eq ""} return
     if {[catch {json::parse $line} ev]} { log $line ; return }
+    handle_event $ev $line
+}
+
+;# Split out of cmd_readable so it can be driven directly with synthetic events.
+;# It used to be reachable only through a live subprocess, which is how a broken
+;# `expr` in the success branch survived: the tests never completed a chapter.
+proc handle_event {ev {raw ""}} {
     switch -- [json::get $ev event] {
         start  { log "start: [json::get $ev stage], [json::get $ev series] series" }
         locked { log "! refused: another render/sync holds the lock"
@@ -199,18 +206,22 @@ proc cmd_readable {} {
         }
         chapter {
             set n [json::get $ev number]
-            if {[json::get $ev result] eq "error"} {
+            set r [json::get $ev result]
+            if {$r eq "error"} {
                 log "    #$n ERROR: [json::get $ev error]"
+            } elseif {$r eq "would-run"} {
+                log "    #$n would [json::get $ev stage] — [json::get $ev title]"
             } else {
+                set detail ""
                 set a [json::get $ev audio_seconds]
-                set e [json::get $ev elapsed_seconds]
-                log "    #$n ok[expr {$a ne "" ? \" (${a}s audio, ${e}s)\" : \"\"}]"
+                if {$a ne ""} { set detail " (${a}s audio, [json::get $ev elapsed_seconds]s)" }
+                log "    #$n ok$detail"
             }
         }
         done {
             log "done: [json::get $ev done] ok, [json::get $ev errors] error(s)"
         }
-        default { log $line }
+        default { if {$raw ne ""} { log $raw } }
     }
 }
 
