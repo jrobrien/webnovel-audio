@@ -866,6 +866,73 @@ def _cmd_state(args) -> int:
         db.close()
 
 
+def _cmd_cache_destructive(args, cfg, db, bundle, cache, want_json: bool) -> int:
+    """`prune` and `clear`. Both take the sync lock: unlinking a key a running
+    render just wrote is the one way these can corrupt rather than merely
+    delete."""
+    from . import sync
+
+    def run():
+        if args.action == "prune":
+            return cache.prune(cfg, db, args.key, stale=args.stale,
+                               dry_run=args.dry_run, force=args.force,
+                               log=(lambda *_: None) if want_json else print)
+        return cache.clear(cfg, db, args.key, dry_run=args.dry_run,
+                           log=(lambda *_: None) if want_json else print)
+
+    # what would go, before asking
+    probe = args.dry_run or not (want_json or args.yes)
+    if probe:
+        saved, args.dry_run = args.dry_run, True
+        try:
+            preview = run()
+        except cache.CacheError as exc:
+            return _fail(exc.code, exc.message, hint=exc.hint, json_mode=want_json)
+        args.dry_run = saved
+        n = preview["deleted"]
+        if not n:
+            if not want_json:
+                print("nothing to do.")
+            else:
+                _jprint({"ok": True, **preview})
+            return 0
+        if args.dry_run:
+            if want_json:
+                _jprint({"ok": True, **preview})
+            else:
+                print(f"\nwould delete {n} entry(s), "
+                      f"{bundle.human_bytes(preview['bytes'])}")
+                for p in preview.get("paths", [])[:10]:
+                    print(f"    {p}")
+                if n > 10:
+                    print(f"    … and {n - 10} more")
+                print("\nnothing written. re-run without -n to apply.")
+            return 0
+        print(f"\n{n} entry(s), {bundle.human_bytes(preview['bytes'])}")
+        if args.action == "clear":
+            # bytes are not the cost that matters here — CPU is
+            print(f"  re-synthesizing what is already rendered would take "
+                  f"~{sync.human_duration(preview['resynth_seconds'])}")
+        if input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("aborted.")
+            return 0
+
+    try:
+        with sync.sync_lock(cfg):
+            res = run()
+    except sync.SyncLocked as exc:
+        return _fail("cache_locked", str(exc),
+                     hint="wait for the render to finish", json_mode=want_json, rc=2)
+    except cache.CacheError as exc:
+        return _fail(exc.code, exc.message, hint=exc.hint, json_mode=want_json)
+    if want_json:
+        _jprint({"ok": True, **res})
+    else:
+        print(f"\ndeleted {res['deleted']} entry(s), "
+              f"{bundle.human_bytes(res['bytes'])} freed")
+    return 0
+
+
 def _cmd_cache(args) -> int:
     """Segment-cache maintenance. Read-only unless you say otherwise."""
     from . import bundle, cache
@@ -875,6 +942,9 @@ def _cmd_cache(args) -> int:
     want_json = getattr(args, "json", False)
     db = DB(cfg.royalroad.state_db)
     try:
+        if args.action in ("prune", "clear"):
+            return _cmd_cache_destructive(args, cfg, db, bundle, cache, want_json)
+
         if args.action == "compact":
             if not want_json:
                 print(("would compact" if args.dry_run else "compacting")
@@ -1617,8 +1687,23 @@ def _build_parser():
     cc.add_argument("key", nargs="?")
     cc.add_argument("-n", "--dry-run", action="store_true")
     _cfg_json(cc)
+    cp = ca_sub.add_parser("prune", help="delete cache entries nothing references")
+    cp.add_argument("key", nargs="?")
+    cp.add_argument("--stale", action="store_true",
+                    help="drop non-current synth generations instead")
+    cp.add_argument("-n", "--dry-run", action="store_true")
+    cp.add_argument("-y", "--yes", action="store_true", help="skip the confirmation")
+    cp.add_argument("--force", action="store_true",
+                    help="override the reachable-set safety check")
+    _cfg_json(cp)
+    cl = ca_sub.add_parser("clear", help="delete every cached segment, reachable or not")
+    cl.add_argument("key", nargs="?")
+    cl.add_argument("-n", "--dry-run", action="store_true")
+    cl.add_argument("-y", "--yes", action="store_true")
+    _cfg_json(cl)
     _cfg_json(ca)
-    ca.set_defaults(func=_cmd_cache, action=None, key=None, dry_run=False)
+    ca.set_defaults(func=_cmd_cache, action=None, key=None, dry_run=False,
+                    stale=False, yes=False, force=False)
 
     sc = sub.add_parser("schema", help="emit the command surface as JSON (for agents)")
     sc.set_defaults(func=_cmd_schema)

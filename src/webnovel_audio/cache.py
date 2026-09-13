@@ -284,3 +284,186 @@ def _prune_empty(root: str) -> None:
             os.rmdir(cur)
         except OSError:
             pass
+
+
+# -- pruning ---------------------------------------------------------------
+
+MANIFEST = ".manifest.json"
+#: Refuse to prune when the reachable set has collapsed by more than this
+#: against the last recorded run. The failure this defends against is a
+#: missing or unreadable `segments.json`, which makes live entries look
+#: orphaned — the one way this subsystem could destroy good data.
+SUSPECT_DROP = 0.20
+
+
+class CacheError(Exception):
+    def __init__(self, code: str, message: str, hint: str = ""):
+        super().__init__(message)
+        self.code, self.message, self.hint = code, message, hint
+
+
+def _manifest_path(root: str) -> str:
+    return os.path.join(root, MANIFEST)
+
+
+def _read_manifest(root: str) -> dict:
+    try:
+        with open(_manifest_path(root), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def _write_manifest(root: str, live: int, files: int) -> None:
+    if not os.path.isdir(root):
+        return
+    import time
+    try:
+        with open(_manifest_path(root), "w", encoding="utf-8") as fh:
+            json.dump({"live_keys": live, "files": files,
+                       "at": time.strftime("%Y-%m-%dT%H:%M:%S")}, fh, indent=1)
+    except OSError:
+        pass
+
+
+def _guard(root: str, label: str, live_here: int, files: int, force: bool) -> None:
+    """Two sanity checks before anything is deleted.
+
+    Absolute: a non-empty cache with *nothing* reachable means the segment
+    scripts are gone, not that every segment became garbage. Relative: a sharp
+    drop against the last recorded run means the same thing, less obviously.
+    """
+    if force:
+        return
+    if files and not live_here:
+        raise CacheError(
+            "cache_live_set_suspect",
+            f"{label}: {files} cached segment(s) but nothing reachable — "
+            "the segment scripts are probably missing, not the cache stale",
+            hint="check <bundle>/chapters/*.segments.json, or --force to override")
+    prev = _read_manifest(root).get("live_keys")
+    if prev and live_here < prev * (1 - SUSPECT_DROP):
+        raise CacheError(
+            "cache_live_set_suspect",
+            f"{label}: reachable set fell from {prev} to {live_here} "
+            f"({100 * (1 - live_here / prev):.0f}% drop) since the last prune",
+            hint="re-parse the series, or --force if the drop is expected")
+
+
+def prune(cfg: Config, db: DB, key: str | None = None, *, stale: bool = False,
+          dry_run: bool = False, force: bool = False, log=print) -> dict:
+    """Delete cache entries nothing references.
+
+    With `stale`, drop whole non-current generation directories instead — no
+    `segments.json` replay is involved, so that mode needs no guard: staleness
+    is a directory fact rather than an inference.
+    """
+    row = db.get_series(key) if key else None
+    if key and not row:
+        raise bundle.BundleError("no_such_series",
+                                 f"no tracked series matching {key!r}",
+                                 hint="webnovel-audio series list")
+    current = current_fingerprint(cfg)
+    live = live_keys(cfg, db, row)
+    res = {"deleted": 0, "bytes": 0, "kept": 0, "dry_run": dry_run,
+           "stale": stale, "paths": []}
+
+    for label, root in _roots(cfg, db, row):
+        entries = list(_entries(root))
+        if not entries:
+            continue
+        doomed: list[tuple[str, int]] = []
+        live_here = 0
+        for digest, path, size, gen, _backend in entries:
+            owners = live.get(digest)
+            reachable = bool(owners) and (label == "(shared)" or label in owners)
+            if reachable:
+                live_here += 1
+            if stale:
+                if gen and gen != current:
+                    doomed.append((path, size))
+            elif not reachable:
+                doomed.append((path, size))
+
+        if not stale:
+            _guard(root, label, live_here, len(entries), force)
+        if not doomed:
+            # still record the baseline: a clean prune is exactly the run that
+            # precedes a disaster, and without it the drop guard has nothing
+            # to compare against
+            if not dry_run:
+                _write_manifest(root, live_here, len(entries))
+            res["kept"] += len(entries)
+            continue
+
+        res["deleted"] += len(doomed)
+        res["bytes"] += sum(s for _, s in doomed)
+        res["kept"] += len(entries) - len(doomed)
+        if dry_run:
+            res["paths"] += [p for p, _ in doomed[:20]]
+        else:
+            for p, _ in doomed:
+                try:
+                    os.unlink(p)
+                except OSError:
+                    pass
+            _prune_empty(root)
+            _write_manifest(root, live_here, len(entries) - len(doomed))
+        log(f"  {label:<18} {len(doomed):>6} removed  "
+            f"{bundle.human_bytes(sum(s for _, s in doomed))}")
+    return res
+
+
+def clear(cfg: Config, db: DB, key: str | None = None, *,
+          dry_run: bool = False, log=print) -> dict:
+    """Remove every cached segment, reachable or not.
+
+    Costs a cold re-synthesis of anything re-rendered afterwards; `resynth_cost`
+    says how much, so a caller can put a number in front of the user rather
+    than a byte count they cannot reason about.
+    """
+    import shutil
+
+    row = db.get_series(key) if key else None
+    if key and not row:
+        raise bundle.BundleError("no_such_series",
+                                 f"no tracked series matching {key!r}",
+                                 hint="webnovel-audio series list")
+    res = {"deleted": 0, "bytes": 0, "dry_run": dry_run, "roots": []}
+    for label, root in _roots(cfg, db, row):
+        entries = list(_entries(root))
+        if not entries:
+            continue
+        res["deleted"] += len(entries)
+        res["bytes"] += sum(e[2] for e in entries)
+        res["roots"].append(root)
+        if not dry_run:
+            shutil.rmtree(root, ignore_errors=True)
+        log(f"  {label:<18} {len(entries):>6} removed  "
+            f"{bundle.human_bytes(sum(e[2] for e in entries))}")
+    res["resynth_seconds"] = resynth_cost(cfg, db, row)
+    return res
+
+
+def resynth_cost(cfg: Config, db: DB, series_row=None) -> float:
+    """Seconds of CPU to rebuild the cache for everything already rendered.
+
+    Uses the same learned per-series ratio as `sync --estimate`, so the number
+    quoted before a destructive clear matches the one quoted before a render.
+    """
+    import statistics
+
+    from .sync import MIN_COST_SAMPLES, RENDER_COST_RATIO
+
+    rows = [series_row] if series_row is not None else db.list_series()
+    total = 0.0
+    for s in filter(None, rows):
+        done = [c["duration_s"] for c in db.chapters(s["id"])
+                if c["status"] == "rendered" and c["duration_s"]]
+        if not done:
+            continue
+        timed = db.render_samples(s["id"])
+        ratio = (statistics.median(w / a for a, w in timed if a > 0)
+                 if len(timed) >= MIN_COST_SAMPLES else RENDER_COST_RATIO)
+        total += sum(done) * ratio
+    return total

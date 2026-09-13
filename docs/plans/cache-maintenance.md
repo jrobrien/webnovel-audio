@@ -1,7 +1,6 @@
 # Plan: cache maintenance subsystem
 
-Status: **steps 1-3 implemented** (2026-09-13); steps 4-7 (`prune`, `clear`,
-`verify`) proposed. Measurements taken against a 9.13 GB / 28,195-segment cache.
+Status: **steps 1-6 implemented** (2026-09-13); step 7 (`verify`) proposed. Measurements taken against a 9.13 GB / 28,195-segment cache.
 
 Shipped: the synth fingerprint and generation directories, `cache status`,
 `cache compact`, `chapters.synth_fingerprint` and the `SYNTH_MODEL` Opus tag.
@@ -305,9 +304,11 @@ recovers the least.
    194/194 segments from cache.
 3. ~~**`chapters.synth_fingerprint`** + `SYNTH_MODEL` Opus tag + the
    mixed-generation warning.~~ **Done.**
-4. **`cache prune --stale`** — safe mode first.
-5. **`cache prune`** (orphans) + manifest guard.
-6. **`cache clear`**, then wire into `series forget --purge`.
+4. ~~**`cache prune --stale`**~~ **Done** — `cache prune --stale`.
+5. ~~**`cache prune`** (orphans) + manifest guard.~~ **Done**, with *two*
+   guards; see below.
+6. ~~**`cache clear`**~~ **Done.** `series forget --purge` needed no wiring:
+   the bundle layout made it a single directory removal already.
 7. **`cache verify`** if still worth it.
 
 Steps 1-3 are the coherent first chunk: they free the space, close the
@@ -357,3 +358,40 @@ cost of *not* having `prune` yet dropped by 8x. `cache status` names them:
 ```
   2249 entry(s), 113.2 MB unreachable   -> cache prune   (not implemented yet)
 ```
+
+
+## Steps 4-5 as built
+
+Both `prune` and `clear` take `sync_lock`, run a dry pass first to show what
+would go, and confirm before deleting (skip with `-y`, or `--json`).
+
+### Two guards, not one
+
+The plan called for a manifest baseline. Building it surfaced that the baseline
+cannot protect the *first* run — and the first run is exactly when a
+half-restored tree is most likely. So there are two:
+
+- **Absolute.** A non-empty cache with *nothing* reachable means the segment
+  scripts are missing, not that every segment became garbage. Refuse.
+- **Relative.** A drop of more than 20% in the reachable set against the last
+  recorded prune means the same thing, less obviously. Refuse.
+
+Both are overridable with `--force`, and neither applies to `--stale`:
+staleness is a directory fact, not an inference from `segments.json`.
+
+A bug worth recording: the baseline was initially written only when something
+was actually deleted, so a *clean* prune left no baseline — and a clean prune is
+precisely the run that precedes a disaster. It now records unconditionally.
+
+### `clear` quotes CPU, not bytes
+
+"9 GB" is not a cost anyone can weigh. `clear` reports how long re-synthesizing
+the already-rendered chapters would take, using the same learned per-series
+ratio as `sync --estimate`, so the number matches the one quoted before a
+render.
+
+### Test series
+
+`aura-overload` chapters 1-5 were rendered specifically as a disposable target
+for these commands, so prune/clear could be exercised against a real cache
+without risking the three series that matter.

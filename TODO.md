@@ -7,10 +7,10 @@ Known gaps / follow-ups. Personal project — not a promise of when.
   reclaim|path|migrate` round-trips a series through a tarball into a clean
   machine. Next up is the cache plan below, which bundles made smaller.
 
-- **Cache maintenance subsystem** — steps 1-3 done (fingerprint, generation
-  dirs, `cache status`, `cache compact`; 9.1 GB -> 2.2 GB). Remaining:
-  `cache prune` (2,249 orphans / 113 MB), `cache clear`, `cache verify`.
-  Full proposal in
+- **Cache maintenance subsystem** — steps 1-6 done: fingerprint, generation
+  dirs, `cache status|compact|prune|clear` (9.1 GB -> 2.2 GB). Only
+  `cache verify` (find truncated/unreadable entries) is left, and it may not be
+  worth it. Full proposal in
   `docs/plans/cache-maintenance.md`. Covers `cache status|prune|clear|compact|
   verify`, the FLAC container switch (9.13 GB -> ~2.4 GB), and folding the synth
   model/g2p fingerprint into the cache path. Supersedes the "watch the cache"

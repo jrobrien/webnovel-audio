@@ -261,3 +261,158 @@ def test_render_records_the_fingerprint_and_round_trips_it(lib):
     assert db.chapters(s["id"])[0]["synth_fingerprint"] == "gen-xyz"
     # and it survives the bundle export/import round trip
     assert "synth_fingerprint" in bundle._CHAPTER_COLS
+
+
+# -- prune / clear (steps 4-5) ---------------------------------------------
+
+def _populate(cfg, db, d, live_texts, orphan_texts=(), gen=None):
+    """Give the bundle a segment script plus cache entries, some unreachable."""
+    sr = cfg.synth.sample_rate
+    gen = cache.current_fingerprint(cfg) if gen is None else gen
+    segs = [_seg(t) for t in live_texts]
+    _script(d, "001-a.segments.json", segs)
+    root = os.path.join(d, ".cache")
+    made = []
+    for s in segs + [_seg(t) for t in orphan_texts]:
+        p = pipeline._cache_path(root, "null", s, sr, gen)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        sf.write(p, np.zeros(int(sr * 0.25), dtype="float32"), sr,
+                 subtype=pipeline.CACHE_SUBTYPE)
+        made.append(p)
+    return root, made
+
+
+def test_prune_removes_only_unreachable_entries(lib):
+    cfg, db, s, d = lib
+    root, made = _populate(cfg, db, d, ["keep one", "keep two"], ["gone"])
+    r = cache.prune(cfg, db, log=lambda *_: None)
+    assert r["deleted"] == 1 and r["kept"] == 2
+    assert os.path.isfile(made[0]) and os.path.isfile(made[1])
+    assert not os.path.exists(made[2])
+
+
+def test_prune_dry_run_writes_nothing(lib):
+    cfg, db, s, d = lib
+    root, made = _populate(cfg, db, d, ["keep"], ["gone"])
+    r = cache.prune(cfg, db, dry_run=True, log=lambda *_: None)
+    assert r["deleted"] == 1 and all(os.path.isfile(p) for p in made)
+    assert r["paths"] and r["paths"][0].endswith(pipeline.CACHE_EXT)
+
+
+def test_prune_refuses_when_nothing_is_reachable(lib):
+    """The catastrophic case: segment scripts gone, so every entry *looks*
+    orphaned. Refuse rather than delete a whole series' cache."""
+    cfg, db, s, d = lib
+    root, made = _populate(cfg, db, d, ["a", "b", "c"])
+    os.unlink(os.path.join(d, "chapters", "001-a.segments.json"))
+    with pytest.raises(cache.CacheError) as exc:
+        cache.prune(cfg, db, log=lambda *_: None)
+    assert exc.value.code == "cache_live_set_suspect"
+    assert all(os.path.isfile(p) for p in made)          # nothing touched
+
+
+def test_prune_force_overrides_the_guard(lib):
+    cfg, db, s, d = lib
+    root, made = _populate(cfg, db, d, ["a", "b"])
+    os.unlink(os.path.join(d, "chapters", "001-a.segments.json"))
+    r = cache.prune(cfg, db, force=True, log=lambda *_: None)
+    assert r["deleted"] == 2 and not any(os.path.isfile(p) for p in made)
+
+
+def test_prune_refuses_a_sharp_drop_against_the_last_run(lib):
+    """The subtler version: scripts still there, but most of them vanished."""
+    cfg, db, s, d = lib
+    root, _ = _populate(cfg, db, d, [f"line {i}" for i in range(10)])
+    cache.prune(cfg, db, log=lambda *_: None)            # records the baseline
+    assert cache._read_manifest(root)["live_keys"] == 10
+
+    _script(d, "001-a.segments.json", [_seg("line 0")])  # 10 -> 1
+    with pytest.raises(cache.CacheError) as exc:
+        cache.prune(cfg, db, log=lambda *_: None)
+    assert exc.value.code == "cache_live_set_suspect"
+    assert "10" in exc.value.message and "1" in exc.value.message
+
+
+def test_prune_allows_a_small_drop(lib):
+    cfg, db, s, d = lib
+    root, _ = _populate(cfg, db, d, [f"line {i}" for i in range(10)])
+    cache.prune(cfg, db, log=lambda *_: None)
+    _script(d, "001-a.segments.json", [_seg(f"line {i}") for i in range(9)])
+    r = cache.prune(cfg, db, log=lambda *_: None)        # 10% drop, allowed
+    assert r["deleted"] == 1
+
+
+def test_prune_stale_drops_old_generations_without_a_guard(lib):
+    """No `segments.json` replay is involved, so staleness needs no guard —
+    it is a directory fact, not an inference."""
+    cfg, db, s, d = lib
+    root, made = _populate(cfg, db, d, ["a"], gen="oldgeneration")
+    os.unlink(os.path.join(d, "chapters", "001-a.segments.json"))
+    r = cache.prune(cfg, db, stale=True, log=lambda *_: None)
+    assert r["deleted"] == 1 and not os.path.exists(made[0])
+
+
+def test_prune_stale_leaves_the_current_generation(lib):
+    cfg, db, s, d = lib
+    root, made = _populate(cfg, db, d, ["a"], ["b"])       # both current gen
+    r = cache.prune(cfg, db, stale=True, log=lambda *_: None)
+    assert r["deleted"] == 0 and all(os.path.isfile(p) for p in made)
+
+
+def test_prune_scoped_to_one_series_leaves_others_alone(lib, tmp_path):
+    cfg, db, s, d = lib
+    other = _Fic(rr_id="777", slug="other-series")
+    sid2 = db.upsert_series(other)
+    d2 = os.path.join(cfg.royalroad.library_dir, "other-series")
+    os.makedirs(os.path.join(d2, "chapters"), exist_ok=True)
+    db.set_bundle(sid2, d2, db.get_series("777")["uuid"])
+    _populate(cfg, db, d, ["mine"], ["mine-orphan"])
+    root2, made2 = _populate(cfg, db, d2, ["theirs"], ["theirs-orphan"])
+
+    r = cache.prune(cfg, db, "test-series", log=lambda *_: None)
+    assert r["deleted"] == 1
+    assert all(os.path.isfile(p) for p in made2)          # untouched
+
+
+def test_prune_reports_an_unknown_series(lib):
+    cfg, db, s, d = lib
+    with pytest.raises(bundle.BundleError) as exc:
+        cache.prune(cfg, db, "nope", log=lambda *_: None)
+    assert exc.value.code == "no_such_series"
+
+
+def test_clear_removes_reachable_entries_too(lib):
+    cfg, db, s, d = lib
+    root, made = _populate(cfg, db, d, ["a", "b"], ["c"])
+    r = cache.clear(cfg, db, log=lambda *_: None)
+    assert r["deleted"] == 3
+    assert not any(os.path.isfile(p) for p in made)
+    assert not os.path.isdir(root)
+
+
+def test_clear_dry_run_writes_nothing(lib):
+    cfg, db, s, d = lib
+    root, made = _populate(cfg, db, d, ["a"], ["b"])
+    r = cache.clear(cfg, db, dry_run=True, log=lambda *_: None)
+    assert r["deleted"] == 2 and all(os.path.isfile(p) for p in made)
+
+
+def test_clear_quotes_the_resynthesis_cost_not_just_bytes(lib):
+    """Bytes are not the cost a user can reason about — CPU time is."""
+    cfg, db, s, d = lib
+    _populate(cfg, db, d, ["a"])
+    rows = db.chapters(s["id"])
+    db.mark_stage(rows[0]["id"], "rendered", duration_s=900.0)
+    db.mark_stage(rows[1]["id"], "rendered", duration_s=900.0)
+    r = cache.clear(cfg, db, dry_run=True, log=lambda *_: None)
+    assert r["resynth_seconds"] > 0
+    from webnovel_audio.sync import RENDER_COST_RATIO
+    assert r["resynth_seconds"] == pytest.approx(1800.0 * RENDER_COST_RATIO)
+
+
+def test_prune_writes_a_manifest_baseline(lib):
+    cfg, db, s, d = lib
+    root, _ = _populate(cfg, db, d, ["a", "b"], ["c"])
+    cache.prune(cfg, db, log=lambda *_: None)
+    man = cache._read_manifest(root)
+    assert man["live_keys"] == 2 and man["files"] == 2 and man["at"]
