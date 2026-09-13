@@ -585,7 +585,7 @@ def _do_render(cfg, db, scfg, slug, c, raw_path, *, backend="kokoro",
                   duration_s=rep.audio_seconds or None,
                   render_started_at=started,
                   render_ended_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
-    return out_path, rep.audio_seconds
+    return out_path, rep.audio_seconds, rep
 
 
 def _advance(cfg, db, prov, scfg, slug, c, *, upto, force=False, backend="kokoro",
@@ -608,10 +608,13 @@ def _advance(cfg, db, prov, scfg, slug, c, *, upto, force=False, backend="kokoro
         _do_parse(cfg, db, prov, slug, c, raw, force=force and upto == "parsed")
         ev["parsed"] = True
     if want >= stage_rank("rendered"):
-        path, secs = _do_render(cfg, db, scfg, slug, c, raw, backend=backend,
-                                series_row=series_row)
+        path, secs, rep = _do_render(cfg, db, scfg, slug, c, raw, backend=backend,
+                                     series_row=series_row)
         ev["path"] = path
         ev["audio_seconds"] = round(secs, 1)
+        # a fully cached re-render finishes in seconds; say so, or it looks wrong
+        ev["cached_segments"] = rep.cached_segments
+        ev["total_segments"] = rep.total_segments
     ev["result"] = "ok"
     return ev
 

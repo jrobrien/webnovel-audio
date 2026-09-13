@@ -139,7 +139,7 @@ them first.
 | `fetch <target> [range]` | download chapter source into the raw cache |
 | `parse <target> [range]` | raw → blocks → readable `.md`. `--explain` dumps the parse |
 | `check <target> [range]` | cast / heteronyms / unknown names report. **Never writes** |
-| `render <target> [range]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only |
+| `render <target> [range]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only. Reports how many segments came from cache |
 | `sync [series] [--limit N]` | refresh + render everything outstanding; shows a size estimate and confirms first (`-y` to skip) |
 
 **Series** (porcelain):
@@ -255,8 +255,10 @@ bottom-left, a notebook bottom-right:
 ```
 
 Select chapters (shift/ctrl for ranges and scattered picks) and **right-click**
-to run `fetch` / `parse` / `check` / `render` over exactly that selection, or to
-mark them skipped/new or clear errors. The selection becomes one comma range —
+to **Play** the chapter, run `fetch` / `parse` / `check` / `render` over exactly
+that selection, or mark them skipped/new and clear errors. Double-click plays.
+Playback uses `$WEBNOVEL_AUDIO_PLAYER` (e.g. `mpv --no-video`) if set, else
+`xdg-open`. The selection becomes one comma range —
 picking 1, 2, 3, 7, 20, 21 runs `render <slug> 1-3,7,20-21`.
 
 **Sync…** shows a live CPU estimate before it starts. The Cast and Lexicon tabs

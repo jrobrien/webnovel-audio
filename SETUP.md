@@ -174,9 +174,17 @@ uv run webnovel-audio ui     # needs tk (Arch: pacman -S tk), else falls back
 Laid out like gitk: series across the top, chapters bottom-left, a
 Cast / Lexicon / Log notebook bottom-right, status bar along the bottom.
 
-- Select chapters (shift/ctrl) and **right-click** for fetch / parse / check /
-  render over that selection, or to mark skipped/new and clear errors. A
-  scattered pick becomes one comma range, e.g. `render <slug> 1-3,7,20-21`.
+- Select chapters (shift/ctrl) and **right-click** to **Play**, or to run
+  fetch / parse / check / render over that selection, or mark skipped/new and
+  clear errors. A scattered pick becomes one comma range, e.g.
+  `render <slug> 1-3,7,20-21`. Double-click plays; set
+  `WEBNOVEL_AUDIO_PLAYER` (e.g. `mpv --no-video`) to choose the player,
+  otherwise `xdg-open` decides.
+- A re-render that finishes suspiciously fast is usually a full cache hit —
+  the log says `[194/194 segments cached]`. The per-segment cache is keyed on
+  text+voice+style+rate+pitch, so re-rendering unchanged audio only re-runs
+  loudness normalisation and encoding (~16 s for a 12-minute chapter, vs ~2.5
+  min cold).
 - **Sync…** shows a CPU estimate before starting.
 - Cast and Lexicon are edited in place, with an mtime guard so a file changed
   underneath (by `cast update`) is never silently overwritten. **Open in

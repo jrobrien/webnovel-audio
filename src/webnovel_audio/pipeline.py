@@ -29,6 +29,8 @@ class Report:
     script_path: str
     out_path: str = ""
     size_bytes: int = 0
+    cached_segments: int = 0     # segments served from the cache, not synthesized
+    total_segments: int = 0
 
 
 def load_document(source: str, cfg: Config):
@@ -159,6 +161,8 @@ def render(
     cache_dir = cfg.general.cache_dir
     os.makedirs(os.path.join(cache_dir, backend), exist_ok=True)
 
+    hits = [0]
+
     def render_one(idx: int, seg: Segment):
         if seg.kind == "cue":
             from .audio import earcon
@@ -167,6 +171,7 @@ def render(
             return idx, np.zeros(0, dtype="float32")
         cpath = _cache_path(cache_dir, backend, seg, sr)
         if os.path.exists(cpath):
+            hits[0] += 1
             data, _ = sf.read(cpath, dtype="float32")
             return idx, data
         audio = backend_impl.synth(seg)
@@ -224,4 +229,6 @@ def render(
         script_path=script_path,
         out_path=out_path,
         size_bytes=size,
+        cached_segments=hits[0],
+        total_segments=len(speech),
     )

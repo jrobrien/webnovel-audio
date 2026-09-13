@@ -154,11 +154,12 @@ proc chapter_ctx {X Y x y} {
         .bl.tv selection set $id
     }
     set n [llength [.bl.tv selection]]
-    .ctx entryconfigure 0 -label "Fetch ($n)"
-    .ctx entryconfigure 1 -label "Parse ($n)"
-    .ctx entryconfigure 2 -label "Check ($n)"
-    .ctx entryconfigure 3 -label "Render ($n)"
-    .ctx entryconfigure 5 -label "Update cast from selection ($n)"
+    .ctx entryconfigure 2 -label "Fetch ($n)"
+    .ctx entryconfigure 3 -label "Parse ($n)"
+    .ctx entryconfigure 4 -label "Check ($n)"
+    .ctx entryconfigure 5 -label "Render ($n)"
+    .ctx entryconfigure 7 -label "Update cast from selection ($n)"
+    .ctx entryconfigure 0 -state [expr {$n == 1 ? "normal" : "disabled"}]
     tk_popup .ctx $X $Y
 }
 
@@ -215,6 +216,11 @@ proc handle_event {ev {raw ""}} {
                 set detail ""
                 set a [json::get $ev audio_seconds]
                 if {$a ne ""} { set detail " (${a}s audio, [json::get $ev elapsed_seconds]s)" }
+                set tot [json::get $ev total_segments]
+                set hit [json::get $ev cached_segments]
+                if {$tot ne "" && $hit ne "" && $hit > 0} {
+                    append detail "  \[$hit/$tot segments cached\]"
+                }
                 log "    #$n ok$detail"
             }
         }
@@ -467,6 +473,30 @@ proc save_editor {which} {
     log "saved $path"
 }
 
+;# Hand a rendered chapter to an audio player. $WEBNOVEL_AUDIO_PLAYER wins
+;# (e.g. "mpv --no-video"), else xdg-open picks by MIME.
+proc play_selected {} {
+    if {$::SERIES eq ""} return
+    set sel [.bl.tv selection]
+    if {![llength $sel]} { log "select a chapter to play" ; return }
+    set n [.bl.tv set [lindex $sel 0] n]
+    set d [run_json state show $::SERIES $n]
+    if {$d eq ""} return
+    set c [lindex [dict get $d chapters] 0]
+    set path [json::get $c audio_path]
+    if {$path eq "" || ![file exists $path]} {
+        log "#$n has no rendered audio yet"
+        return
+    }
+    set cmd ""
+    if {[info exists ::env(WEBNOVEL_AUDIO_PLAYER)]} {
+        set cmd [string trim $::env(WEBNOVEL_AUDIO_PLAYER)]
+    }
+    if {$cmd eq ""} { set cmd "xdg-open" }
+    log "playing #$n — [file tail $path]"
+    if {[catch {exec {*}$cmd $path &} e]} { log "! $cmd: $e" }
+}
+
 proc external_editor {which} {
     set path $::EDIT($which,path)
     if {$path eq ""} return
@@ -609,8 +639,11 @@ grid .bl.tv .bl.sb -sticky nsew
 grid rowconfigure .bl 0 -weight 1
 grid columnconfigure .bl 0 -weight 1
 bind .bl.tv $::CTXBUT {chapter_ctx %X %Y %x %y}
+bind .bl.tv <Double-1> {play_selected ; break}
 
 menu .ctx -tearoff 0
+.ctx add command -label "Play"   -command play_selected
+.ctx add separator
 .ctx add command -label "Fetch"  -command {do_stage fetch}
 .ctx add command -label "Parse"  -command {do_stage parse}
 .ctx add command -label "Check"  -command {do_stage check}

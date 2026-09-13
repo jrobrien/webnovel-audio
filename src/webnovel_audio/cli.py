@@ -153,6 +153,9 @@ def _one_off(stage: str, args, cfg: Config) -> int:
         if rep.audio_seconds:
             print(f"  duration    : {rep.audio_seconds / 60:.1f} min")
             print(f"  realtime x  : {rep.realtime_factor:.1f}")
+        if rep.total_segments:
+            print(f"  segments    : {rep.total_segments} "
+                  f"({rep.cached_segments} from cache)")
         return 0
     if stage == "parsed":
         return _explain(args.target, cfg) if getattr(args, "explain", False) \
