@@ -38,6 +38,30 @@ def _jprint(obj) -> None:
     print(_json.dumps(obj, ensure_ascii=False))
 
 
+def _fail(code: str, message: str, *, hint: str = "", json_mode: bool = False,
+          rc: int = 1, **extra) -> int:
+    """Report a failure the same way to humans and to programs.
+
+    An agent driving this needs to branch on *what* went wrong, not parse
+    English. `code` is the stable identifier; `message` is the human line;
+    `hint` names the command that fixes it.
+    """
+    if json_mode:
+        _jprint({"ok": False, "error": {"code": code, "message": message,
+                                        "hint": hint, **extra}})
+    else:
+        import sys
+        print(f"error [{code}]: {message}", file=sys.stderr)
+        if hint:
+            print(f"  try: {hint}", file=sys.stderr)
+    return rc
+
+
+def _no_series(key, json_mode: bool = False) -> int:
+    return _fail("no_such_series", f"no tracked series matching {key!r}",
+                 hint="webnovel-audio series list", json_mode=json_mode)
+
+
 def _parse_range(s):
     """A chapter selection -> a list of (lo, hi) spans; None means open-ended.
 
@@ -520,6 +544,68 @@ def _cmd_retag(args) -> int:
     return 1 if r["failed"] else 0
 
 
+def _cmd_schema(args) -> int:
+    """Emit the command surface as JSON.
+
+    So an agent can plan against this tool without being handed the whole
+    `--help` tree — it lists every command, its arguments, types and choices.
+    Built by walking argparse itself, so it cannot drift from the real parser.
+    """
+    ap = _build_parser()
+
+    def walk(parser, path, help_text=""):
+        sub = next((a for a in parser._actions
+                    if isinstance(a, argparse._SubParsersAction)), None)
+        opts, pos = [], []
+        for a in parser._actions:
+            if isinstance(a, (argparse._SubParsersAction, argparse._HelpAction)):
+                continue
+            item = {"name": a.dest, "help": a.help or "",
+                    "required": bool(a.required)}
+            if a.choices:
+                item["choices"] = list(a.choices)
+            if a.option_strings:
+                item["flags"] = list(a.option_strings)
+                item["takes_value"] = a.nargs != 0
+                opts.append(item)
+            else:
+                item["nargs"] = a.nargs if a.nargs is not None else 1
+                pos.append(item)
+        node = {"path": path, "help": help_text or parser.description or "",
+                "positional": pos, "options": opts}
+        out = [node] if path else []
+        if sub:
+            node["subcommands"] = sorted(sub.choices)
+            # argparse keeps each subparser's help on the parent, not the child
+            helps = {a.dest: (a.help or "") for a in sub._choices_actions}
+            for name, p2 in sub.choices.items():
+                out += walk(p2, [*path, name], helps.get(name, ""))
+        return out
+
+    cmds = walk(ap, [])
+    root = next((a for a in ap._actions
+                 if isinstance(a, argparse._SubParsersAction)), None)
+    _jprint({
+        "tool": "webnovel-audio", "version": __version__,
+        "conventions": {
+            "target": "a tracked series (slug/id/title substring), or a path/URL "
+                      "for a one-off",
+            "range": "N | N-M | N- | -M | comma list (1-3,7,20-25); omitting it "
+                     "means 'whatever is outstanding', giving it means "
+                     "'exactly these, whatever their recorded state'",
+            "json": "--json on series/state/cast/lex/check/config and the "
+                    "pipeline verbs; sync/fetch/render stream one event per line",
+            "exit_codes": {"0": "ok", "1": "failed", "2": "another render/sync "
+                                                          "holds the lock"},
+            "errors": "with --json a failure is "
+                      '{"ok": false, "error": {"code", "message", "hint"}}',
+        },
+        "commands": sorted(root.choices) if root else [],
+        "detail": cmds,
+    })
+    return 0
+
+
 def _cmd_models(args) -> int:
     from .synth.kokoro import DEFAULT_CACHE, fetch_models, model_paths
 
@@ -630,8 +716,7 @@ def _cmd_cast(args) -> int:
     try:
         s = db.get_series(args.key)
         if not s:
-            print(f"no tracked series matching {args.key!r}")
-            return 1
+            return _no_series(args.key, want_json)
         slug = sync._dir_slug(s)
     finally:
         db.close()
@@ -639,6 +724,19 @@ def _cmd_cast(args) -> int:
 
     if args.action == "edit":
         return _editor_open(path, sync.pin_defaults_text(cfg, slug))
+
+    if args.action == "set":
+        if args.voice and args.voice not in _EN_VOICES:
+            return _fail("unknown_voice", f"no such voice: {args.voice}",
+                         hint="run `webnovel-audio voices list`",
+                         json_mode=want_json, valid=_EN_VOICES[:8])
+        r = sync.set_cast_voice(cfg, slug, args.speaker, args.voice)
+        if want_json:
+            _jprint({"ok": True, **r})
+        else:
+            print(f"{r['action']}: {args.speaker} -> {args.voice or '(unassigned)'}"
+                  f"  in {r['path']}")
+        return 0
 
     if args.action == "show":
         scfg = sync._series_cfg(cfg, slug)
@@ -695,14 +793,15 @@ def _cmd_state(args) -> int:
     try:
         s = db.get_series(args.key)
         if not s:
-            print(f"no tracked series matching {args.key!r}")
-            return 1
+            return _no_series(args.key, want_json)
         spans = _parse_range(getattr(args, "range", ""))
 
         if args.action == "set":
             if args.status not in STATUSES:
-                print(f"status must be one of: {', '.join(STATUSES)}")
-                return 1
+                return _fail("bad_status",
+                             f"unknown status {args.status!r}",
+                             hint=f"one of: {', '.join(STATUSES)}",
+                             json_mode=want_json, valid=list(STATUSES))
             rows = db.select(s["id"], spans)
             n = db.set_status([c["id"] for c in rows], args.status)
             (_jprint if want_json else print)(
@@ -782,18 +881,30 @@ def _cmd_series(args) -> int:
             slug = sync._dir_slug(s)
 
             if args.action in ("enable", "disable"):
-                db.set_enabled(s["id"], args.action == "enable")
-                print(f"{s['title']}: sync {args.action}d")
+                on = args.action == "enable"
+                db.set_enabled(s["id"], on)
+                if want_json:
+                    _jprint({"ok": True, "slug": s["slug"], "enabled": on,
+                             "title": s["title"]})
+                else:
+                    print(f"{s['title']}: sync {'resumed' if on else 'paused'}")
                 return 0
 
             if args.action == "forget":
+                purged = ""
                 if args.purge:
                     import shutil
-                    d = os.path.join(os.path.expanduser(cfg.royalroad.library_dir), slug)
-                    shutil.rmtree(d, ignore_errors=True)
-                    print(f"removed {d}")
+                    purged = os.path.join(
+                        os.path.expanduser(cfg.royalroad.library_dir), slug)
+                    shutil.rmtree(purged, ignore_errors=True)
                 db.forget(s["id"])
-                print(f"forgot {s['title']}")
+                if want_json:
+                    _jprint({"ok": True, "slug": s["slug"], "forgot": s["title"],
+                             "purged": purged or None})
+                else:
+                    if purged:
+                        print(f"removed {purged}")
+                    print(f"forgot {s['title']}")
                 return 0
 
             # show
@@ -1024,6 +1135,11 @@ def main(argv=None) -> int:
     if not argv:
         argv = ["--help"]                 # bare invocation -> help, never the UI
 
+    args = _build_parser().parse_args(argv)
+    return args.func(args)
+
+
+def _build_parser():
     ap = argparse.ArgumentParser(
         prog="webnovel-audio",
         description="Offline web-novel TTS, CPU-first (Ryzen 8745HS / no CUDA).",
@@ -1147,6 +1263,12 @@ def main(argv=None) -> int:
                     help="N | N-M   (omit: the first [cast] seed_chapters)")
     cu.add_argument("--diff", action="store_true", help="show what it would add, write nothing")
     _cfg_json(cu)
+    ck2 = cs_sub.add_parser("set", help="assign one speaker a voice (no editor)")
+    ck2.add_argument("key")
+    ck2.add_argument("speaker")
+    ck2.add_argument("voice", nargs="?", default="",
+                     help='Kokoro voice id, or "" to list the speaker unassigned')
+    _cfg_json(ck2)
     cw = cs_sub.add_parser("show", help="the effective cast, including unassigned")
     cw.add_argument("key")
     _cfg_json(cw)
@@ -1229,6 +1351,9 @@ def main(argv=None) -> int:
     _cfg(fd)
     fd.set_defaults(func=_cmd_feed)
 
+    sc = sub.add_parser("schema", help="emit the command surface as JSON (for agents)")
+    sc.set_defaults(func=_cmd_schema)
+
     rt = sub.add_parser("retag", help="refresh Opus tags on rendered chapters (no re-encode)")
     rt.add_argument("key", nargs="?", help="one series, or all if omitted")
     rt.add_argument("--dry-run", action="store_true")
@@ -1257,5 +1382,4 @@ def main(argv=None) -> int:
                     help="use Python's bundled Tcl/Tk instead of `wish`")
     ui.set_defaults(func=_cmd_ui)
 
-    args = ap.parse_args(argv)
-    return args.func(args)
+    return ap

@@ -75,14 +75,16 @@ proc refresh_series {} {
     set rows [dict get $d series]
     foreach r $rows {
         set st [dict get $r stages]
+        set on [expr {[json::get $r enabled] eq "0" ? 0 : 1}]
         .top.tv insert {} end -id [dict get $r slug] -values [list \
             [dict get $r title] \
+            [expr {$on ? "on" : "paused"}] \
             [json::get $r status] \
             [json::get $st rendered] \
             [dict get $r pending] \
             [dict get $r errors] \
             [json::get $r next title]] \
-            -tags [expr {[json::get $r enabled] eq "0" ? "off" : "on"}]
+            -tags [expr {$on ? "on" : "off"}]
     }
     .top.tv tag configure off -foreground gray55
     status "[llength $rows] series"
@@ -143,7 +145,11 @@ proc refresh_chapters {} {
         if {[.bl.tv set $id note] ne ""} { lappend cols note ; break }
     }
     .bl.tv configure -displaycolumns $cols
-    status "$::SERIES — [llength [.bl.tv children {}]] chapters"
+    if {[series_paused $::SERIES]} {
+        status "$::SERIES — [llength [.bl.tv children {}]] chapters · PAUSED, excluded from sync"
+    } else {
+        status "$::SERIES — [llength [.bl.tv children {}]] chapters"
+    }
 }
 
 ;# selected chapter numbers -> a CLI range like "1-3,7,20-25"
@@ -160,6 +166,39 @@ proc selected_range {} {
     }
     lappend spans [expr {$lo == $prev ? $lo : "$lo-$prev"}]
     return [join $spans ","]
+}
+
+proc series_paused {slug} {
+    return [expr {[.top.tv exists $slug] && [.top.tv set $slug sync] eq "paused"}]
+}
+
+proc toggle_pause {} {
+    set slug [selected_series]
+    if {$slug eq ""} return
+    set verb [expr {[series_paused $slug] ? "enable" : "disable"}]
+    run_json series $verb $slug
+    log "$slug: sync [expr {$verb eq {enable} ? {resumed} : {paused}}]"
+    refresh_series
+    on_series_status
+}
+
+proc series_ctx {X Y x y} {
+    set id [.top.tv identify row $x $y]
+    if {$id ne ""} { .top.tv selection set $id }
+    set slug [selected_series]
+    if {$slug eq ""} return
+    .sctx entryconfigure 0 -label \
+        [expr {[series_paused $slug] ? "Resume sync" : "Pause sync (exclude from sync)"}]
+    tk_popup .sctx $X $Y
+}
+
+;# keep the status bar honest about why a series might not be syncing
+proc on_series_status {} {
+    set slug [selected_series]
+    if {$slug eq ""} return
+    if {[series_paused $slug]} {
+        status "$slug — paused, excluded from sync"
+    }
 }
 
 proc chapter_ctx {X Y x y} {
@@ -340,6 +379,11 @@ proc do_reset_errors {} {
 # ---------------------------------------------------------------- sync --------
 proc dlg_sync {} {
     if {$::SERIES eq ""} { log "select a series" ; return }
+    if {[series_paused $::SERIES]} {
+        log "! $::SERIES is paused — right-click the series to resume it"
+        status "$::SERIES is paused"
+        return
+    }
     set w .sync ; catch {destroy $w}
     toplevel $w ; wm title $w "Sync" ; wm transient $w .
     ttk::label $w.l -text "Sync $::SERIES — chapters to render:"
@@ -622,11 +666,12 @@ grid rowconfigure . 1 -weight 1
 grid columnconfigure . 0 -weight 1
 
 ttk::frame .top
-ttk::treeview .top.tv -columns {title status rendered pending err next} \
+ttk::treeview .top.tv -columns {title sync status rendered pending err next} \
     -show headings -selectmode browse -yscrollcommand {.top.sb set}
-foreach {c t w a s} {title Title 300 w 1   status Status 90 center 0
-                     rendered Rendered 80 center 0   pending Pending 80 center 0
-                     err Err 50 center 0   next "Next up" 280 w 1} {
+foreach {c t w a s} {title Title 280 w 1   sync Sync 70 center 0
+                     status Status 85 center 0   rendered Rendered 80 center 0
+                     pending Pending 80 center 0   err Err 50 center 0
+                     next "Next up" 260 w 1} {
     .top.tv heading $c -text $t
     .top.tv column $c -width $w -anchor $a -stretch $s
 }
@@ -635,6 +680,16 @@ grid .top.tv .top.sb -sticky nsew
 grid rowconfigure .top 0 -weight 1
 grid columnconfigure .top 0 -weight 1
 bind .top.tv <<TreeviewSelect>> on_series_select
+bind .top.tv $::CTXBUT {series_ctx %X %Y %x %y}
+
+menu .sctx -tearoff 0
+.sctx add command -label "Pause sync" -command toggle_pause
+.sctx add separator
+.sctx add command -label "Refresh chapter list" -command {
+    if {[selected_series] ne ""} { run_cmd [list series refresh [selected_series]] }
+}
+.sctx add command -label "Edit cast"    -command {.br select .br.cast}
+.sctx add command -label "Edit lexicon" -command {.br select .br.lex}
 
 # -- horizontal split: chapters | notebook
 ttk::panedwindow .bot -orient horizontal

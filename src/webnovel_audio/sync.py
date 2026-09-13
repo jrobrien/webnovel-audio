@@ -219,6 +219,44 @@ def _cast_voices_lines(named, voices, gender, counts, default_voice, provenance:
     return shown, lines
 
 
+def set_cast_voice(cfg: Config, slug: str, speaker: str, voice: str) -> dict:
+    """Assign one speaker a voice in the series overlay, non-interactively.
+
+    The agent-facing counterpart to `cast edit`: rewrites the speaker's row in
+    place if it exists (keeping its trailing comment), appends it otherwise, and
+    leaves the rest of the file byte-identical. An empty `voice` means
+    "listed but unassigned" -> falls through to [cast] default.
+    """
+    path = os.path.join(
+        os.path.expanduser(cfg.general.series_config_dir or "data/series"), f"{slug}.toml")
+    text = open(path, encoding="utf-8").read() if os.path.exists(path) else \
+        pin_defaults_text(cfg, slug)
+
+    quoted = _toml_str(speaker)
+    line = f'{quoted:<18} = "{voice}"'
+    out, replaced, insec = [], False, False
+    for ln in text.splitlines():
+        stripped = ln.strip()
+        if stripped.startswith("["):
+            insec = stripped == "[cast.voices]"
+        elif insec and not replaced:
+            key = stripped.split("=", 1)[0].strip() if "=" in stripped else ""
+            if key in (quoted, speaker):
+                comment = ln.split("#", 1)[1] if "#" in ln else ""
+                out.append(line + (f"   #{comment}" if comment else ""))
+                replaced = True
+                continue
+        out.append(ln)
+    if not replaced:
+        out = _append_cast_voices("\n".join(out) + "\n", [line]).splitlines()
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(out).rstrip("\n") + "\n")
+    return {"path": path, "speaker": speaker, "voice": voice,
+            "action": "updated" if replaced else "added"}
+
+
 def _existing_cast_voice_keys(text: str) -> set[str]:
     """Best-effort: speaker names already given a voice under [cast.voices]."""
     try:

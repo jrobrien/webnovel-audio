@@ -149,7 +149,7 @@ them first.
 | `series add <url> [--from N]` | start tracking — metadata only; `--from` marks 1..N `skipped` |
 | `series list` | dashboard: per-stage counts, what's next, errors |
 | `series show <slug>` | one series in detail |
-| `series enable\|disable <slug>` | include / exclude from `sync` (finished a series? disable it) |
+| `series enable\|disable <slug>` | include / exclude from `sync` — the UI calls this Pause/Resume |
 | `series refresh [slug]` | re-fetch chapter lists |
 | `series forget <slug> [--purge]` | untrack; `--purge` also deletes rendered files |
 
@@ -167,6 +167,7 @@ them first.
 |---|---|
 | `cast edit <slug>` | open the series config (voices) in `$EDITOR` |
 | `cast update <slug> [range]` | merge in speakers found in that range (`--diff` to preview) |
+| `cast set <slug> <speaker> <voice>` | assign one voice without an editor (`""` = unassigned) |
 | `cast show <slug>` | the effective cast, including unassigned speakers |
 | `lex edit <slug>` / `lex edit --base` | open the per-series / always-on CSV in `$EDITOR` |
 | `lex ignore <slug> <word>…` | mark words "reads fine", so `check` stops listing them |
@@ -177,8 +178,26 @@ them first.
 | `voices list` / `voices demo` | the 28 ids / a chaptered audition file |
 
 **Delivery + misc:** `serve`, `feed <series>`, `book <series> [range]`,
-`retag [series]` (refresh Opus tags with no re-encode), `models fetch`,
-`login`, `ui`.
+`retag [series]` (refresh Opus tags with no re-encode), `schema` (the command
+surface as JSON), `models fetch`, `login`, `ui`.
+
+### Driving it from a script or an agent
+
+`schema --json` emits every command, argument and choice, walked out of argparse
+so it can't drift from the real parser — enough to plan against without reading
+`--help`. Failures under `--json` are structured rather than prose:
+
+```json
+{"ok": false, "error": {"code": "no_such_series",
+                        "message": "no tracked series matching 'skypride'",
+                        "hint": "webnovel-audio series list"}}
+```
+
+so a caller branches on `code` instead of matching English. Exit codes are `0`
+ok, `1` failed, `2` another render/sync holds the lock. Everything that changes
+state has a non-interactive form — `cast set`, `lex add`, `lex ignore`,
+`state set`, `series enable|disable` — and `sync --estimate --json` reports the
+cost before committing to it.
 
 ### Volumes
 

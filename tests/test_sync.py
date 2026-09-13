@@ -647,3 +647,83 @@ def test_opus_tags_use_volume(tmp_path):
     assert t["album"] == "Demo — Vol Two"
     assert t["RENDERED_AT"] == "2026-01-01T00:00:00"   # never "now"
     db.close()
+
+
+def test_cast_set_updates_in_place(tmp_path):
+    """`cast set` is the agent-facing counterpart to `cast edit`: it must change
+    exactly one row and leave everything else byte-identical."""
+    cfg = Config()
+    cfg.general.series_config_dir = str(tmp_path)
+    p = tmp_path / "demo.toml"
+    p.write_text(sync.pin_defaults_text(cfg, "demo"))
+
+    r = sync.set_cast_voice(cfg, "demo", "Mara", "af_heart")
+    assert r["action"] == "added"
+    import tomllib
+    assert tomllib.loads(p.read_text())["cast"]["voices"] == {"Mara": "af_heart"}
+
+    before = p.read_text()
+    r = sync.set_cast_voice(cfg, "demo", "Mara", "bf_emma")
+    assert r["action"] == "updated"
+    after = p.read_text()
+    assert tomllib.loads(after)["cast"]["voices"] == {"Mara": "bf_emma"}
+    # only the one line changed
+    diff = [a for a, b in zip(before.splitlines(), after.splitlines()) if a != b]
+    assert len(diff) == 1 and "Mara" in diff[0]
+
+    # an existing trailing comment survives an update
+    lines = p.read_text().splitlines()
+    i = next(n for n, ln in enumerate(lines) if ln.startswith('"Mara"'))
+    lines[i] += "   # 8 line(s), female"
+    p.write_text("\n".join(lines) + "\n")
+    sync.set_cast_voice(cfg, "demo", "Mara", "af_sky")
+    assert "8 line(s), female" in p.read_text()
+    assert tomllib.loads(p.read_text())["cast"]["voices"]["Mara"] == "af_sky"
+
+    # empty voice = listed but unassigned
+    sync.set_cast_voice(cfg, "demo", "girl", "")
+    assert tomllib.loads(p.read_text())["cast"]["voices"]["girl"] == ""
+
+
+def test_cli_structured_errors(tmp_path, capsys):
+    """An agent branches on `code`, not on English prose."""
+    import json
+    import types
+
+    from webnovel_audio import cli
+
+    cfgp = tmp_path / "c.toml"
+    cfgp.write_text(f'[royalroad]\nstate_db = "{tmp_path / "s.db"}"\n')
+
+    rc = cli._cmd_cast(types.SimpleNamespace(
+        action="set", key="nope", speaker="X", voice="am_michael",
+        config=str(cfgp), json=True))
+    err = json.loads(capsys.readouterr().out)["error"]
+    assert rc == 1 and err["code"] == "no_such_series" and err["hint"]
+
+    rc = cli._cmd_state(types.SimpleNamespace(
+        action="set", key="nope", range="1", status="new",
+        config=str(cfgp), json=True))
+    assert json.loads(capsys.readouterr().out)["error"]["code"] == "no_such_series"
+
+
+def test_schema_covers_every_command(capsys):
+    """The schema is walked out of argparse, so it can't drift from the parser."""
+    import json
+    import types
+
+    from webnovel_audio import cli
+
+    cli._cmd_schema(types.SimpleNamespace())
+    d = json.loads(capsys.readouterr().out)
+    paths = {" ".join(n["path"]) for n in d["detail"]}
+    for expect in ("fetch", "parse", "check", "render", "sync", "cast set",
+                   "lex add", "state set", "series disable", "schema"):
+        assert expect in paths, expect
+    assert set(d["commands"]) <= paths
+    # conventions an agent needs in order to plan
+    for k in ("target", "range", "json", "exit_codes", "errors"):
+        assert k in d["conventions"]
+    cast_set = next(n for n in d["detail"] if n["path"] == ["cast", "set"])
+    assert [p["name"] for p in cast_set["positional"]] == ["key", "speaker", "voice"]
+    assert cast_set["help"]
