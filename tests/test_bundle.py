@@ -433,3 +433,199 @@ def test_series_cfg_reads_the_bundle_after_migration(legacy):
     assert scfg.voices.narrator == "af_nova"                 # bundle config.toml
     assert scfg.general.lexicon == os.path.join(d, "lexicon.csv")
     assert scfg.general.cache_dir == os.path.join(d, ".cache")
+
+
+# -- archive / purge / reclaim (plan step 5) --------------------------------
+
+def _members(path):
+    import tarfile
+    with tarfile.open(path) as tf:
+        return sorted(m.name for m in tf.getmembers())
+
+
+def test_archive_excludes_the_cache_by_default(legacy, tmp_path):
+    cfg, db, s, d = legacy
+    bundle.migrate(cfg, db, "test-series", log=lambda *_: None)
+    os.makedirs(os.path.join(d, ".cache", "kokoro"), exist_ok=True)
+    open(os.path.join(d, ".cache", "kokoro", "ab.wav"), "wb").write(b"x" * 4096)
+
+    out = str(tmp_path / "t.tar")
+    res = bundle.archive(cfg, db, "test-series", out=out, log=lambda *_: None)
+    names = _members(out)
+    assert res["ok"] and not res["with_cache"]
+    assert not any("/.cache/" in n for n in names)
+    assert "test-series/manifest.toml" in names
+    assert "test-series/state.json" in names
+    assert "test-series/config.toml" in names
+    assert "test-series/lexicon.csv" in names
+    assert "test-series/chapters/001-chapter-1.opus" in names
+    assert "test-series/covers/cover.jpg" in names
+    assert "test-series/.raw/999-0.html" in names
+
+
+def test_archive_with_cache_includes_it(legacy, tmp_path):
+    cfg, db, s, d = legacy
+    bundle.migrate(cfg, db, "test-series", log=lambda *_: None)
+    os.makedirs(os.path.join(d, ".cache", "kokoro"), exist_ok=True)
+    open(os.path.join(d, ".cache", "kokoro", "ab.wav"), "wb").write(b"x" * 4096)
+    out = str(tmp_path / "t2.tar")
+    bundle.archive(cfg, db, "test-series", out=out, with_cache=True,
+                   log=lambda *_: None)
+    assert "test-series/.cache/kokoro/ab.wav" in _members(out)
+
+
+def test_archive_refreshes_the_machine_owned_files_first(legacy, tmp_path):
+    """An archive must carry current state, not whatever was last exported."""
+    import tarfile
+    cfg, db, s, d = legacy
+    bundle.migrate(cfg, db, "test-series", log=lambda *_: None)
+    db.con.execute("UPDATE chapters SET status='rendered' WHERE ord=3")
+    db.con.commit()
+    out = str(tmp_path / "t3.tar")
+    bundle.archive(cfg, db, "test-series", out=out, log=lambda *_: None)
+    with tarfile.open(out) as tf:
+        st = json.load(tf.extractfile("test-series/state.json"))
+    assert st["chapters"][3]["status"] == "rendered"
+
+
+def test_archive_restores_into_a_fresh_db(legacy, tmp_path):
+    """The round trip that makes an archive worth keeping: untar, import, and
+    the series is tracked again with its state intact."""
+    import tarfile
+    cfg, db, s, d = legacy
+    bundle.migrate(cfg, db, "test-series", log=lambda *_: None)
+    before = _snapshot(db, s["id"])
+    out = str(tmp_path / "t4.tar")
+    bundle.archive(cfg, db, "test-series", out=out, log=lambda *_: None)
+
+    dest = tmp_path / "restored"
+    dest.mkdir()
+    with tarfile.open(out) as tf:
+        tf.extractall(dest, filter="data")
+    fresh = DB(str(tmp_path / "restored.db"))
+    res = bundle.import_bundle(cfg, fresh, str(dest / "test-series"))
+    assert res["action"] == "add"
+    new = fresh.get_series("999")
+
+    # every column but the paths is identical; the paths are re-anchored to
+    # wherever the archive was unpacked, which is the point
+    keep = [i for i, c in enumerate(bundle._CHAPTER_COLS)
+            if c not in bundle._PATH_COLS]
+    strip = lambda rows: [tuple(r[i] for i in keep) for r in rows]   # noqa: E731
+    assert strip(_snapshot(fresh, new["id"])["chapters"]) == strip(before["chapters"])
+    c0 = fresh.chapters(new["id"])[0]
+    assert c0["audio_path"] == str(dest / "test-series" / "chapters"
+                                   / "001-chapter-1.opus")
+    assert os.path.isfile(c0["audio_path"])
+    fresh.close()
+
+
+def test_archive_rejects_an_unknown_format(legacy, tmp_path):
+    cfg, db, s, d = legacy
+    with pytest.raises(bundle.BundleError) as exc:
+        bundle.archive(cfg, db, "test-series", out=str(tmp_path / "x.7z"),
+                       log=lambda *_: None)
+    assert exc.value.code == "bad_archive_format"
+
+
+def test_archive_reports_a_missing_bundle(legacy, tmp_path):
+    import shutil
+    cfg, db, s, d = legacy
+    shutil.rmtree(d)
+    with pytest.raises(bundle.BundleError) as exc:
+        bundle.archive(cfg, db, "test-series", out=str(tmp_path / "x.tar"),
+                       log=lambda *_: None)
+    assert exc.value.code == "bundle_missing"
+
+
+def test_purge_removes_everything_including_the_cache(legacy):
+    cfg, db, s, d = legacy
+    bundle.migrate(cfg, db, "test-series", log=lambda *_: None)
+    os.makedirs(os.path.join(d, ".cache", "kokoro"), exist_ok=True)
+    open(os.path.join(d, ".cache", "kokoro", "ab.wav"), "wb").write(b"x" * 8192)
+
+    res = bundle.purge(cfg, db, db.get_series("999"))
+    assert res["removed"] and res["bytes"] > 8000
+    assert not os.path.exists(d)
+
+
+def test_purge_of_a_missing_bundle_is_not_an_error(legacy):
+    import shutil
+    cfg, db, s, d = legacy
+    shutil.rmtree(d)
+    res = bundle.purge(cfg, db, db.get_series("999"))
+    assert res["removed"] is False and res["bytes"] == 0
+
+
+def test_du_counts_hardlinked_inodes_once(tmp_path):
+    a = tmp_path / "a"
+    a.mkdir()
+    (a / "f").write_bytes(b"x" * 1000)
+    os.link(a / "f", a / "g")
+    size, files = bundle.du(str(a))
+    assert files == 2 and size == 1000
+
+
+def test_reclaim_unlinks_the_global_copy_so_deleting_frees_space(legacy):
+    """`migrate` links rather than moves, so the bytes stay pinned by the
+    shared cache until the duplicate link goes."""
+    import hashlib
+    cfg, db, s, d = legacy
+    src = os.path.join(cfg.general.cache_dir, "kokoro")
+    os.makedirs(src, exist_ok=True)
+    mat = f"line 1|am_michael|narration|1.0|0.0|{cfg.synth.sample_rate}"
+    digest = hashlib.sha1(mat.encode()).hexdigest()
+    open(os.path.join(src, f"{digest}.wav"), "wb").write(b"x" * 2048)
+    open(os.path.join(src, "cafe" * 10 + ".wav"), "wb").write(b"orphan")
+
+    bundle.migrate(cfg, db, "test-series", log=lambda *_: None)
+    linked = os.path.join(d, ".cache", "kokoro", f"{digest}.wav")
+    assert os.stat(linked).st_nlink == 2
+
+    r = bundle.reclaim_cache(cfg, db)
+    assert r["unlinked"] == 1 and r["bytes"] == 2048
+    assert os.stat(linked).st_nlink == 1              # bundle holds the only ref
+    assert not os.path.exists(os.path.join(src, f"{digest}.wav"))
+    # an unclaimed entry is left for `cache prune`, never destroyed here
+    assert os.path.isfile(os.path.join(src, "cafe" * 10 + ".wav"))
+    assert r["kept"] == 1
+
+
+def test_reclaim_dry_run_writes_nothing(legacy):
+    import hashlib
+    cfg, db, s, d = legacy
+    src = os.path.join(cfg.general.cache_dir, "kokoro")
+    os.makedirs(src, exist_ok=True)
+    mat = f"line 1|am_michael|narration|1.0|0.0|{cfg.synth.sample_rate}"
+    digest = hashlib.sha1(mat.encode()).hexdigest()
+    open(os.path.join(src, f"{digest}.wav"), "wb").write(b"x" * 2048)
+    bundle.migrate(cfg, db, "test-series", log=lambda *_: None)
+    r = bundle.reclaim_cache(cfg, db, dry_run=True)
+    assert r["unlinked"] == 1
+    assert os.path.isfile(os.path.join(src, f"{digest}.wav"))
+
+
+def test_reclaim_keeps_a_key_not_yet_in_every_owning_bundle(legacy, tmp_path):
+    """Two series sharing a segment: the global link may only go once both
+    bundles hold their own."""
+    import hashlib
+    cfg, db, s, d = legacy
+    other = _Fic(rr_id="777", slug="other-series")
+    sid2 = db.upsert_series(other)
+    db.replace_chapters(sid2, other.chapters)
+    d2 = os.path.join(cfg.royalroad.library_dir, "other-series")
+    os.makedirs(os.path.join(d2, "chapters"), exist_ok=True)
+    json.dump([{"kind": "speech", "text": "line 1", "voice": "am_michael",
+                "style": "narration", "rate": 1.0, "pitch": 0.0}],
+              open(os.path.join(d2, "chapters", "001-x.segments.json"), "w"))
+
+    src = os.path.join(cfg.general.cache_dir, "kokoro")
+    os.makedirs(src, exist_ok=True)
+    mat = f"line 1|am_michael|narration|1.0|0.0|{cfg.synth.sample_rate}"
+    digest = hashlib.sha1(mat.encode()).hexdigest()
+    open(os.path.join(src, f"{digest}.wav"), "wb").write(b"x" * 2048)
+
+    bundle.migrate(cfg, db, "test-series", log=lambda *_: None)   # only one
+    r = bundle.reclaim_cache(cfg, db)
+    assert r["unlinked"] == 0 and r["kept"] == 1
+    assert os.path.isfile(os.path.join(src, f"{digest}.wav"))

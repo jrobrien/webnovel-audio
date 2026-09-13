@@ -898,6 +898,26 @@ def _cmd_series_bundle(args, cfg, db, bundle, want_json: bool) -> int:
             print("\nnothing written. re-run without -n to apply.")
         return 0
 
+    if args.action == "archive":
+        res = bundle.archive(cfg, db, args.key, out=args.out,
+                             with_cache=args.with_cache,
+                             log=(lambda *_: None) if want_json else print)
+        if want_json:
+            _jprint(res)
+        return 0
+
+    if args.action == "reclaim":
+        r = bundle.reclaim_cache(cfg, db, dry_run=args.dry_run)
+        if want_json:
+            _jprint({"ok": True, "dry_run": args.dry_run, **r})
+        else:
+            verb = "would drop" if args.dry_run else "dropped"
+            print(f"{verb} {r['unlinked']} duplicate cache link(s), "
+                  f"{bundle.human_bytes(r['bytes'])} now held only by the bundles")
+            print(f"  {r['kept']} entry(s) left in the shared cache "
+                  f"(unclaimed, or not yet in every owning bundle)")
+        return 0
+
     if args.action == "path":
         s = db.get_series(args.key)
         if not s:
@@ -962,7 +982,8 @@ def _cmd_series(args) -> int:
             _jprint({"ok": True, "series": results or []})
         return 0
 
-    if args.action in ("export", "import", "scan", "path", "migrate"):
+    if args.action in ("export", "import", "scan", "path", "migrate",
+                       "archive", "reclaim"):
         from . import bundle
         db = DB(cfg.royalroad.state_db)
         try:
@@ -995,20 +1016,21 @@ def _cmd_series(args) -> int:
 
             if args.action == "forget":
                 from . import bundle
-                purged = ""
-                if args.purge:
-                    import shutil
-                    # resolve through the recorded bundle path, so a relocated
-                    # series is purged where it actually lives
-                    purged = bundle.bundle_dir(cfg, s)
-                    shutil.rmtree(purged, ignore_errors=True)
+                # one directory holds everything now — before the bundle
+                # layout this could not reach the segment cache at all
+                pg = bundle.purge(cfg, db, s) if args.purge else None
                 db.forget(s["id"])
                 if want_json:
                     _jprint({"ok": True, "slug": s["slug"], "forgot": s["title"],
-                             "purged": purged or None})
+                             "purged": pg["path"] if pg and pg["removed"] else None,
+                             "freed_bytes": pg["bytes"] if pg else 0})
                 else:
-                    if purged:
-                        print(f"removed {purged}")
+                    if pg and pg["removed"]:
+                        print(f"removed {pg['path']}"
+                              f"  ({pg['files']} files, "
+                              f"{bundle.human_bytes(pg['bytes'])})")
+                    elif pg:
+                        print(f"nothing at {pg['path']}")
                     print(f"forgot {s['title']}")
                 return 0
 
@@ -1373,10 +1395,22 @@ def _build_parser():
     mg.add_argument("key", nargs="?", help="one series, or all if omitted")
     mg.add_argument("-n", "--dry-run", action="store_true")
     _cfg_json(mg)
+    ar = se_sub.add_parser("archive", help="write a bundle to a tar archive")
+    ar.add_argument("key")
+    ar.add_argument("-o", "--out", help="output path (default <slug>.tar; "
+                                        ".tar.zst/.gz/.bz2/.xz to compress)")
+    ar.add_argument("--with-cache", action="store_true",
+                    help="include .cache/ — usually 10x larger, and regenerable")
+    _cfg_json(ar)
+    rc = se_sub.add_parser(
+        "reclaim", help="drop shared-cache links now duplicated inside bundles")
+    rc.add_argument("-n", "--dry-run", action="store_true")
+    _cfg_json(rc)
 
     _cfg_json(se)
     se.set_defaults(func=_cmd_series, action=None, frm="start", purge=False,
-                    dry_run=False, root=None, path=None, key=None)
+                    dry_run=False, root=None, path=None, key=None, out=None,
+                    with_cache=False)
 
     # -- state (plumbing) ---------------------------------------------------
     stt = sub.add_parser("state", help="the per-chapter stage machine, by hand")

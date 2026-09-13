@@ -1,7 +1,6 @@
 # Plan: content bundles
 
-Status: **steps 1-4 implemented** (2026-09-13); step 5 (`series archive`)
-proposed. Revision of
+Status: **complete** (2026-09-13). All five steps implemented. Revision of
 the "self-contained series directory" RFC, narrowed to the *content bundle*
 compromise: everything that describes a series moves into its directory, the
 operational state DB stays global and becomes rebuildable.
@@ -151,8 +150,25 @@ complaining. Deletion stays explicit via `series forget`, so an unmounted drive
 never silently drops a series.
 
 **Archive excludes `.cache/` by default.** Measured: sky-pride is 575 MB of
-output against 5.86 GB of cache. Including regenerable data would make every
+output against 6 GB of cache. Including regenerable data would make every
 archive 10x larger.
+
+**No compression by default.** The bulk is Opus, already compressed: plain tar
+of Chasing Sunlight is 84.4 MB against 84.3 MB of input, and zstd only reaches
+81.5 MB. Name the output `.tar.zst` / `.tar.gz` / `.tar.bz2` / `.tar.xz` to
+override (zstd streams through the binary — `tarfile` has no zstd before Python
+3.14). Sky Pride archives in 0.85 s to 543 MB.
+
+**`series reclaim` — the step that makes deletion actually free space.**
+`migrate` hard-links rather than moves, so every migrated segment had two links
+and the bytes stayed pinned by the shared cache: `rm -rf <bundle>` would free
+the 567 MB of audio but *not* the 6 GB of cache behind it, which is precisely
+the emergency-cleanup case this plan exists for. `reclaim` drops the shared-cache
+link once every owning bundle holds its own, leaving the bundle with the only
+reference. Measured: 26,301 links dropped, 8.2 GB transferred to bundle
+ownership, `nlink` now 1 for 26,228 entries and 2 for the 56 files (28 keys x 2
+bundles) genuinely shared between two series. Entries no bundle claims — 2,249,
+906 MB — are deliberately left for `cache prune`.
 
 ## How this interacts with the cache plan
 
@@ -280,6 +296,7 @@ because the cache is global.
 4. ~~**`serve.py` / `sync.py` path resolution**~~ **Done.** `_file()` is now
    confined to the bundle being served rather than one fixed library root —
    the old guard would have 404'd a relocated series.
-5. **`series archive`**, and `forget --purge` simplified to a directory removal.
+5. ~~**`series archive`**, and `forget --purge` simplified to a directory
+   removal.~~ **Done**, plus `series reclaim` — see below.
 
 Steps 1-2 are additive and reversible; step 3 is the commitment.

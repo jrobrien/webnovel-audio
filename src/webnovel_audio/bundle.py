@@ -456,6 +456,51 @@ def migrate(cfg: Config, db: DB, key: str | None = None, *,
     return out
 
 
+def reclaim_cache(cfg: Config, db: DB, *, dry_run: bool = False) -> dict:
+    """Drop the global-cache link for any segment now living in every bundle
+    that references it.
+
+    `migrate` links rather than moves, so a migrated entry has two links and
+    the bytes stay pinned until *both* go. That quietly defeats the point:
+    `rm -rf <bundle>` would free the audio but not the 6 GB of cache behind it.
+    Removing the global link leaves the bundle holding the only reference, so
+    deleting a series finally reclaims its space.
+
+    An entry no bundle claims is left alone — that is `cache prune`'s call.
+    """
+    src_root = os.path.expanduser(cfg.general.cache_dir)
+    if not os.path.isdir(src_root):
+        return {"unlinked": 0, "kept": 0, "bytes": 0}
+    live = _live_keys(cfg, db)
+    bdirs = {}
+    from .sync import _dir_slug
+    for s in db.list_series():
+        bdirs[_dir_slug(s)] = bundle_dir(cfg, s)
+
+    unlinked = kept = freed = 0
+    for backend in sorted(os.listdir(src_root)):
+        sd = os.path.join(src_root, backend)
+        if not os.path.isdir(sd):
+            continue
+        for name in sorted(os.listdir(sd)):
+            digest = name.rsplit(".", 1)[0]
+            owners = live.get(digest)
+            if not owners:
+                kept += 1                      # orphan: for `cache prune`
+                continue
+            # only safe once every owner has its own copy
+            if not all(os.path.exists(os.path.join(bdirs.get(o, ""), LAYOUT["cache"],
+                                                   backend, name)) for o in owners):
+                kept += 1
+                continue
+            p = os.path.join(sd, name)
+            freed += os.path.getsize(p)
+            unlinked += 1
+            if not dry_run:
+                os.unlink(p)
+    return {"unlinked": unlinked, "kept": kept, "bytes": freed}
+
+
 def _live_keys(cfg: Config, db: DB) -> dict:
     """sha1 -> {slugs}, replayed from every bundle's segment scripts. The same
     reconstruction `pipeline._cache_path` does at write time."""
@@ -543,6 +588,145 @@ def _rewrite_paths(db: DB, sid: int, bdir: str) -> None:
                 f"UPDATE chapters SET {', '.join(f'{k}=?' for k in upd)} WHERE id=?",
                 (*upd.values(), c["id"]))
     db.con.commit()
+
+
+def du(path: str) -> tuple[int, int]:
+    """(bytes, files) under `path`, counting each inode once so hard-linked
+    cache entries aren't double-counted."""
+    total = files = 0
+    seen: set = set()
+    for root, _, names in os.walk(path):
+        for n in names:
+            try:
+                st = os.stat(os.path.join(root, n), follow_symlinks=False)
+            except OSError:
+                continue
+            files += 1
+            if st.st_ino in seen:
+                continue
+            seen.add(st.st_ino)
+            total += st.st_size
+    return total, files
+
+
+def human_bytes(n: float) -> str:
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if abs(n) < 1024 or unit == "TB":
+            return f"{n:.0f} {unit}" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024
+    return f"{n:.1f} TB"
+
+
+#: archive suffix -> tarfile mode. `.zst` is handled separately: Python's
+#: tarfile has no zstd until 3.14, so it pipes through the `zstd` binary.
+_TAR_MODES = {".tar": "w", ".tar.gz": "w:gz", ".tgz": "w:gz",
+              ".tar.bz2": "w:bz2", ".tar.xz": "w:xz"}
+
+
+def _tar_mode(out: str) -> str | None:
+    for suffix, mode in _TAR_MODES.items():
+        if out.endswith(suffix):
+            return mode
+    return None
+
+
+def archive(cfg: Config, db: DB, key: str, *, out: str | None = None,
+            with_cache: bool = False, log=print) -> dict:
+    """Write one bundle to a tar archive.
+
+    Excludes `.cache/` unless asked: sky-pride is 567 MB of audio against 6 GB
+    of regenerable segments, so including it makes an archive 10x larger to
+    preserve something a re-render rebuilds.
+
+    No compression by default — the bulk is Opus, which is already compressed,
+    so gzip costs minutes and saves almost nothing. Name the output `.tar.zst`
+    or `.tar.gz` to override.
+    """
+    import tarfile
+    from .sync import _dir_slug
+
+    s = db.get_series(key)
+    if not s:
+        raise BundleError("no_such_series", f"no tracked series matching {key!r}",
+                          hint="webnovel-audio series list")
+    slug, bdir = _dir_slug(s), bundle_dir(cfg, s)
+    if not os.path.isdir(bdir):
+        raise BundleError("bundle_missing", f"nothing at {bdir}",
+                          hint=f"webnovel-audio series forget {slug}")
+
+    # write the machine-owned files first, so the archive carries current state
+    sync_bundle(cfg, db, s)
+
+    out = out or f"{slug}.tar"
+    skip = () if with_cache else (LAYOUT["cache"],)
+
+    def entries():
+        for root, dirs, names in os.walk(bdir):
+            rel = os.path.relpath(root, bdir)
+            if rel != "." and rel.split(os.sep)[0] in skip:
+                dirs[:] = []
+                continue
+            for n in sorted(names):
+                full = os.path.join(root, n)
+                yield full, os.path.join(slug, os.path.relpath(full, bdir))
+
+    items = list(entries())
+    total = sum(os.path.getsize(f) for f, _ in items if os.path.exists(f))
+
+    if out.endswith(".tar.zst") or out.endswith(".tzst"):
+        _write_zst(out, items)
+    else:
+        mode = _tar_mode(out)
+        if mode is None:
+            raise BundleError(
+                "bad_archive_format",
+                f"don't know how to write {os.path.basename(out)}",
+                hint="use .tar, .tar.zst, .tar.gz, .tar.bz2 or .tar.xz")
+        with tarfile.open(out, mode) as tf:
+            for full, arc in items:
+                tf.add(full, arcname=arc)
+
+    size = os.path.getsize(out)
+    log(f"{s['title']} -> {out}")
+    log(f"  {len(items)} files, {human_bytes(total)} -> {human_bytes(size)}"
+        + ("" if with_cache else "   (cache excluded)"))
+    return {"ok": True, "slug": slug, "out": os.path.abspath(out),
+            "files": len(items), "bytes_in": total, "bytes_out": size,
+            "with_cache": with_cache}
+
+
+def _write_zst(out: str, items) -> None:
+    """tarfile has no zstd before Python 3.14, so stream through the binary."""
+    import shutil
+    import subprocess
+    import tarfile
+    if not shutil.which("zstd"):
+        raise BundleError("zstd_missing", "zstd is not installed",
+                          hint="write a .tar or .tar.gz instead")
+    with open(out, "wb") as fh:
+        proc = subprocess.Popen(["zstd", "-q", "-T0", "-"], stdin=subprocess.PIPE,
+                                stdout=fh)
+        try:
+            with tarfile.open(fileobj=proc.stdin, mode="w|") as tf:
+                for full, arc in items:
+                    tf.add(full, arcname=arc)
+        finally:
+            proc.stdin.close()
+            if proc.wait() != 0:
+                raise BundleError("archive_failed", "zstd exited non-zero")
+
+
+def purge(cfg: Config, db: DB, series_row) -> dict:
+    """Delete a series' bundle from disk. One directory — which is the whole
+    point of the layout: before it, `forget --purge` could not reach the
+    segment cache at all and stranded it permanently."""
+    import shutil
+    d = bundle_dir(cfg, series_row)
+    if not os.path.isdir(d):
+        return {"path": d, "removed": False, "bytes": 0, "files": 0}
+    size, files = du(d)
+    shutil.rmtree(d, ignore_errors=True)
+    return {"path": d, "removed": True, "bytes": size, "files": files}
 
 
 def scan(cfg: Config, db: DB, root: str, *, dry_run: bool = False) -> list[dict]:

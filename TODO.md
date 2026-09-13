@@ -2,10 +2,10 @@
 
 Known gaps / follow-ups. Personal project — not a promise of when.
 
-- **Content bundles** — `docs/plans/series-bundles.md`. Steps 1-4 done: the
-  layout is live and all four series are migrated. Remaining: `series archive`
-  (clean tar, `--with-cache` opt-in) and simplifying `forget --purge` to a
-  directory removal.
+- ~~**Content bundles**~~ — **done**, `docs/plans/series-bundles.md`. The
+  layout is live, all four series migrated, and `series archive|import|scan|
+  reclaim|path|migrate` round-trips a series through a tarball into a clean
+  machine. Next up is the cache plan below, which bundles made smaller.
 
 - **Cache maintenance subsystem** — full proposal in
   `docs/plans/cache-maintenance.md`. Covers `cache status|prune|clear|compact|
