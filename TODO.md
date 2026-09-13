@@ -38,18 +38,15 @@ Known gaps / follow-ups. Personal project — not a promise of when.
   Then `render hidden-healer` to re-do it; the segment cache means only the
   narration lines re-synthesize, dialogue is reused.
 
-- **Surface source metadata in the feed and the serve page.** Tags, content
-  warnings, status and rating are already captured (`series.tags` /
-  `.warnings` / `.status` / `.rating`, populated by `parse_fiction` on every
-  refresh) and already ride along in the Opus tags as `KEYWORDS` /
-  `CONTENT_WARNING`. What's missing is the delivery end:
+- **Surface tags and content warnings in the feed and serve page.** Per-item
+  show notes are done. What's left is series-level:
 
-  - `feed.py`: `<itunes:keywords>` from tags, `<itunes:author>`, and a
-    `<description>` / `<itunes:summary>` that leads with the warning list.
-    Per-item show notes (source URL, publish / fetch / render times, narrator
-    voice) rather than the current bare enclosure.
+  - `feed.py`: `<itunes:keywords>` from `series.tags`, and a channel
+    `<description>` that leads with the warning list.
   - `serve.py`: a warnings badge and tag chips on each card in `_index()`.
     Strings are author-controlled, so they must go through `_h()`.
+  - per-volume feeds (`/feed/<slug>-v2.xml`) using the cached volume cover —
+    volumes are modelled now, so this is mostly routing.
   - `<itunes:explicit>`: derive from warnings — `Graphic Violence`, `Gore`,
     `Sexual Content`, `Profanity` → true; `AI-Assisted Content` and
     `Sensitive Content` alone → false. Worth a per-series override in the
