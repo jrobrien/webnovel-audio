@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import os
 
+import hashlib
+
 import numpy as np
 
 from ..segment import Segment
@@ -21,6 +23,59 @@ VOICES_URL = f"{_RELEASE}/{VOICES_FILE}"
 
 def model_paths(cache_dir: str = DEFAULT_CACHE) -> tuple[str, str]:
     return os.path.join(cache_dir, MODEL_FILE), os.path.join(cache_dir, VOICES_FILE)
+
+
+#: Things that change what the model *says* or how it says it. Deliberately
+#: excludes onnxruntime: a numerics-level dependency, not a semantic one, so
+#: including it would churn generations on every routine upgrade for
+#: differences below the noise floor.
+_FP_PACKAGES = ("kokoro-onnx", "phonemizer", "espeakng-loader")
+
+
+def fingerprint_material(cache_dir: str = DEFAULT_CACHE, *, lang: str = "en-us",
+                         sample_rate: int = 24000) -> dict:
+    """What identifies this synthesis generation, expanded.
+
+    Stored beside the cached segments as `.fingerprint.json` so a later
+    `cache status` can say *why* two generations differ ("espeak 1.52.0 ->
+    1.53.0") rather than just that a hash changed.
+    """
+    import importlib.metadata as md
+
+    model, voices = model_paths(cache_dir)
+    out = {"backend": "kokoro", "lang": lang, "sample_rate": sample_rate,
+           "model": _sha256(model)[:16], "voices": _sha256(voices)[:16]}
+    for pkg in _FP_PACKAGES:
+        try:
+            out[pkg] = md.version(pkg)
+        except Exception:                       # noqa: BLE001 - absent is fine
+            out[pkg] = ""
+    return out
+
+
+def fingerprint(cache_dir: str = DEFAULT_CACHE, *, lang: str = "en-us",
+                sample_rate: int = 24000) -> str:
+    """A short, stable id for "what produces this audio".
+
+    The segment cache key covers text|voice|style|rate|pitch|sample_rate, which
+    misses the model bytes, the voice embeddings, the language, and the g2p
+    chain. That last one is the sneaky one: `espeakng-loader` ships its own
+    libespeak-ng, so a routine `uv sync` can re-phonemize the whole library
+    with no model bump and no visible signal.
+    """
+    mat = fingerprint_material(cache_dir, lang=lang, sample_rate=sample_rate)
+    canon = "|".join(f"{k}={mat[k]}" for k in sorted(mat))
+    return hashlib.sha256(canon.encode()).hexdigest()[:12]
+
+
+def _sha256(path: str) -> str:
+    if not os.path.isfile(path):
+        return ""
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def fetch_models(cache_dir: str = DEFAULT_CACHE, log=print) -> None:
@@ -74,6 +129,8 @@ class KokoroSynth:
         self.default_voice = default_voice
         self.speed = speed
         self.lang = lang
+        self.fingerprint = fingerprint(cache_dir, lang=lang,
+                                       sample_rate=self.sample_rate)
 
     def synth(self, seg: Segment) -> np.ndarray:
         if not seg.text.strip():

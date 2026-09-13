@@ -14,6 +14,7 @@ class NullSynth:
 
     def __init__(self, sample_rate: int = 24000, words_per_second: float = 2.7):
         self.sample_rate = sample_rate
+        self.fingerprint = f"null-{sample_rate}-{words_per_second:g}"
         self.wps = words_per_second
 
     def synth(self, seg: Segment) -> np.ndarray:

@@ -79,9 +79,44 @@ def _make_backend(name: str, cfg: Config):
     raise SystemExit(f"unknown backend: {name!r}")
 
 
-def _cache_path(cache_dir: str, backend: str, seg: Segment, sr: int) -> str:
-    digest = hashlib.sha1(f"{seg.cache_key_material()}|{sr}".encode()).hexdigest()
-    return os.path.join(cache_dir, backend, f"{digest}.wav")
+def cache_digest(seg: Segment, sr: int) -> str:
+    return hashlib.sha1(f"{seg.cache_key_material()}|{sr}".encode()).hexdigest()
+
+
+#: Segments are written here. FLAC/PCM_16 rather than float32 wav: 29% of the
+#: size, and its -96 dBFS floor is far below what the ~48 kbps Opus encode
+#: downstream contributes. soundfile's FLAC has no float subtype.
+CACHE_EXT = ".flac"
+CACHE_SUBTYPE = "PCM_16"
+
+
+def _cache_path(cache_dir: str, backend: str, seg: Segment, sr: int,
+                fingerprint: str = "") -> str:
+    """Where this segment is written. Under a generation directory, so a model
+    or g2p bump starts a new generation rather than silently reusing audio the
+    old model produced."""
+    digest = cache_digest(seg, sr)
+    root = os.path.join(cache_dir, backend, fingerprint) if fingerprint \
+        else os.path.join(cache_dir, backend)
+    return os.path.join(root, f"{digest}{CACHE_EXT}")
+
+
+def _cache_lookup(cache_dir: str, backend: str, seg: Segment, sr: int,
+                  fingerprint: str) -> str | None:
+    """An existing cache entry for this segment, or None.
+
+    Tries the current generation first, then the pre-migration flat layout, so
+    a tree that hasn't run `cache compact` yet still gets its hits.
+    """
+    digest = cache_digest(seg, sr)
+    base = os.path.join(cache_dir, backend)
+    cands = []
+    if fingerprint:
+        cands += [os.path.join(base, fingerprint, f"{digest}{CACHE_EXT}"),
+                  os.path.join(base, fingerprint, f"{digest}.wav")]
+    cands += [os.path.join(base, f"{digest}{CACHE_EXT}"),
+              os.path.join(base, f"{digest}.wav")]        # pre-compact layout
+    return next((c for c in cands if os.path.exists(c)), None)
 
 
 def _dsp_spec(seg: Segment, cfg: Config) -> dict:
@@ -159,7 +194,8 @@ def render(
     backend_impl = _make_backend(backend, cfg)
     sr = getattr(backend_impl, "sample_rate", cfg.synth.sample_rate)
     cache_dir = cfg.general.cache_dir
-    os.makedirs(os.path.join(cache_dir, backend), exist_ok=True)
+    fp = getattr(backend_impl, "fingerprint", "")
+    os.makedirs(os.path.join(cache_dir, backend, fp), exist_ok=True)
 
     hits = [0]
 
@@ -169,13 +205,14 @@ def render(
             return idx, earcon(sr)
         if seg.kind != "speech" or not seg.text.strip():
             return idx, np.zeros(0, dtype="float32")
-        cpath = _cache_path(cache_dir, backend, seg, sr)
-        if os.path.exists(cpath):
+        found = _cache_lookup(cache_dir, backend, seg, sr, fp)
+        if found:
             hits[0] += 1
-            data, _ = sf.read(cpath, dtype="float32")
+            data, _ = sf.read(found, dtype="float32")
             return idx, data
         audio = backend_impl.synth(seg)
-        sf.write(cpath, audio, sr, subtype="FLOAT")
+        cpath = _cache_path(cache_dir, backend, seg, sr, fp)
+        sf.write(cpath, audio, sr, subtype=CACHE_SUBTYPE)
         return idx, audio
 
     renders: list[np.ndarray | None] = [None] * len(segs)

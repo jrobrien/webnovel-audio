@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS chapters (
     volume_rr_id      TEXT,   -- provider volumeId; NULL is normal (see replace_volumes)
     volume_chapter    INTEGER,-- 1-based position within its volume
     narrator          TEXT,   -- voice actually used, recorded at render time
+    synth_fingerprint TEXT,   -- which synth generation produced this audio
     error        TEXT,
     UNIQUE (series_id, rr_id)
 );
@@ -108,7 +109,7 @@ class DB:
                            ("fetched_at", "TEXT"), ("parsed_at", "TEXT"),
                            ("render_started_at", "TEXT"), ("render_ended_at", "TEXT"),
                            ("volume_rr_id", "TEXT"), ("volume_chapter", "INTEGER"),
-                           ("narrator", "TEXT")):
+                           ("narrator", "TEXT"), ("synth_fingerprint", "TEXT")):
             if name not in cols:
                 self.con.execute(f"ALTER TABLE chapters ADD COLUMN {name} {decl}")
         scols = {r["name"] for r in self.con.execute("PRAGMA table_info(series)")}
@@ -384,6 +385,7 @@ class DB:
              error_stage: str | None = None, narrator: str | None = None,
              render_started_at: str | None = None,
              render_ended_at: str | None = None,
+             synth_fingerprint: str | None = None,
              _stage_time: str | None = None) -> None:
         """Advance (or reset) one chapter. Only the fields you pass are touched —
         a re-render must not erase the raw/text paths from earlier stages."""
@@ -392,6 +394,7 @@ class DB:
         for col, val in (("raw_path", raw_path), ("text_path", text_path),
                          ("audio_path", audio_path), ("duration_s", duration_s),
                          ("narrator", narrator),
+                         ("synth_fingerprint", synth_fingerprint),
                          ("render_started_at", render_started_at),
                          ("render_ended_at", render_ended_at)):
             if val is not None:

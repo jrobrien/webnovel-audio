@@ -631,7 +631,15 @@ def _do_parse(cfg, db, prov, bdir, c, raw_path, *, force=False) -> str:
     return md_path
 
 
-def _opus_tags(scfg, series_row, c, vol_info=None, rendered_at=None) -> dict:
+def _row_col(row, name, default=""):
+    try:
+        return row[name] if name in row.keys() else default
+    except (AttributeError, TypeError, IndexError, KeyError):
+        return default
+
+
+def _opus_tags(scfg, series_row, c, vol_info=None, rendered_at=None,
+               fingerprint: str = "") -> dict:
     """Series/chapter provenance for the Opus stream (Vorbis comments).
 
     Verified to round-trip through libopus, custom keys included. No synopsis —
@@ -660,6 +668,9 @@ def _opus_tags(scfg, series_row, c, vol_info=None, rendered_at=None) -> dict:
         # when the audio was actually made — never "now", or a retag would
         # silently rewrite real provenance
         "RENDERED_AT": rendered_at or time.strftime("%Y-%m-%dT%H:%M:%S"),
+        # which synth generation made this: a model or espeak bump changes it,
+        # and a series spanning two is acoustically inconsistent
+        "SYNTH_MODEL": fingerprint or _row_col(c, "synth_fingerprint") or "",
         "CONTENT_WARNING": "; ".join(warnings),
         "KEYWORDS": "; ".join(tags[:20]),
         "VOLUME": vol.get("title", ""),
@@ -674,16 +685,19 @@ def _do_render(cfg, db, scfg, bdir, c, raw_path, *, backend="kokoro",
                series_row=None, vol_info=None) -> tuple[str, float]:
     out_path = _out_stem(bdir, c) + ".opus"
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
+    from . import cache as _cache
+    fp = _cache.current_fingerprint(scfg, backend)
     rep = pipeline.render(raw_path, out_path, scfg, backend=backend,
                           md_meta={"chapter": c["ord"] + 1,
                                    "published": c["published_at"] or ""},
                           tags=(_opus_tags(scfg, series_row, c, vol_info,
-                                           rendered_at=started)
+                                           rendered_at=started, fingerprint=fp)
                                 if series_row is not None else None),
                           log=lambda *_: None)
     db.mark_stage(c["id"], "rendered", audio_path=out_path,
                   duration_s=rep.audio_seconds or None,
                   narrator=scfg.cast.narrator or scfg.voices.narrator,
+                  synth_fingerprint=fp,
                   render_started_at=started,
                   render_ended_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
     return out_path, rep.audio_seconds, rep

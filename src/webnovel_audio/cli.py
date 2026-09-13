@@ -866,6 +866,82 @@ def _cmd_state(args) -> int:
         db.close()
 
 
+def _cmd_cache(args) -> int:
+    """Segment-cache maintenance. Read-only unless you say otherwise."""
+    from . import bundle, cache
+    from .db import DB
+
+    cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
+    db = DB(cfg.royalroad.state_db)
+    try:
+        if args.action == "compact":
+            if not want_json:
+                print(("would compact" if args.dry_run else "compacting")
+                      + f" into generation {cache.current_fingerprint(cfg)}:")
+            r = cache.compact(cfg, db, args.key, dry_run=args.dry_run,
+                              log=(lambda *_: None) if want_json else print)
+            if want_json:
+                _jprint({"ok": True, **r})
+            else:
+                saved = r["bytes_before"] - r["bytes_after"]
+                print(f"\n  {r['converted']} converted, {r['moved']} filed, "
+                      f"{r['skipped']} already current"
+                      + (f", {r['failed']} failed" if r["failed"] else ""))
+                print(f"  {bundle.human_bytes(r['bytes_before'])} -> "
+                      f"{bundle.human_bytes(r['bytes_after'])}"
+                      f"   ({bundle.human_bytes(saved)} "
+                      + ("would be " if args.dry_run else "") + "freed)")
+                if args.dry_run:
+                    print("\nnothing written. re-run without -n to apply.")
+            return 0
+
+        # status
+        st = cache.status(cfg, db, args.key)
+        if want_json:
+            _jprint(st)
+            return 0
+        print(f"segment cache   generation {st['current_generation']}  (current)")
+        mat = st["material"]
+        print("  " + "  ".join(f"{k}={mat[k]}" for k in
+                               ("lang", "kokoro-onnx", "phonemizer",
+                                "espeakng-loader") if mat.get(k)))
+        print(f"\n  {st['files']:>7} segments   {bundle.human_bytes(st['bytes'])}"
+              f"   avg {bundle.human_bytes(st['avg_bytes'])}")
+        print(f"  {st['format']['flac']:>7} flac / {st['format']['wav']} wav")
+        if len(st["generations"]) > 1 or any(
+                not g["current"] for g in st["generations"].values()):
+            print("\n  generations")
+            for name, g in sorted(st["generations"].items()):
+                mark = "  (current)" if g["current"] else "  (stale)"
+                print(f"    {name:<16} {g['files']:>7} files  "
+                      f"{bundle.human_bytes(g['bytes'])}{mark}")
+        print("\n  by series")
+        for row in st["series"]:
+            extra = (f"   {row['reclaimable']} reclaimable "
+                     f"({bundle.human_bytes(row['reclaimable_bytes'])})"
+                     if row["reclaimable"] else "")
+            print(f"    {row['slug']:<18} {row['files']:>7} files  "
+                  f"{bundle.human_bytes(row['bytes'])}{extra}")
+        if st["reclaimable"]:
+            print(f"\n  {st['reclaimable']} entry(s), "
+                  f"{bundle.human_bytes(st['reclaimable_bytes'])} unreachable"
+                  "   -> cache prune   (not implemented yet)")
+        if st["format"]["wav"]:
+            print(f"  {st['format']['wav']} float32 wav(s) "
+                  "   -> cache compact")
+        for m in st["mixed"]:
+            gens = ", ".join(f"{k} x{v}" for k, v in m["generations"].items())
+            print(f"\n  ! {m['slug']} rendered across "
+                  f"{len(m['generations'])} synth generations  ({gens})")
+            print(f"    -> render {m['slug']} --force   to unify")
+        return 0
+    except bundle.BundleError as exc:
+        return _fail(exc.code, exc.message, hint=exc.hint, json_mode=want_json)
+    finally:
+        db.close()
+
+
 def _cmd_series_bundle(args, cfg, db, bundle, want_json: bool) -> int:
     """The offline half of `series`: write, adopt, locate. No network."""
     if args.action == "export":
@@ -1529,6 +1605,20 @@ def _build_parser():
     fd.add_argument("--out-dir")
     _cfg(fd)
     fd.set_defaults(func=_cmd_feed)
+
+    # -- cache -------------------------------------------------------------
+    ca = sub.add_parser("cache", help="segment-cache status and maintenance")
+    ca_sub = ca.add_subparsers(dest="action")
+    cs = ca_sub.add_parser("status", help="what the cache holds (read-only)")
+    cs.add_argument("key", nargs="?", help="one series, or all if omitted")
+    _cfg_json(cs)
+    cc = ca_sub.add_parser(
+        "compact", help="re-encode float32 wav to FLAC under the current generation")
+    cc.add_argument("key", nargs="?")
+    cc.add_argument("-n", "--dry-run", action="store_true")
+    _cfg_json(cc)
+    _cfg_json(ca)
+    ca.set_defaults(func=_cmd_cache, action=None, key=None, dry_run=False)
 
     sc = sub.add_parser("schema", help="emit the command surface as JSON (for agents)")
     sc.set_defaults(func=_cmd_schema)

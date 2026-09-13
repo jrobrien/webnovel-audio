@@ -7,7 +7,10 @@ Known gaps / follow-ups. Personal project — not a promise of when.
   reclaim|path|migrate` round-trips a series through a tarball into a clean
   machine. Next up is the cache plan below, which bundles made smaller.
 
-- **Cache maintenance subsystem** — full proposal in
+- **Cache maintenance subsystem** — steps 1-3 done (fingerprint, generation
+  dirs, `cache status`, `cache compact`; 9.1 GB -> 2.2 GB). Remaining:
+  `cache prune` (2,249 orphans / 113 MB), `cache clear`, `cache verify`.
+  Full proposal in
   `docs/plans/cache-maintenance.md`. Covers `cache status|prune|clear|compact|
   verify`, the FLAC container switch (9.13 GB -> ~2.4 GB), and folding the synth
   model/g2p fingerprint into the cache path. Supersedes the "watch the cache"
@@ -32,9 +35,14 @@ Known gaps / follow-ups. Personal project — not a promise of when.
   get re-applied on every render and are fine; a **model change is the real
   hole**, since cached wavs from the old model would be reused silently.
 
-  If it comes up: `rm -rf .cache/segments` forces a true cold render, and
-  compare. A proper fix would fold the backend identity (model file hash or
-  version) into the cache key, and/or add `render --no-cache`.
+  **Resolved for the model case:** segments now live under a generation
+  directory named for the synth fingerprint (model bytes, voice embeddings,
+  lang, and the espeak/phonemizer/kokoro-onnx versions), so a bump starts a new
+  generation instead of reusing old-model audio. `chapters.synth_fingerprint`
+  and the `SYNTH_MODEL` Opus tag record which generation made each file, and
+  `cache status` warns when a series spans more than one. Still uncovered:
+  `[dsp.*]`, `[pauses]` and `[audio]`, which are applied *after* the cache and
+  so are correctly re-applied on every render anyway.
 
 - **hidden-healer: decide whether the male narrator actually works.** Set up as
   asked — narration `am_michael` (male), CJ `af_heart` (female). But the story

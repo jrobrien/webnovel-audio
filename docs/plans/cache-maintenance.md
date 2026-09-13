@@ -1,7 +1,12 @@
 # Plan: cache maintenance subsystem
 
-Status: **proposed**, not implemented. Measurements taken 2026-09-13 against a
-9.13 GB / 28,195-segment cache.
+Status: **steps 1-3 implemented** (2026-09-13); steps 4-7 (`prune`, `clear`,
+`verify`) proposed. Measurements taken against a 9.13 GB / 28,195-segment cache.
+
+Shipped: the synth fingerprint and generation directories, `cache status`,
+`cache compact`, `chapters.synth_fingerprint` and the `SYNTH_MODEL` Opus tag.
+**Applied: 28,580 segments converted, 9.1 GB -> 2.2 GB, 6.9 GB freed, in 76 s.**
+Measured conversion error on real Kokoro speech: max 1.53e-05, rms -101 dBFS.
 
 > **Amended by `series-bundles.md`.** If content bundles land, the cache moves
 > to `<bundle>/.cache/` and the per-series scoping machinery below collapses to
@@ -294,13 +299,12 @@ model bump degrades into reclaimable garbage instead of silent staleness.
 live-set reasoning, fully resumable. `prune` carries all the danger and
 recovers the least.
 
-1. **`cache status`** — read-only, immediately useful, and the test harness for
-   `live_keys` + fingerprint. Land it and eyeball its numbers before anything
-   deletes.
-2. **Fingerprint + `cache compact`** — protocol change, generation dirs, FLAC,
-   one pass over 28k files. ~5.8 GB, no deletion semantics.
-3. **`chapters.synth_fingerprint`** + `SYNTH_MODEL` Opus tag + the
-   mixed-generation warning.
+1. ~~**`cache status`**~~ **Done.**
+2. ~~**Fingerprint + `cache compact`**~~ **Done.** 9.1 GB -> 2.2 GB in one
+   76-second pass, no re-synthesis; a re-render afterwards still reported
+   194/194 segments from cache.
+3. ~~**`chapters.synth_fingerprint`** + `SYNTH_MODEL` Opus tag + the
+   mixed-generation warning.~~ **Done.**
 4. **`cache prune --stale`** — safe mode first.
 5. **`cache prune`** (orphans) + manifest guard.
 6. **`cache clear`**, then wire into `series forget --purge`.
@@ -315,3 +319,41 @@ The main scheduling argument. `cache compact` already rewrites every file for
 the FLAC change; making it also place output into `<fingerprint>/` costs
 nothing extra. Doing the fingerprint later would mean a second full pass over
 28k files, or living with an unattributable flat generation forever.
+
+
+## Measured outcome of steps 1-3
+
+```
+before   28,580 segments   9.1 GB   avg 334.9 KB   0 flac / 28,580 wav
+after    28,580 segments   2.2 GB   avg  80.9 KB   28,580 flac / 0 wav
+```
+
+4.1x, better than the 3.4x predicted from a single sample — real segments
+compress further than the one measured. Disk went 76 GB -> 70 GB. The pass took
+76 s and re-synthesized nothing: `render sky-pride 57` immediately afterwards
+still reported `194/194 segments from cache`.
+
+### On the conversion error
+
+On real Kokoro speech, FLAC/PCM_16 costs **max 1.53e-05, rms -101 dBFS** —
+the predicted 16-bit floor, inaudible, and far under what the ~48 kbps Opus
+encode contributes.
+
+Worth recording because it surprised me: comparing the *Opus files* produced
+before and after compaction shows -52 dBFS rms, not -101. That is not a defect.
+libopus is bit-deterministic (identical input gives byte-identical output,
+verified), but its bit-allocation reacts to sub-LSB input changes, so a -101 dBFS
+perturbation at the input emerges as ~-41 dBFS after re-encoding. Consequence:
+a chapter re-rendered after compaction is not byte-identical to its previous
+render, though the difference sits well inside Opus's own distortion envelope.
+Chapters already on disk are untouched — `compact` never reads or writes them.
+
+### Orphans
+
+`compact` converts unreachable entries too, which is mildly wasteful but
+harmless — and it shrank the 900 MB of shared-cache orphans to 113 MB, so the
+cost of *not* having `prune` yet dropped by 8x. `cache status` names them:
+
+```
+  2249 entry(s), 113.2 MB unreachable   -> cache prune   (not implemented yet)
+```

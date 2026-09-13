@@ -38,7 +38,7 @@ _CHAPTER_COLS = (
     "status", "error_stage", "raw_path", "text_path", "audio_path",
     "duration_s", "fetched_at", "parsed_at", "rendered_at",
     "render_started_at", "render_ended_at", "volume_rr_id", "volume_chapter",
-    "narrator", "error",
+    "narrator", "synth_fingerprint", "error",
 )
 _VOLUME_COLS = ("rr_id", "title", "cover_url", "ord")
 _SERIES_COLS = ("rr_id", "provider", "slug", "title", "author", "url",
