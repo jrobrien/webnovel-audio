@@ -2,6 +2,13 @@
 
 Known gaps / follow-ups. Personal project — not a promise of when.
 
+- **Content bundles** — full proposal in `docs/plans/series-bundles.md`. Moves
+  config, lexicon, chapters, raw, covers and cache into a relocatable
+  `<bundle>/<slug>/` tree; the global `state.db` stays but becomes rebuildable
+  via `series import` from a `state.json` export. Amends the cache plan below:
+  decide the bundle layout **before** running `cache compact`, so the 28k-file
+  pass happens once.
+
 - **Cache maintenance subsystem** — full proposal in
   `docs/plans/cache-maintenance.md`. Covers `cache status|prune|clear|compact|
   verify`, the FLAC container switch (9.13 GB -> ~2.4 GB), and folding the synth

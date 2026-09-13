@@ -3,6 +3,10 @@
 Status: **proposed**, not implemented. Measurements taken 2026-09-13 against a
 9.13 GB / 28,195-segment cache.
 
+> **Amended by `series-bundles.md`.** If content bundles land, the cache moves
+> to `<bundle>/.cache/` and the per-series scoping machinery below collapses to
+> a directory removal. Decide the bundle layout before running `cache compact`.
+
 ## Why
 
 There is no eviction, no TTL, no size cap, and no `cache` command.
