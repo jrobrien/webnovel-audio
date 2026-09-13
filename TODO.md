@@ -2,6 +2,29 @@
 
 Known gaps / follow-ups. Personal project — not a promise of when.
 
+- **Watch: is the segment cache ever hiding a re-render that should have
+  happened?** Not a known bug — investigated once (sky-pride #57 finished in
+  16 s from a right-click Render in the UI) and the cache hit was legitimate:
+  all 194 segments had been synthesized nine minutes earlier, the output was
+  full-length real audio, and the fast path is only loudnorm + encode.
+
+  Why it *should* be safe: the cache key is
+  `text|voice|style|rate|pitch` + sample rate (`pipeline._cache_path`), and
+  text is post-normalize/post-lexicon. So any change to the lexicon, the cast
+  voices, `[synth] speed`, or the prose itself changes the key and misses.
+  The `[n/m segments cached]` line now makes the reuse visible.
+
+  What would *not* miss, and is the thing to suspect if output ever looks
+  stale: a change that alters audio **without** touching any of those five
+  fields — `[dsp.*]` chains, `[pauses]`, `[audio]` loudness, or a Kokoro
+  version bump. Those are applied after the cache, so DSP/pauses/loudness do
+  get re-applied on every render and are fine; a **model change is the real
+  hole**, since cached wavs from the old model would be reused silently.
+
+  If it comes up: `rm -rf .cache/segments` forces a true cold render, and
+  compare. A proper fix would fold the backend identity (model file hash or
+  version) into the cache key, and/or add `render --no-cache`.
+
 - **hidden-healer: decide whether the male narrator actually works.** Set up as
   asked — narration `am_michael` (male), CJ `af_heart` (female). But the story
   is first person, so the prose *is* CJ talking, and the split lands ~87/13:
