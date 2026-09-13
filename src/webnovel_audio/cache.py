@@ -409,7 +409,8 @@ def prune(cfg: Config, db: DB, key: str | None = None, *, stale: bool = False,
                     pass
             _prune_empty(root)
             _write_manifest(root, live_here, len(entries) - len(doomed))
-        log(f"  {label:<18} {len(doomed):>6} removed  "
+        log(f"  {label:<18} {len(doomed):>6} "
+            f"{'would go' if dry_run else 'removed'}  "
             f"{bundle.human_bytes(sum(s for _, s in doomed))}")
     return res
 
@@ -439,7 +440,8 @@ def clear(cfg: Config, db: DB, key: str | None = None, *,
         res["roots"].append(root)
         if not dry_run:
             shutil.rmtree(root, ignore_errors=True)
-        log(f"  {label:<18} {len(entries):>6} removed  "
+        log(f"  {label:<18} {len(entries):>6} "
+            f"{'would go' if dry_run else 'removed'}  "
             f"{bundle.human_bytes(sum(e[2] for e in entries))}")
     res["resynth_seconds"] = resynth_cost(cfg, db, row)
     return res

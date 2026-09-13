@@ -867,59 +867,72 @@ def _cmd_state(args) -> int:
 
 
 def _cmd_cache_destructive(args, cfg, db, bundle, cache, want_json: bool) -> int:
-    """`prune` and `clear`. Both take the sync lock: unlinking a key a running
-    render just wrote is the one way these can corrupt rather than merely
-    delete."""
+    """`prune` and `clear`.
+
+    Deleting needs explicit consent — `-y`, or a "yes" at a terminal. `--json`
+    does NOT imply it: a machine caller that meant to delete can pass `-y`, and
+    one that didn't should not lose data because it asked for JSON.
+
+    Both take the sync lock: unlinking a key a running render just wrote is the
+    one way these can corrupt rather than merely delete.
+    """
+    import sys
+
     from . import sync
 
-    def run():
+    def run(dry):
+        quiet = want_json or dry
         if args.action == "prune":
-            return cache.prune(cfg, db, args.key, stale=args.stale,
-                               dry_run=args.dry_run, force=args.force,
-                               log=(lambda *_: None) if want_json else print)
-        return cache.clear(cfg, db, args.key, dry_run=args.dry_run,
-                           log=(lambda *_: None) if want_json else print)
+            return cache.prune(cfg, db, args.key, stale=args.stale, dry_run=dry,
+                               force=args.force,
+                               log=(lambda *_: None) if quiet else print)
+        return cache.clear(cfg, db, args.key, dry_run=dry,
+                           log=(lambda *_: None) if quiet else print)
 
-    # what would go, before asking
-    probe = args.dry_run or not (want_json or args.yes)
-    if probe:
-        saved, args.dry_run = args.dry_run, True
-        try:
-            preview = run()
-        except cache.CacheError as exc:
-            return _fail(exc.code, exc.message, hint=exc.hint, json_mode=want_json)
-        args.dry_run = saved
-        n = preview["deleted"]
-        if not n:
-            if not want_json:
-                print("nothing to do.")
-            else:
-                _jprint({"ok": True, **preview})
-            return 0
-        if args.dry_run:
-            if want_json:
-                _jprint({"ok": True, **preview})
-            else:
-                print(f"\nwould delete {n} entry(s), "
-                      f"{bundle.human_bytes(preview['bytes'])}")
-                for p in preview.get("paths", [])[:10]:
-                    print(f"    {p}")
-                if n > 10:
-                    print(f"    … and {n - 10} more")
-                print("\nnothing written. re-run without -n to apply.")
-            return 0
-        print(f"\n{n} entry(s), {bundle.human_bytes(preview['bytes'])}")
-        if args.action == "clear":
-            # bytes are not the cost that matters here — CPU is
-            print(f"  re-synthesizing what is already rendered would take "
-                  f"~{sync.human_duration(preview['resynth_seconds'])}")
+    try:
+        preview = run(True)                     # always look before leaping
+    except cache.CacheError as exc:
+        return _fail(exc.code, exc.message, hint=exc.hint, json_mode=want_json)
+
+    n = preview["deleted"]
+    if not n or args.dry_run:
+        if want_json:
+            # the probe always runs dry; only report it as such if that is
+            # what was actually asked for
+            _jprint({"ok": True, **preview, "dry_run": bool(args.dry_run)})
+        elif not n:
+            print("nothing to do.")
+        else:
+            print(f"would delete {n} entry(s), "
+                  f"{bundle.human_bytes(preview['bytes'])}")
+            for p in preview.get("paths", [])[:10]:
+                print(f"    {p}")
+            if n > 10:
+                print(f"    … and {n - 10} more")
+            print("\nnothing written. re-run without -n to apply.")
+        return 0
+
+    if not args.yes:
+        summary = f"{n} entry(s), {bundle.human_bytes(preview['bytes'])}"
+        cost = (f"   re-synthesizing what is already rendered would take "
+                f"~{sync.human_duration(preview['resynth_seconds'])}"
+                if args.action == "clear" else "")
+        # a pipe, cron or systemd cannot answer; refuse rather than assume
+        if want_json or not sys.stdin.isatty():
+            return _fail("needs_confirmation",
+                         f"{args.action} would delete {summary}",
+                         hint=f"webnovel-audio cache {args.action} --yes",
+                         json_mode=want_json, deleted=n, bytes=preview["bytes"])
+        print(f"{summary}")
+        if cost:
+            print(cost)
         if input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
             print("aborted.")
             return 0
 
     try:
         with sync.sync_lock(cfg):
-            res = run()
+            res = run(False)
     except sync.SyncLocked as exc:
         return _fail("cache_locked", str(exc),
                      hint="wait for the render to finish", json_mode=want_json, rc=2)
@@ -996,7 +1009,7 @@ def _cmd_cache(args) -> int:
         if st["reclaimable"]:
             print(f"\n  {st['reclaimable']} entry(s), "
                   f"{bundle.human_bytes(st['reclaimable_bytes'])} unreachable"
-                  "   -> cache prune   (not implemented yet)")
+                  "   -> cache prune")
         if st["format"]["wav"]:
             print(f"  {st['format']['wav']} float32 wav(s) "
                   "   -> cache compact")

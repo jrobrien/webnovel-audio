@@ -390,8 +390,25 @@ the already-rendered chapters would take, using the same learned per-series
 ratio as `sync --estimate`, so the number matches the one quoted before a
 render.
 
+### Consent
+
+Deleting needs explicit consent: `-y`, or "yes" at a terminal. **`--json` does
+not imply it** — a machine caller that asked for JSON did not ask to delete, and
+one that means to can pass `-y`. Same for a non-tty (pipe, cron, systemd):
+refuse with `needs_confirmation` rather than prompt. Found the hard way —
+`input()` on a pipe raised `EOFError` mid-command.
+
 ### Test series
 
 `aura-overload` chapters 1-5 were rendered specifically as a disposable target
 for these commands, so prune/clear could be exercised against a real cache
-without risking the three series that matter.
+without risking the three series that matter. Exercised against it: a clean
+prune (baseline recorded), real orphans from a lexicon edit (17 of 1,517
+removed, exactly the segments containing the changed word), both guards firing,
+`--stale` on a fabricated old generation, the sync lock, and a full `clear`
+(1,504 entries / 109.5 MB).
+
+Worth noting for the estimator: `sync --estimate` predicted 18 minutes for these
+5 chapters and they took ~50. A series with nothing rendered falls back to a
+global chapter length, and Aura Overload's chapters are ~4,500 words against Sky
+Pride's ~1,500. It self-corrects after three timed renders; no change made.

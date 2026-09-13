@@ -416,3 +416,78 @@ def test_prune_writes_a_manifest_baseline(lib):
     cache.prune(cfg, db, log=lambda *_: None)
     man = cache._read_manifest(root)
     assert man["live_keys"] == 2 and man["files"] == 2 and man["at"]
+
+
+# -- consent rules at the CLI level ----------------------------------------
+
+def _run_cli(argv, cfg_path, stdin_tty=False, monkeypatch=None):
+    import sys
+    from webnovel_audio import cli
+    return cli.main([*argv, "--config", cfg_path])
+
+
+@pytest.fixture
+def cli_lib(lib, tmp_path):
+    cfg, db, s, d = lib
+    _populate(cfg, db, d, ["keep"], ["gone"])
+    p = tmp_path / "cfg.toml"
+    p.write_text(
+        f'[general]\ncache_dir = "{cfg.general.cache_dir}"\n'
+        f'[synth]\nbackend = "null"\n'
+        f'[royalroad]\nstate_db = "{cfg.royalroad.state_db}"\n'
+        f'library_dir = "{cfg.royalroad.library_dir}"\n')
+    db.con.commit()
+    return cfg, db, d, str(p)
+
+
+def test_cli_json_does_not_imply_consent(cli_lib, capsys, monkeypatch):
+    """A machine caller that asked for JSON did not ask to delete."""
+    cfg, db, d, cfgp = cli_lib
+    db.close()
+    rc = _run_cli(["cache", "prune", "--json"], cfgp)
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert rc == 1 and out["ok"] is False
+    assert out["error"]["code"] == "needs_confirmation"
+    assert out["error"]["deleted"] == 1
+
+
+def test_cli_non_tty_refuses_rather_than_prompting(cli_lib, capsys, monkeypatch):
+    """input() on a pipe raises EOFError; cron and systemd must get a clean
+    refusal, not a traceback."""
+    import sys
+    cfg, db, d, cfgp = cli_lib
+    db.close()
+    monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
+    rc = _run_cli(["cache", "prune"], cfgp)
+    err = capsys.readouterr().err
+    assert rc == 1 and "needs_confirmation" in err
+
+
+def test_cli_yes_deletes(cli_lib, capsys):
+    cfg, db, d, cfgp = cli_lib
+    db.close()
+    rc = _run_cli(["cache", "prune", "-y", "--json"], cfgp)
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert rc == 0 and out["deleted"] == 1 and out["dry_run"] is False
+
+
+def test_cli_dry_run_reports_without_deleting(cli_lib, capsys):
+    cfg, db, d, cfgp = cli_lib
+    root = os.path.join(d, ".cache")
+    before = len(list(cache._entries(root)))
+    db.close()
+    rc = _run_cli(["cache", "prune", "-n", "--json"], cfgp)
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert rc == 0 and out["deleted"] == 1 and out["dry_run"] is True
+    assert len(list(cache._entries(root))) == before
+
+
+def test_cli_reports_dry_run_false_when_there_was_nothing_to_do(cli_lib, capsys):
+    """The probe always runs dry — that must not leak into the reported state."""
+    cfg, db, d, cfgp = cli_lib
+    db.close()
+    _run_cli(["cache", "prune", "-y"], cfgp)          # clears the one orphan
+    capsys.readouterr()
+    rc = _run_cli(["cache", "prune", "-y", "--json"], cfgp)
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert rc == 0 and out["deleted"] == 0 and out["dry_run"] is False
