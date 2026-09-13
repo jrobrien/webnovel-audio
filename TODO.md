@@ -2,6 +2,12 @@
 
 Known gaps / follow-ups. Personal project — not a promise of when.
 
+- **Cache maintenance subsystem** — full proposal in
+  `docs/plans/cache-maintenance.md`. Covers `cache status|prune|clear|compact|
+  verify`, the FLAC container switch (9.13 GB -> ~2.4 GB), and folding the synth
+  model/g2p fingerprint into the cache path. Supersedes the "watch the cache"
+  note below, which it turns from a watch item into a fix.
+
 - **Watch: is the segment cache ever hiding a re-render that should have
   happened?** Not a known bug — investigated once (sky-pride #57 finished in
   16 s from a right-click Render in the UI) and the cache hit was legitimate:
