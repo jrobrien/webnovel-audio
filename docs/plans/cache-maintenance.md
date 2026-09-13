@@ -1,6 +1,7 @@
 # Plan: cache maintenance subsystem
 
-Status: **steps 1-6 implemented** (2026-09-13); step 7 (`verify`) proposed. Measurements taken against a 9.13 GB / 28,195-segment cache.
+Status: **complete** (2026-09-13). Steps 1-6 implemented; step 7 (`verify`) was
+dropped — see below. Measurements taken against a 9.13 GB / 28,195-segment cache.
 
 Shipped: the synth fingerprint and generation directories, `cache status`,
 `cache compact`, `chapters.synth_fingerprint` and the `SYNTH_MODEL` Opus tag.
@@ -250,12 +251,28 @@ Lookup during and after migration: try `<fp>/<sha1>.flac`, then
 `<fp>/<sha1>.wav`, then flat `<sha1>.wav`. Writes always produce
 `<fp>/<sha1>.flac`. Resumable, interruptible, idempotent.
 
-### `cache verify`
+### `cache verify` — dropped
 
-Lower value but cheap: `sf.info()` every entry, report unreadable or
-zero-length ones. Catches a segment written during an interrupted render, which
-currently would be reused forever as silence or a truncated clip, invisibly.
-`--repair` unlinks the bad ones so the next render re-synthesizes them.
+Was to be: `sf.info()` every entry, report the unreadable and zero-length ones,
+`--repair` to unlink them. It is not being built.
+
+The hazard it addressed is real but narrow: `pipeline` writes cache entries in
+place, so a render killed mid-write could leave a partial file that
+`os.path.exists()` then treats as a hit. Measured against it: after a render was
+deliberately killed mid-run, a scan of all 31,092 entries found **0 unreadable
+and 0 zero-length**, in 1.1 s for headers.
+
+Two things make a command unnecessary:
+
+- **Prevention beats detection.** Writing to `<name>.tmp` and `os.replace`-ing
+  it is two lines in `pipeline` and removes the failure mode entirely, rather
+  than adding a command to find it afterwards. That is the note left in
+  `TODO.md`.
+- **FLAC already self-verifies.** Unlike the float32 wavs this cache used to
+  hold — where a truncated file still parsed — FLAC carries per-frame CRC-16 and
+  an MD5 of the unencoded audio, so corruption surfaces on read as an error
+  rather than as silence. A full decode of the whole cache costs ~23 s if it is
+  ever wanted, and is one line of Python at that point.
 
 ## Safety
 
@@ -309,7 +326,7 @@ recovers the least.
    guards; see below.
 6. ~~**`cache clear`**~~ **Done.** `series forget --purge` needed no wiring:
    the bundle layout made it a single directory removal already.
-7. **`cache verify`** if still worth it.
+7. ~~**`cache verify`**~~ **Dropped.** See "Why `verify` was dropped".
 
 Steps 1-3 are the coherent first chunk: they free the space, close the
 correctness hole, and nothing in them can lose data.

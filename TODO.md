@@ -7,55 +7,39 @@ Known gaps / follow-ups. Personal project — not a promise of when.
   reclaim|path|migrate` round-trips a series through a tarball into a clean
   machine. Next up is the cache plan below, which bundles made smaller.
 
-- **Cache maintenance subsystem** — steps 1-6 done: fingerprint, generation
-  dirs, `cache status|compact|prune|clear` (9.1 GB -> 2.2 GB). Only
-  `cache verify` (find truncated/unreadable entries) is left, and it may not be
-  worth it. Full proposal in
-  `docs/plans/cache-maintenance.md`. Covers `cache status|prune|clear|compact|
-  verify`, the FLAC container switch (9.13 GB -> ~2.4 GB), and folding the synth
-  model/g2p fingerprint into the cache path. Supersedes the "watch the cache"
-  note below, which it turns from a watch item into a fix.
+- ~~**Cache maintenance subsystem**~~ — **done**,
+  `docs/plans/cache-maintenance.md`. `cache status|compact|prune|clear`, the
+  FLAC switch and the synth fingerprint. 9.13 GB -> 2.4 GB. `cache verify` was
+  dropped (see the plan); the remaining fix worth making is an **atomic cache
+  write** — `pipeline` writes segments in place, so a render killed mid-write
+  could leave a partial file that later counts as a cache hit. Two lines: write
+  to `.tmp` and `os.replace`. Not observed in practice (31,092 entries scanned
+  clean after a render was killed mid-run), which is why it's a note and not a
+  bug.
 
-- **Watch: is the segment cache ever hiding a re-render that should have
-  happened?** Not a known bug — investigated once (sky-pride #57 finished in
-  16 s from a right-click Render in the UI) and the cache hit was legitimate:
-  all 194 segments had been synthesized nine minutes earlier, the output was
-  full-length real audio, and the fast path is only loudnorm + encode.
-
-  Why it *should* be safe: the cache key is
-  `text|voice|style|rate|pitch` + sample rate (`pipeline._cache_path`), and
-  text is post-normalize/post-lexicon. So any change to the lexicon, the cast
-  voices, `[synth] speed`, or the prose itself changes the key and misses.
-  The `[n/m segments cached]` line now makes the reuse visible.
-
-  What would *not* miss, and is the thing to suspect if output ever looks
-  stale: a change that alters audio **without** touching any of those five
-  fields — `[dsp.*]` chains, `[pauses]`, `[audio]` loudness, or a Kokoro
-  version bump. Those are applied after the cache, so DSP/pauses/loudness do
-  get re-applied on every render and are fine; a **model change is the real
-  hole**, since cached wavs from the old model would be reused silently.
-
-  **Resolved for the model case:** segments now live under a generation
-  directory named for the synth fingerprint (model bytes, voice embeddings,
-  lang, and the espeak/phonemizer/kokoro-onnx versions), so a bump starts a new
-  generation instead of reusing old-model audio. `chapters.synth_fingerprint`
-  and the `SYNTH_MODEL` Opus tag record which generation made each file, and
-  `cache status` warns when a series spans more than one. Still uncovered:
-  `[dsp.*]`, `[pauses]` and `[audio]`, which are applied *after* the cache and
-  so are correctly re-applied on every render anyway.
+- ~~**Watch: is the segment cache ever hiding a re-render that should have
+  happened?**~~ — **resolved.** Segments live under a generation directory named
+  for the synth fingerprint (model bytes, voice embeddings, lang, and the
+  espeak/phonemizer/kokoro-onnx versions), so a model or g2p bump starts a new
+  generation instead of reusing old audio. `chapters.synth_fingerprint` and the
+  `SYNTH_MODEL` Opus tag record which generation made each file, and
+  `cache status` warns when a series spans more than one. `[dsp.*]`, `[pauses]`
+  and `[audio]` remain outside the key, correctly — they are applied *after* the
+  cache and so are re-applied on every render anyway.
 
 - **hidden-healer: decide whether the male narrator actually works.** Set up as
   asked — narration `am_michael` (male), CJ `af_heart` (female). But the story
   is first person, so the prose *is* CJ talking, and the split lands ~87/13:
   1309 narration lines in a man's voice against 201 of CJ's own dialogue in a
   woman's. It may read as a man retelling her account, or just as wrong. One
-  line to flip in `data/series/hidden-healer.toml`:
+  line to flip in the series config:
 
       [voices]
       narrator = "af_nova"     # or af_sarah / bf_emma — a female storyteller
 
   Then `render hidden-healer` to re-do it; the segment cache means only the
-  narration lines re-synthesize, dialogue is reused.
+  narration lines re-synthesize, dialogue is reused. The file is now
+  `library/hidden-healer/config.toml` (bundle layout).
 
 - **Surface tags and content warnings in the feed and serve page.** Per-item
   show notes are done. What's left is series-level:
