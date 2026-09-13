@@ -1,9 +1,13 @@
 # Plan: content bundles
 
-Status: **proposed**, not implemented. Revision of the "self-contained series
-directory" RFC, narrowed to the *content bundle* compromise: everything that
-describes a series moves into its directory, the operational state DB stays
-global and becomes rebuildable.
+Status: **steps 1-2 implemented** (2026-09-13); steps 3-5 proposed. Revision of
+the "self-contained series directory" RFC, narrowed to the *content bundle*
+compromise: everything that describes a series moves into its directory, the
+operational state DB stays global and becomes rebuildable.
+
+Shipped so far: `manifest.toml` + `state.json` writers emitted into the existing
+`library/<slug>/` layout, and `series export|import|scan|path`. Nothing has
+moved on disk yet — that is step 3.
 
 ## Decision summary
 
@@ -254,12 +258,13 @@ because the cache is global.
 
 ## Sequencing
 
-1. **`manifest.toml` + `state.json` writers**, emitted into the existing
-   `library/<slug>/` layout. No moves yet, nothing breaks, and it makes the
-   export format reviewable on real data.
-2. **`series import` / `scan` / `path`**, validated by round-tripping a bundle
-   into a scratch DB and diffing against the live one. This proves
-   rebuildability *before* anything depends on it.
+1. ~~**`manifest.toml` + `state.json` writers**, emitted into the existing
+   `library/<slug>/` layout.~~ **Done.** Written by `series export`, and
+   automatically at the end of `series add`, `series refresh` and any
+   `run_stage` that touched a series.
+2. ~~**`series import` / `scan` / `path`**~~ **Done.** Round-trip verified
+   against the live library: all 4 series / 559 chapters / 8 volumes rebuild
+   into a scratch DB with zero column differences.
 3. **`migrate bundles`** — the file moves and the path rewrite, folded into
    `cache compact` so the 28k-file pass happens once.
 4. **`serve.py` / `sync.py` path resolution** through `series.path`.

@@ -848,6 +848,66 @@ def _cmd_state(args) -> int:
         db.close()
 
 
+def _cmd_series_bundle(args, cfg, db, bundle, want_json: bool) -> int:
+    """The offline half of `series`: write, adopt, locate. No network."""
+    if args.action == "export":
+        rows = [db.get_series(args.key)] if args.key else db.list_series()
+        if args.key and not rows[0]:
+            return _no_series(args.key, want_json)
+        out = []
+        for s in filter(None, rows):
+            res = bundle.sync_bundle(cfg, db, s)
+            out.append({"slug": s["slug"], "title": s["title"], **res})
+            if not want_json:
+                mark = "" if res["ok"] else f"   ({res['reason']})"
+                print(f"{s['title']}: {res['path']}{mark}")
+        if want_json:
+            _jprint({"ok": True, "exported": out})
+        return 0
+
+    if args.action == "path":
+        s = db.get_series(args.key)
+        if not s:
+            return _no_series(args.key, want_json)
+        d, state = bundle.bundle_dir(cfg, s), bundle.status(cfg, s)
+        if want_json:
+            _jprint({"ok": True, "slug": s["slug"], "path": d, "bundle": state,
+                     "uuid": s["uuid"]})
+        else:
+            print(d)            # bare, so `cd "$(… series path x)"` works
+        return 0
+
+    if args.action == "import":
+        res = bundle.import_bundle(cfg, db, args.path, dry_run=args.dry_run)
+        if want_json:
+            _jprint(res)
+        else:
+            verb = {"add": "imported", "update": "updated"}[res["action"]]
+            print(f"{'would ' if args.dry_run else ''}{verb}: {res['title']} "
+                  f"({res['chapters']} chapters, {res['volumes']} volumes)")
+            print(f"  {res['path']}")
+        return 0
+
+    # scan
+    root = args.root or os.path.expanduser(cfg.royalroad.library_dir)
+    results = bundle.scan(cfg, db, root, dry_run=args.dry_run)
+    if want_json:
+        _jprint({"ok": True, "root": root, "results": results})
+        return 0
+    if not results:
+        print(f"no bundles under {root}")
+    for r in results:
+        if not r.get("ok"):
+            print(f"  ! {r['path']}: [{r['code']}] {r['message']}")
+        elif r["action"] == "missing":
+            # never inferred as a deletion: an unplugged drive is not a decision
+            print(f"  missing  {r['title']}  {r['path']}")
+            print(f"           still tracked; `series forget {r['slug']}` to drop it")
+        else:
+            print(f"  {r['action']:<7}  {r['title']}  ({r['chapters']} chapters)")
+    return 0
+
+
 def _cmd_series(args) -> int:
     from . import sync
     from .db import DB
@@ -868,6 +928,16 @@ def _cmd_series(args) -> int:
         if want_json:
             _jprint({"ok": True, "series": results or []})
         return 0
+
+    if args.action in ("export", "import", "scan", "path"):
+        from . import bundle
+        db = DB(cfg.royalroad.state_db)
+        try:
+            return _cmd_series_bundle(args, cfg, db, bundle, want_json)
+        except bundle.BundleError as exc:
+            return _fail(exc.code, exc.message, hint=exc.hint, json_mode=want_json)
+        finally:
+            db.close()
 
     if args.action in ("enable", "disable", "forget", "show"):
         db = DB(cfg.royalroad.state_db)
@@ -891,11 +961,13 @@ def _cmd_series(args) -> int:
                 return 0
 
             if args.action == "forget":
+                from . import bundle
                 purged = ""
                 if args.purge:
                     import shutil
-                    purged = os.path.join(
-                        os.path.expanduser(cfg.royalroad.library_dir), slug)
+                    # resolve through the recorded bundle path, so a relocated
+                    # series is purged where it actually lives
+                    purged = bundle.bundle_dir(cfg, s)
                     shutil.rmtree(purged, ignore_errors=True)
                 db.forget(s["id"])
                 if want_json:
@@ -912,8 +984,12 @@ def _cmd_series(args) -> int:
             if want_json:
                 _jprint(info)
                 return 0
+            from . import bundle
             print(f"{info['title']}  [{info['slug']}]  {'' if info['enabled'] else '(sync disabled)'}")
             print(f"  {info['url']}")
+            bstate = bundle.status(cfg, s)
+            print(f"  bundle: {bundle.bundle_dir(cfg, s)}"
+                  + ("" if bstate == "ok" else f"   ({bstate})"))
             print(f"  {info['chapters']} chapters · " +
                   " · ".join(f"{k} {v}" for k, v in info["stages"].items() if v))
             if info["next"]:
@@ -923,9 +999,12 @@ def _cmd_series(args) -> int:
             db.close()
 
     # default: list
+    from . import bundle
     db = DB(cfg.royalroad.state_db)
     rows = db.summary()
     db.close()
+    for r in rows:
+        r["bundle"] = bundle.status(cfg, r)
     if want_json:
         _jprint({"series": rows})
         return 0
@@ -933,6 +1012,8 @@ def _cmd_series(args) -> int:
         print("no tracked series. add one:  webnovel-audio series add <fiction-url>")
     for r in rows:
         flag = "" if r["enabled"] else "  (sync disabled)"
+        # a bundle deleted out from under us is a supported state, not an error
+        flag += "" if r["bundle"] == "ok" else f"  (bundle {r['bundle']})"
         print(f"{r['title']}{flag}")
         stages = " · ".join(f"{k} {v}" for k, v in r["stages"].items() if v)
         print(f"  {r['chapters']} chapters · {stages}")
@@ -1230,8 +1311,28 @@ def _build_parser():
     rf = se_sub.add_parser("refresh", help="re-fetch chapter lists")
     rf.add_argument("key", nargs="?")
     _cfg_json(rf)
+
+    # -- bundles: the offline half. No network, no renders.
+    ex = se_sub.add_parser("export",
+                           help="write manifest.toml + state.json into the bundle")
+    ex.add_argument("key", nargs="?", help="one series, or all if omitted")
+    _cfg_json(ex)
+    im = se_sub.add_parser("import", help="adopt a bundle directory into the state DB")
+    im.add_argument("path")
+    im.add_argument("-n", "--dry-run", action="store_true")
+    _cfg_json(im)
+    sc = se_sub.add_parser("scan",
+                           help="import every bundle under a root, and re-locate moved ones")
+    sc.add_argument("root", nargs="?", help="defaults to the configured library dir")
+    sc.add_argument("-n", "--dry-run", action="store_true")
+    _cfg_json(sc)
+    pa = se_sub.add_parser("path", help="print a series' bundle directory")
+    pa.add_argument("key")
+    _cfg_json(pa)
+
     _cfg_json(se)
-    se.set_defaults(func=_cmd_series, action=None, frm="start", purge=False)
+    se.set_defaults(func=_cmd_series, action=None, frm="start", purge=False,
+                    dry_run=False, root=None, path=None, key=None)
 
     # -- state (plumbing) ---------------------------------------------------
     stt = sub.add_parser("state", help="the per-chapter stage machine, by hand")

@@ -11,7 +11,7 @@ import time
 import tomllib
 from dataclasses import dataclass
 
-from . import pipeline, providers
+from . import bundle, pipeline, providers
 from .config import Config
 from .db import DB
 from .royalroad import _safe_slug, fetch_asset
@@ -457,6 +457,7 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
             with open(overlay, "w", encoding="utf-8") as fh:
                 fh.write(pin_defaults_text(cfg, slug))
             log(f"  voices pinned -> {overlay}")
+        bundle.sync_bundle(cfg, db, row)
         log(f"added: {fi.title}")
         log(f"  {len(fi.chapters)} chapters ({new} new), "
             f"{through} skipped, {pend} outstanding")
@@ -480,6 +481,7 @@ def refresh(cfg: Config, key: str | None = None, log=print) -> list[dict]:
             _cache_cover(cfg, fi.slug, fi.cover_url)
             _cache_volume_covers(cfg, fi.slug, fi.volumes)
             log(f"{s['title']}: {len(fi.chapters)} chapters (+{new} new)")
+            bundle.sync_bundle(cfg, db, db.get_series(str(s["rr_id"])))
             out.append({"slug": fi.slug, "title": fi.title,
                         "chapters": len(fi.chapters), "new": new})
         return out
@@ -723,6 +725,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
         _emit({"event": "start", "stage": stage, "series": len(targets),
                "dry_run": dry_run, "range": spans or None})
 
+        touched: list[str] = []
         for s in targets:
             slug = _dir_slug(s)
             prov = _series_provider(s["url"])
@@ -741,6 +744,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                    "pending": len(todo)})
             if not todo:
                 continue
+            touched.append(str(s["rr_id"]))
             log(f"\n{s['title']}: {len(todo)} chapter(s) to {stage.rstrip('ed')}"
                 f"{' (explicit range)' if explicit else ''}")
             scfg = _series_cfg(cfg, slug)
@@ -776,6 +780,9 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                     _emit({"event": "chapter", "slug": slug, "number": num,
                            "title": c["title"], "result": "error", "stage": stage,
                            "error": str(exc)[:400]})
+        if not dry_run:
+            for row in filter(None, (db.get_series(k) for k in touched)):
+                bundle.sync_bundle(cfg, db, row)
         _emit({"event": "done", "stage": stage, "done": res.rendered,
                "errors": res.errors, "skipped": res.skipped})
         return res

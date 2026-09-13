@@ -14,6 +14,7 @@ import json
 import os
 import sqlite3
 import time
+import uuid
 
 # the ordered pipeline; index = how far a chapter has progressed
 STAGES = ("new", "fetched", "parsed", "rendered")
@@ -43,7 +44,9 @@ CREATE TABLE IF NOT EXISTS series (
     warnings       TEXT,                 -- JSON array: "Graphic Violence", ...
     status         TEXT,                 -- ONGOING | COMPLETED | ...
     rating         REAL,
-    added_at       TEXT
+    added_at       TEXT,
+    uuid           TEXT,                 -- stable identity; survives moves and re-import
+    path           TEXT                  -- absolute bundle directory (machine-local)
 );
 CREATE TABLE IF NOT EXISTS chapters (
     id           INTEGER PRIMARY KEY,
@@ -114,7 +117,8 @@ class DB:
         if "enabled" not in scols:
             self.con.execute("ALTER TABLE series ADD COLUMN enabled INTEGER DEFAULT 1")
         for name, decl in (("tags", "TEXT"), ("warnings", "TEXT"),
-                           ("status", "TEXT"), ("rating", "REAL")):
+                           ("status", "TEXT"), ("rating", "REAL"),
+                           ("uuid", "TEXT"), ("path", "TEXT")):
             if name not in scols:
                 self.con.execute(f"ALTER TABLE series ADD COLUMN {name} {decl}")
 
@@ -136,6 +140,14 @@ class DB:
                    WHERE status='new' AND ord <= (
                        SELECT progress_order FROM series WHERE id=chapters.series_id)""")
 
+        # Every series needs a stable identity before it can be exported to a
+        # bundle and re-imported elsewhere; the autoincrement `id` is local to
+        # this file and means nothing on another machine.
+        for r in self.con.execute(
+                "SELECT id FROM series WHERE uuid IS NULL OR uuid=''").fetchall():
+            self.con.execute("UPDATE series SET uuid=? WHERE id=?",
+                             (str(uuid.uuid4()), r["id"]))
+
         if "progress_order" in scols:
             # 0.2.1: the separate reader-position marker is gone. Its only real
             # job — "I've already read 1..N" — is now per-chapter `skipped`,
@@ -148,9 +160,11 @@ class DB:
         tags = json.dumps(getattr(fi, "tags", []) or [])
         warnings = json.dumps(getattr(fi, "warnings", []) or [])
         cur = self.con.execute(
+            # `uuid` is assigned on insert and never updated — it is this
+            # series' identity across exports, moves and re-imports.
             """INSERT INTO series (rr_id, provider, slug, title, author, url, cover_url,
-                                   tags, warnings, status, rating, added_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                                   tags, warnings, status, rating, added_at, uuid)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(rr_id) DO UPDATE SET
                  provider=excluded.provider, slug=excluded.slug, title=excluded.title,
                  author=excluded.author, url=excluded.url, cover_url=excluded.cover_url,
@@ -158,7 +172,8 @@ class DB:
                  status=excluded.status, rating=excluded.rating""",
             (fi.rr_id, getattr(fi, "provider", "royalroad"), fi.slug, fi.title,
              fi.author, fi.url, fi.cover_url, tags, warnings,
-             getattr(fi, "status", ""), getattr(fi, "rating", 0.0), now),
+             getattr(fi, "status", ""), getattr(fi, "rating", 0.0), now,
+             str(uuid.uuid4())),
         )
         self.con.commit()
         row = self.get_series(fi.rr_id)
@@ -180,6 +195,19 @@ class DB:
 
     def list_series(self) -> list[sqlite3.Row]:
         return self.con.execute("SELECT * FROM series ORDER BY title").fetchall()
+
+    def set_bundle(self, series_id: int, path: str, uuid_: str | None = None) -> None:
+        """Record where this series' bundle lives. `path` is absolute and
+        machine-local, which is correct — the state DB is machine-local too."""
+        if uuid_:
+            self.con.execute("UPDATE series SET path=?, uuid=? WHERE id=?",
+                             (path, uuid_, series_id))
+        else:
+            self.con.execute("UPDATE series SET path=? WHERE id=?", (path, series_id))
+        self.con.commit()
+
+    def by_uuid(self, uuid_: str):
+        return self.con.execute("SELECT * FROM series WHERE uuid=?", (uuid_,)).fetchone()
 
     def summary(self, key: str | None = None) -> list[dict]:
         """One dict per tracked series: per-stage counts, next/last chapter."""
@@ -215,6 +243,8 @@ class DB:
                 "last_rendered": {"number": last["ord"] + 1, "title": last["title"],
                                   "at": last["rendered_at"]} if last else None,
                 "added_at": s["added_at"],
+                "uuid": s["uuid"] if "uuid" in keys else None,
+                "path": s["path"] if "path" in keys else None,
             })
         return out
 
