@@ -74,6 +74,61 @@ def bundle_dir(cfg: Config, series_row) -> str:
         os.path.expanduser(cfg.royalroad.library_dir), _dir_slug(series_row)))
 
 
+#: every per-series path, relative to the bundle root — the single place that
+#: knows the layout
+LAYOUT = {
+    "manifest": MANIFEST,
+    "state": STATE,
+    "config": "config.toml",
+    "lexicon": "lexicon.csv",
+    "chapters": "chapters",
+    "covers": "covers",
+    "raw": ".raw",
+    "cache": ".cache",
+}
+
+
+def paths(bdir: str) -> dict:
+    """Resolve `LAYOUT` against a bundle directory."""
+    return {k: os.path.join(bdir, v) for k, v in LAYOUT.items()} | {"dir": bdir}
+
+
+def legacy_paths(cfg: Config, slug: str) -> dict:
+    """Where these files lived before the bundle migration. Read-only fallback,
+    so an un-migrated tree keeps working until `migrate bundles` runs."""
+    lib = os.path.expanduser(cfg.royalroad.library_dir)
+    return {
+        "config": os.path.join(
+            os.path.expanduser(cfg.general.series_config_dir or "data/series"),
+            f"{slug}.toml"),
+        "lexicon": os.path.join(
+            os.path.expanduser(cfg.general.lexicon_dir or "data/lexicons"),
+            f"{slug}.csv"),
+        "chapters": os.path.join(lib, slug),
+        "covers": os.path.join(lib, slug),
+        "raw": os.path.join(lib, slug, ".raw"),
+        "cache": os.path.expanduser(cfg.general.cache_dir),
+    }
+
+
+def resolve(cfg: Config, slug: str, bdir: str, which: str) -> str:
+    """A bundle path, falling back to the legacy location if the bundle has no
+    such file yet. Writers should use `paths()` directly; this is for readers
+    that must tolerate a half-migrated tree."""
+    p = os.path.join(bdir, LAYOUT[which])
+    if os.path.exists(p):
+        return p
+    legacy = legacy_paths(cfg, slug).get(which, "")
+    return legacy if legacy and os.path.exists(legacy) else p
+
+
+def artifact(bdir: str, which: str, name: str) -> str:
+    """A named file inside the bundle, tolerating the pre-migration flat
+    layout where chapters and covers sat directly in the series directory."""
+    p = os.path.join(bdir, LAYOUT[which], os.path.basename(name))
+    return p if os.path.exists(p) else os.path.join(bdir, os.path.basename(name))
+
+
 def exists(cfg: Config, series_row) -> bool:
     return os.path.isdir(bundle_dir(cfg, series_row))
 
@@ -339,6 +394,154 @@ def _replay_volumes(db: DB, sid: int, volumes: list[dict]) -> None:
                  ord=excluded.ord""",
             (sid, str(v.get("rr_id")), v.get("title"), v.get("cover_url"),
              v.get("ord")))
+    db.con.commit()
+
+
+def migrate(cfg: Config, db: DB, key: str | None = None, *,
+            dry_run: bool = False, log=print) -> list[dict]:
+    """Move a series into the bundle layout: chapters/, covers/, config.toml,
+    lexicon.csv, and its share of the segment cache.
+
+    Idempotent — a bundle already migrated is skipped. Every move is a rename
+    or a hard link within one filesystem, so nothing is copied and the DB path
+    rewrite is the only thing that can leave a mismatch.
+    """
+    from .sync import _dir_slug
+    rows = [db.get_series(key)] if key else db.list_series()
+    out: list[dict] = []
+    live = _live_keys(cfg, db)
+    for s in filter(None, rows):
+        if not s:
+            continue
+        slug, bdir = _dir_slug(s), bundle_dir(cfg, s)
+        res = {"slug": slug, "title": s["title"], "path": bdir,
+               "moved": 0, "cache_linked": 0, "skipped": False}
+        if not os.path.isdir(bdir):
+            res["skipped"] = "missing"
+            out.append(res)
+            continue
+        p = paths(bdir)
+        legacy = legacy_paths(cfg, slug)
+
+        moves: list[tuple[str, str]] = []
+        # chapter artefacts: NNN-*.md / .opus / .segments.json
+        for name in sorted(os.listdir(bdir)):
+            src = os.path.join(bdir, name)
+            if not os.path.isfile(src):
+                continue
+            if name[:3].isdigit() and name[3:4] == "-":
+                moves.append((src, os.path.join(p["chapters"], name)))
+            elif name == "cover.jpg" or name.startswith("cover-v"):
+                moves.append((src, os.path.join(p["covers"], name)))
+        # the two hand-edited files, from their old shared directories
+        for which in ("config", "lexicon"):
+            if os.path.isfile(legacy[which]) and not os.path.exists(p[which]):
+                moves.append((legacy[which], p[which]))
+
+        res["moved"] = len(moves)
+        if not dry_run:
+            for src, dst in moves:
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                os.replace(src, dst)
+            res["cache_linked"] = _link_cache(cfg, live, slug, p["cache"])
+            _rewrite_paths(db, s["id"], bdir)
+            db.set_bundle(s["id"], bdir, _row_get(s, "uuid"))
+            sync_bundle(cfg, db, db.get_series(str(s["rr_id"])))
+        else:
+            res["cache_linked"] = sum(
+                1 for owners in live.values() if slug in owners)
+        log(f"  {slug:<18} {res['moved']:>4} files, "
+            f"{res['cache_linked']:>6} cache entries")
+        out.append(res)
+    return out
+
+
+def _live_keys(cfg: Config, db: DB) -> dict:
+    """sha1 -> {slugs}, replayed from every bundle's segment scripts. The same
+    reconstruction `pipeline._cache_path` does at write time."""
+    import hashlib
+    from .sync import _dir_slug
+    out: dict[str, set] = {}
+    for s in db.list_series():
+        slug, bdir = _dir_slug(s), bundle_dir(cfg, s)
+        for d in (os.path.join(bdir, LAYOUT["chapters"]), bdir):
+            if not os.path.isdir(d):
+                continue
+            for name in os.listdir(d):
+                if not name.endswith(".segments.json"):
+                    continue
+                try:
+                    with open(os.path.join(d, name), encoding="utf-8") as fh:
+                        segs = json.load(fh)
+                except (OSError, ValueError):
+                    continue
+                for seg in segs:
+                    if seg.get("kind") != "speech" or not seg.get("text", "").strip():
+                        continue
+                    mat = (f"{seg['text']}|{seg['voice']}|"
+                           f"{seg.get('style', 'narration')}|{seg.get('rate', 1.0)}|"
+                           f"{seg.get('pitch', 0.0)}|{cfg.synth.sample_rate}")
+                    out.setdefault(hashlib.sha1(mat.encode()).hexdigest(),
+                                   set()).add(slug)
+    return out
+
+
+def _link_cache(cfg: Config, live: dict, slug: str, dst_root: str) -> int:
+    """Hard-link this series' cached segments into its bundle.
+
+    Links rather than moves because a key can be referenced by two series (28
+    of 26,813 measured — different books rarely share a sentence). Hard links
+    share the inode, so the duplicate costs a directory entry, not 339 KB.
+    Unreferenced entries are deliberately left in the global cache for
+    `cache prune` to deal with.
+    """
+    src_root = os.path.expanduser(cfg.general.cache_dir)
+    if not os.path.isdir(src_root):
+        return 0
+    n = 0
+    for backend in sorted(os.listdir(src_root)):
+        sd = os.path.join(src_root, backend)
+        if not os.path.isdir(sd):
+            continue
+        dd = os.path.join(dst_root, backend)
+        for name in os.listdir(sd):
+            digest = name.rsplit(".", 1)[0]
+            if slug not in live.get(digest, ()):
+                continue
+            os.makedirs(dd, exist_ok=True)
+            target = os.path.join(dd, name)
+            if os.path.exists(target):
+                n += 1
+                continue
+            try:
+                os.link(os.path.join(sd, name), target)
+            except OSError:                     # cross-device: fall back to a copy
+                import shutil
+                shutil.copy2(os.path.join(sd, name), target)
+            n += 1
+    return n
+
+
+def _rewrite_paths(db: DB, sid: int, bdir: str) -> None:
+    """Point the DB at the moved files. Absolute, because the state DB is
+    machine-local; portability comes from `state.json`, which stores them
+    bundle-relative, and `series scan` re-anchors after a move."""
+    chapters = os.path.join(bdir, LAYOUT["chapters"])
+    for c in db.chapters(sid):
+        upd = {}
+        for col in _PATH_COLS:
+            old = c[col]
+            if not old:
+                continue
+            name = os.path.basename(old)
+            new = (os.path.join(bdir, LAYOUT["raw"], name) if col == "raw_path"
+                   else os.path.join(chapters, name))
+            if os.path.abspath(old) != new:
+                upd[col] = new
+        if upd:
+            db.con.execute(
+                f"UPDATE chapters SET {', '.join(f'{k}=?' for k in upd)} WHERE id=?",
+                (*upd.values(), c["id"]))
     db.con.commit()
 
 

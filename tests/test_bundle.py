@@ -285,3 +285,151 @@ def test_new_series_gets_a_uuid_on_insert(tmp_path):
     db.upsert_series(_Fic(rr_id="321", slug="later"))     # re-add must not re-identify
     assert db.get_series("321")["uuid"] == first
     db.close()
+
+
+# -- migration (plan step 3) ------------------------------------------------
+
+def _legacy_layout(cfg, db, s, d):
+    """Populate a bundle in the *pre-migration* shape: chapters flat in the
+    series dir, config/lexicon in the shared data/ directories."""
+    import csv
+    names = []
+    for i, c in enumerate(db.chapters(s["id"]), 1):
+        for ext in (".md", ".opus", ".segments.json"):
+            p = os.path.join(d, f"{i:03d}-{c['slug']}{ext}")
+            if ext == ".segments.json":
+                json.dump([{"kind": "speech", "text": f"line {i}", "voice": "am_michael",
+                            "style": "narration", "rate": 1.0, "pitch": 0.0}],
+                          open(p, "w"))
+            else:
+                open(p, "w").write("x")
+            names.append(os.path.basename(p))
+        db.con.execute("UPDATE chapters SET audio_path=?, text_path=? WHERE id=?",
+                       (os.path.join(d, f"{i:03d}-{c['slug']}.opus"),
+                        os.path.join(d, f"{i:03d}-{c['slug']}.md"), c["id"]))
+    os.makedirs(os.path.join(d, ".raw"), exist_ok=True)
+    open(os.path.join(d, ".raw", "999-0.html"), "w").write("<html>")
+    db.con.execute("UPDATE chapters SET raw_path=? WHERE ord=0",
+                   (os.path.join(d, ".raw", "999-0.html"),))
+    open(os.path.join(d, "cover.jpg"), "wb").close()
+    open(os.path.join(d, "cover-v10.jpg"), "wb").close()
+    db.con.commit()
+
+    legacy = bundle.legacy_paths(cfg, "test-series")
+    for key, body in (("config", '[voices]\nnarrator = "af_nova"\n'),
+                      ("lexicon", "surface,respell,ipa,notes\nKael,kale,,\n")):
+        os.makedirs(os.path.dirname(legacy[key]), exist_ok=True)
+        open(legacy[key], "w").write(body)
+    return names
+
+
+@pytest.fixture
+def legacy(lib, tmp_path):
+    cfg, db, s, d = lib
+    cfg.general.series_config_dir = str(tmp_path / "data" / "series")
+    cfg.general.lexicon_dir = str(tmp_path / "data" / "lexicons")
+    cfg.general.cache_dir = str(tmp_path / "cache")
+    _legacy_layout(cfg, db, s, d)
+    return cfg, db, s, d
+
+
+def test_migrate_moves_files_into_the_bundle_layout(legacy):
+    cfg, db, s, d = legacy
+    res = bundle.migrate(cfg, db, "test-series", log=lambda *_: None)[0]
+    assert res["moved"] == 4 * 3 + 2 + 2          # chapters + covers + config/lexicon
+
+    p = bundle.paths(d)
+    assert os.path.isfile(os.path.join(p["chapters"], "001-chapter-1.opus"))
+    assert os.path.isfile(os.path.join(p["covers"], "cover.jpg"))
+    assert os.path.isfile(os.path.join(p["covers"], "cover-v10.jpg"))
+    assert os.path.isfile(p["config"]) and os.path.isfile(p["lexicon"])
+    assert 'narrator = "af_nova"' in open(p["config"]).read()
+    # nothing left loose in the bundle root except the machine-owned files
+    loose = {f for f in os.listdir(d) if os.path.isfile(os.path.join(d, f))}
+    assert loose == {bundle.MANIFEST, bundle.STATE, "config.toml", "lexicon.csv"}
+    # the old shared copies are gone, not duplicated
+    assert not os.path.exists(bundle.legacy_paths(cfg, "test-series")["config"])
+
+
+def test_migrate_rewrites_db_paths_to_the_new_location(legacy):
+    cfg, db, s, d = legacy
+    bundle.migrate(cfg, db, "test-series", log=lambda *_: None)
+    for c in db.chapters(s["id"]):
+        for col in ("audio_path", "text_path", "raw_path"):
+            if c[col]:
+                assert os.path.isfile(c[col]), f"{col} -> {c[col]}"
+    c0 = db.chapters(s["id"])[0]
+    assert c0["audio_path"] == os.path.join(d, "chapters", "001-chapter-1.opus")
+    assert c0["raw_path"] == os.path.join(d, ".raw", "999-0.html")
+
+
+def test_migrate_hardlinks_the_cache_without_copying(legacy):
+    """Cache entries move by hard link: a key shared by two series can live in
+    both bundles for the price of a directory entry."""
+    import hashlib
+    cfg, db, s, d = legacy
+    src = os.path.join(cfg.general.cache_dir, "kokoro")
+    os.makedirs(src, exist_ok=True)
+    mat = f"line 1|am_michael|narration|1.0|0.0|{cfg.synth.sample_rate}"
+    digest = hashlib.sha1(mat.encode()).hexdigest()
+    open(os.path.join(src, f"{digest}.wav"), "wb").write(b"RIFFfake")
+    open(os.path.join(src, "deadbeef" * 5 + ".wav"), "wb").write(b"orphan")
+
+    res = bundle.migrate(cfg, db, "test-series", log=lambda *_: None)[0]
+    assert res["cache_linked"] == 1
+    linked = os.path.join(d, ".cache", "kokoro", f"{digest}.wav")
+    assert os.path.isfile(linked)
+    assert os.stat(linked).st_nlink == 2                  # same inode, not a copy
+    assert os.path.isfile(os.path.join(src, f"{digest}.wav"))
+    # an unreferenced entry is left for `cache prune`, not silently destroyed
+    assert os.path.isfile(os.path.join(src, "deadbeef" * 5 + ".wav"))
+
+
+def test_migrate_is_idempotent(legacy):
+    cfg, db, s, d = legacy
+    first = bundle.migrate(cfg, db, "test-series", log=lambda *_: None)[0]
+    second = bundle.migrate(cfg, db, "test-series", log=lambda *_: None)[0]
+    assert first["moved"] and second["moved"] == 0
+    assert os.path.isfile(os.path.join(d, "chapters", "001-chapter-1.opus"))
+
+
+def test_migrate_dry_run_writes_nothing(legacy):
+    cfg, db, s, d = legacy
+    before = sorted(os.listdir(d))
+    res = bundle.migrate(cfg, db, "test-series", dry_run=True,
+                         log=lambda *_: None)[0]
+    assert res["moved"] == 16
+    assert sorted(os.listdir(d)) == before
+    assert not os.path.isdir(os.path.join(d, "chapters"))
+
+
+def test_migrate_skips_a_missing_bundle(legacy):
+    import shutil
+    cfg, db, s, d = legacy
+    shutil.rmtree(d)
+    assert bundle.migrate(cfg, db, "test-series",
+                          log=lambda *_: None)[0]["skipped"] == "missing"
+
+
+def test_round_trip_still_exact_after_migration(legacy, tmp_path):
+    """The step-2 guarantee must survive step 3."""
+    cfg, db, s, d = legacy
+    bundle.migrate(cfg, db, "test-series", log=lambda *_: None)
+    before = _snapshot(db, s["id"])
+    fresh = DB(str(tmp_path / "after.db"))
+    bundle.import_bundle(cfg, fresh, d)
+    new = fresh.get_series("999")
+    after = _snapshot(fresh, new["id"])
+    assert after["chapters"] == before["chapters"]
+    assert after["series"] == before["series"]
+    fresh.close()
+
+
+def test_series_cfg_reads_the_bundle_after_migration(legacy):
+    from webnovel_audio import sync
+    cfg, db, s, d = legacy
+    bundle.migrate(cfg, db, "test-series", log=lambda *_: None)
+    scfg = sync._series_cfg(cfg, "test-series", d)
+    assert scfg.voices.narrator == "af_nova"                 # bundle config.toml
+    assert scfg.general.lexicon == os.path.join(d, "lexicon.csv")
+    assert scfg.general.cache_dir == os.path.join(d, ".cache")

@@ -16,10 +16,10 @@ import os
 import subprocess
 import tempfile
 
+from . import bundle, sync
 from .audio import _ffmpeg
 from .config import Config
 from .db import DB
-from . import sync
 
 
 def retag_series(cfg: Config, key: str | None = None, *, dry_run: bool = False,
@@ -30,7 +30,7 @@ def retag_series(cfg: Config, key: str | None = None, *, dry_run: bool = False,
         rows = [db.get_series(key)] if key else db.list_series()
         for s in filter(None, rows):
             slug = sync._dir_slug(s)
-            scfg = sync._series_cfg(cfg, slug)
+            scfg = sync._series_cfg(cfg, slug, bundle.bundle_dir(cfg, s))
             vol_map = db.volume_map(s["id"])
             for c in db.chapters(s["id"]):
                 path = c["audio_path"]

@@ -76,25 +76,41 @@ def _dir_slug(row) -> str:
     return _safe_slug(row["slug"], "") or _slugify(row["title"])
 
 
-def _series_cfg(cfg: Config, slug: str) -> Config:
-    """A per-series view of the base config: auto-lexicon + optional TOML overlay."""
+def _series_cfg(cfg: Config, slug: str, bdir: str | None = None) -> Config:
+    """A per-series view of the base config: bundle lexicon + TOML overlay, and
+    a bundle-local segment cache.
+
+    `bdir` is the series' bundle directory. Without it the pre-bundle locations
+    under `data/` are used, so a half-migrated tree still works.
+    """
     sc = cfg
-    lex = os.path.join(os.path.expanduser(cfg.general.lexicon_dir or ""), f"{slug}.csv")
+    if bdir:
+        lex = bundle.resolve(cfg, slug, bdir, "lexicon")
+        overlay = bundle.resolve(cfg, slug, bdir, "config")
+    else:
+        legacy = bundle.legacy_paths(cfg, slug)
+        lex, overlay = legacy["lexicon"], legacy["config"]
     if os.path.isfile(lex) and lex != cfg.general.lexicon:
         sc = copy.deepcopy(sc)
         sc.general.lexicon = lex
-    overlay = os.path.join(os.path.expanduser(cfg.general.series_config_dir or ""),
-                           f"{slug}.toml")
     if os.path.isfile(overlay):
         sc = sc.overlay(overlay)          # overlay() deep-copies
+    if bdir:
+        # keep synthesized segments with the series that needs them, so that
+        # archiving or deleting a bundle takes its cache with it
+        cache = os.path.join(bdir, bundle.LAYOUT["cache"])
+        if sc is cfg:
+            sc = copy.deepcopy(sc)
+        sc.general.cache_dir = cache
     return sc
 
 
-def _cache_cover(cfg: Config, slug: str, cover_url: str) -> None:
+def _cache_cover(cfg: Config, slug: str, cover_url: str, bdir: str = "") -> None:
     slug = _safe_slug(slug, "")
     if not (cover_url and slug):
         return
-    dst = os.path.join(os.path.expanduser(cfg.royalroad.library_dir), slug, "cover.jpg")
+    bdir = bdir or os.path.join(os.path.expanduser(cfg.royalroad.library_dir), slug)
+    dst = os.path.join(bdir, bundle.LAYOUT["covers"], "cover.jpg")
     if os.path.exists(dst):
         return
     data = fetch_asset(cover_url)          # cookie-less, Royal Road hosts only
@@ -105,13 +121,14 @@ def _cache_cover(cfg: Config, slug: str, cover_url: str) -> None:
         fh.write(data)
 
 
-def _cache_volume_covers(cfg: Config, slug: str, volumes) -> None:
+def _cache_volume_covers(cfg: Config, slug: str, volumes, bdir: str = "") -> None:
     """Each volume has its own cover on Royal Road — that's half the reason
     volumes are worth modelling. Cached beside the series cover."""
     slug = _safe_slug(slug, "")
     if not slug:
         return
-    base = os.path.join(os.path.expanduser(cfg.royalroad.library_dir), slug)
+    bdir = bdir or os.path.join(os.path.expanduser(cfg.royalroad.library_dir), slug)
+    base = os.path.join(bdir, bundle.LAYOUT["covers"])
     for v in volumes or []:
         if not v.cover_url:
             continue
@@ -171,7 +188,7 @@ def _toml_str(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _fetch_chapter_blocks(cfg: Config, prov, slug: str, refs, log=print):
+def _fetch_chapter_blocks(cfg: Config, prov, bdir: str, refs, log=print):
     """refs: iterable of (rr_id, url, ord). Returns (blocks, [ord fetched]).
 
     Reuses/populates the same `.raw/<rr_id>.html` cache `sync` uses, so a
@@ -180,8 +197,7 @@ def _fetch_chapter_blocks(cfg: Config, prov, slug: str, refs, log=print):
     """
     from .ingest import parse_document
 
-    lib = os.path.expanduser(cfg.royalroad.library_dir)
-    raw_dir = os.path.join(lib, slug, ".raw")
+    raw_dir = os.path.join(bdir, bundle.LAYOUT["raw"])
     blocks, fetched = [], []
     for rr_id, url, order in refs:
         try:
@@ -219,7 +235,8 @@ def _cast_voices_lines(named, voices, gender, counts, default_voice, provenance:
     return shown, lines
 
 
-def set_cast_voice(cfg: Config, slug: str, speaker: str, voice: str) -> dict:
+def set_cast_voice(cfg: Config, slug: str, speaker: str, voice: str,
+                   bdir: str = "") -> dict:
     """Assign one speaker a voice in the series overlay, non-interactively.
 
     The agent-facing counterpart to `cast edit`: rewrites the speaker's row in
@@ -227,8 +244,8 @@ def set_cast_voice(cfg: Config, slug: str, speaker: str, voice: str) -> dict:
     leaves the rest of the file byte-identical. An empty `voice` means
     "listed but unassigned" -> falls through to [cast] default.
     """
-    path = os.path.join(
-        os.path.expanduser(cfg.general.series_config_dir or "data/series"), f"{slug}.toml")
+    path = (bundle.resolve(cfg, slug, bdir, "config") if bdir
+            else bundle.legacy_paths(cfg, slug)["config"])
     text = open(path, encoding="utf-8").read() if os.path.exists(path) else \
         pin_defaults_text(cfg, slug)
 
@@ -361,12 +378,13 @@ def suggest_cast(cfg: Config, key: str, *, spans=None,
 
         prov = _series_provider(s["url"])
         refs = [(c["rr_id"], c["url"], c["ord"]) for c in sample]
-        blocks, fetched = _fetch_chapter_blocks(cfg, prov, slug, refs, log=log)
+        bdir = bundle.bundle_dir(cfg, s)
+        blocks, fetched = _fetch_chapter_blocks(cfg, prov, bdir, refs, log=log)
         if not fetched:
             log(f"{s['title']}: no chapters could be sampled")
             return empty
 
-        scfg = _series_cfg(cfg, slug)          # respects voices/lexicon already assigned
+        scfg = _series_cfg(cfg, slug, bdir)    # respects voices/lexicon already assigned
         counts, gender = dialogue.discover(blocks, scfg)
         named = sorted(((k, v) for k, v in counts.items() if k), key=lambda kv: -kv[1])
         voices = dialogue.suggest_voices(dict(named), gender, scfg) if named else {}
@@ -374,8 +392,7 @@ def suggest_cast(cfg: Config, key: str, *, spans=None,
         text = "\n".join(b.text for b in blocks if b.kind == "paragraph")
         heteronyms = find_heteronyms(text, context=context)
 
-        lexicon_dir = os.path.expanduser(scfg.general.lexicon_dir or "data/lexicons")
-        series_lex = os.path.join(lexicon_dir, f"{slug}.csv")
+        series_lex = bundle.resolve(cfg, slug, bdir, "lexicon")
         known: set[str] = set()
         base_lex = scfg.general.base_lexicon
         if base_lex and os.path.exists(base_lex):
@@ -384,8 +401,7 @@ def suggest_cast(cfg: Config, key: str, *, spans=None,
             known |= Lexicon.load(series_lex).surfaces()
         candidates = [n for n, _ in find_unknown_names(blocks, known)]
 
-        overlay_path = os.path.join(
-            os.path.expanduser(scfg.general.series_config_dir or "data/series"), f"{slug}.toml")
+        overlay_path = bundle.resolve(cfg, slug, bdir, "config")
         existing_text = open(overlay_path, encoding="utf-8").read() \
             if os.path.exists(overlay_path) else ""
         existing_keys = _existing_cast_voice_keys(existing_text) if existing_text else set()
@@ -441,17 +457,16 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
         if through:
             db.set_status([c["id"] for c in db.range(sid, None, through)
                            if c["status"] == "new"], "skipped")
-        _cache_cover(cfg, fi.slug, fi.cover_url)
-        _cache_volume_covers(cfg, fi.slug, fi.volumes)
         row = db.get_series(fi.rr_id)
+        bdir = bundle.bundle_dir(cfg, row)
+        _cache_cover(cfg, fi.slug, fi.cover_url, bdir)
+        _cache_volume_covers(cfg, fi.slug, fi.volumes, bdir)
         pend = len(db.pending(sid))
 
         # pin the resolved voices now, so this series keeps sounding the same
         # when the global defaults are retuned later (see pin_defaults_text)
         slug = _dir_slug(row)
-        overlay = os.path.join(
-            os.path.expanduser(cfg.general.series_config_dir or "data/series"),
-            f"{slug}.toml")
+        overlay = os.path.join(bdir, bundle.LAYOUT["config"])
         if not os.path.exists(overlay):
             os.makedirs(os.path.dirname(overlay), exist_ok=True)
             with open(overlay, "w", encoding="utf-8") as fh:
@@ -476,10 +491,15 @@ def refresh(cfg: Config, key: str | None = None, log=print) -> list[dict]:
         targets = [db.get_series(key)] if key else db.list_series()
         for s in filter(None, targets):
             fi = _series_provider(s["url"]).series(s["url"], cfg=cfg)
+            # refresh the series metadata too, not just the chapter list: tags,
+            # warnings, status and rating all drift, and a series added before
+            # those columns existed would otherwise stay null forever
+            db.upsert_series(fi)
             db.replace_volumes(s["id"], fi.volumes)
             new = db.replace_chapters(s["id"], fi.chapters)
-            _cache_cover(cfg, fi.slug, fi.cover_url)
-            _cache_volume_covers(cfg, fi.slug, fi.volumes)
+            bdir = bundle.bundle_dir(cfg, s)
+            _cache_cover(cfg, fi.slug, fi.cover_url, bdir)
+            _cache_volume_covers(cfg, fi.slug, fi.volumes, bdir)
             log(f"{s['title']}: {len(fi.chapters)} chapters (+{new} new)")
             bundle.sync_bundle(cfg, db, db.get_series(str(s["rr_id"])))
             out.append({"slug": fi.slug, "title": fi.title,
@@ -507,10 +527,11 @@ def make_book(cfg: Config, key: str, *, first: int | None = None, last: int | No
             raise SystemExit("no rendered chapters in that range")
         lo, hi = rows[0]["ord"] + 1, rows[-1]["ord"] + 1
         span = f"{lo}-{hi}" if lo != hi else str(lo)
-        lib = os.path.expanduser(cfg.royalroad.library_dir)
+        bdir = bundle.bundle_dir(cfg, s)
         slug = _dir_slug(s)
-        out = out or os.path.join(lib, slug, f"{slug}-ch{span}.m4b")
-        cover = os.path.join(lib, slug, "cover.jpg")
+        out = out or os.path.join(bdir, f"{slug}-ch{span}.m4b")
+        cover = bundle.resolve(cfg, slug, bdir, "covers")
+        cover = os.path.join(cover, "cover.jpg") if os.path.isdir(cover) else cover
         return build_m4b(rows, out, title=f"{s['title']} ({span})", author=s["author"] or "",
                          cover_path=cover if os.path.exists(cover) else None,
                          bitrate=cfg.book.bitrate, log=log)
@@ -532,7 +553,10 @@ def write_feeds(cfg: Config, key: str | None = None, out_dir: str | None = None,
         for s in filter(None, targets):
             base = (base_url or cfg.serve.base_url).rstrip("/")
             dslug = _dir_slug(s)
-            cover_local = os.path.exists(os.path.join(lib, dslug, "cover.jpg"))
+            bdir = bundle.bundle_dir(cfg, s)
+            cover_local = os.path.exists(
+                os.path.join(bdir, bundle.LAYOUT["covers"], "cover.jpg")) or \
+                os.path.exists(os.path.join(bdir, "cover.jpg"))
             xml = build_feed(s, db.chapters(s["id"]), base or "http://localhost:8080",
                              volumes=db.volume_map(s["id"]),
                              self_url=f"{base}/feed/{dslug}.xml" if base else "",
@@ -557,23 +581,23 @@ def write_feeds(cfg: Config, key: str | None = None, out_dir: str | None = None,
 # them). `force` redoes only the *named* stage — the earlier ones stay cached,
 # so re-rendering never re-downloads.
 
-def _raw_path(cfg: Config, prov, slug: str, c) -> str:
+def _raw_path(bdir: str, prov, c) -> str:
     ext = getattr(prov, "raw_ext", ".html")
-    return os.path.join(os.path.expanduser(cfg.royalroad.library_dir), slug, ".raw",
+    return os.path.join(bdir, bundle.LAYOUT["raw"],
                         f"{_safe_slug(c['rr_id'], 'chapter')}{ext}")
 
 
-def _out_stem(cfg: Config, slug: str, c) -> str:
+def _out_stem(bdir: str, c) -> str:
     name = f"{c['ord'] + 1:03d}-{_safe_slug(c['slug'], c['rr_id'])}"
-    return os.path.join(os.path.expanduser(cfg.royalroad.library_dir), slug, name)
+    return os.path.join(bdir, bundle.LAYOUT["chapters"], name)
 
 
 class ChapterLocked(Exception):
     """The source says this chapter needs an account we don't have."""
 
 
-def _do_fetch(cfg, db, prov, slug, c, *, force=False) -> str:
-    path = _raw_path(cfg, prov, slug, c)
+def _do_fetch(cfg, db, prov, bdir, c, *, force=False) -> str:
+    path = _raw_path(bdir, prov, c)
     if force or not os.path.exists(path):
         # The session cookie is never verified up front (see royalroad.py) — a
         # missing or stale one surfaces here, where it's actionable.
@@ -590,11 +614,11 @@ def _do_fetch(cfg, db, prov, slug, c, *, force=False) -> str:
     return path
 
 
-def _do_parse(cfg, db, prov, slug, c, raw_path, *, force=False) -> str:
+def _do_parse(cfg, db, prov, bdir, c, raw_path, *, force=False) -> str:
     from .pipeline import load_document
     from .textout import render_markdown
 
-    md_path = _out_stem(cfg, slug, c) + ".md"
+    md_path = _out_stem(bdir, c) + ".md"
     if force or not os.path.exists(md_path):
         _, _, doc = load_document(raw_path, cfg)
         if doc is not None:
@@ -646,9 +670,9 @@ def _opus_tags(scfg, series_row, c, vol_info=None, rendered_at=None) -> dict:
     return {k: v for k, v in out.items() if v}
 
 
-def _do_render(cfg, db, scfg, slug, c, raw_path, *, backend="kokoro",
+def _do_render(cfg, db, scfg, bdir, c, raw_path, *, backend="kokoro",
                series_row=None, vol_info=None) -> tuple[str, float]:
-    out_path = _out_stem(cfg, slug, c) + ".opus"
+    out_path = _out_stem(bdir, c) + ".opus"
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
     rep = pipeline.render(raw_path, out_path, scfg, backend=backend,
                           md_meta={"chapter": c["ord"] + 1,
@@ -665,7 +689,7 @@ def _do_render(cfg, db, scfg, slug, c, raw_path, *, backend="kokoro",
     return out_path, rep.audio_seconds, rep
 
 
-def _advance(cfg, db, prov, scfg, slug, c, *, upto, force=False, backend="kokoro",
+def _advance(cfg, db, prov, scfg, bdir, c, *, upto, force=False, backend="kokoro",
              series_row=None, vol_map=None):
     """Walk one chapter up to `upto`. Returns an event dict for the caller."""
     from .db import stage_rank
@@ -677,16 +701,16 @@ def _advance(cfg, db, prov, scfg, slug, c, *, upto, force=False, backend="kokoro
     raw = c["raw_path"] if c["raw_path"] and os.path.exists(c["raw_path"]) else None
     if want >= stage_rank("fetched"):
         if raw is None or (force and upto == "fetched"):
-            raw = _do_fetch(cfg, db, prov, slug, c, force=force and upto == "fetched")
+            raw = _do_fetch(cfg, db, prov, bdir, c, force=force and upto == "fetched")
             ev["fetched"] = True
         elif have < stage_rank("fetched"):
             db.mark_stage(c["id"], "fetched", raw_path=raw)
     if want >= stage_rank("parsed"):
-        _do_parse(cfg, db, prov, slug, c, raw, force=force and upto == "parsed")
+        _do_parse(cfg, db, prov, bdir, c, raw, force=force and upto == "parsed")
         ev["parsed"] = True
     if want >= stage_rank("rendered"):
         vol = (vol_map or {}).get(c["volume_rr_id"]) if c["volume_rr_id"] else None
-        path, secs, rep = _do_render(cfg, db, scfg, slug, c, raw, backend=backend,
+        path, secs, rep = _do_render(cfg, db, scfg, bdir, c, raw, backend=backend,
                                      series_row=series_row, vol_info=vol)
         ev["path"] = path
         ev["audio_seconds"] = round(secs, 1)
@@ -729,13 +753,15 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
         for s in targets:
             slug = _dir_slug(s)
             prov = _series_provider(s["url"])
-            lib = os.path.expanduser(cfg.royalroad.library_dir)
+            bdir = bundle.bundle_dir(cfg, s)
             if refresh_first:
                 fi = prov.series(s["url"], cfg=cfg)
+                db.upsert_series(fi)
                 db.replace_volumes(s["id"], fi.volumes)
                 db.replace_chapters(s["id"], fi.chapters)
                 # single-artifact providers (a Gutenberg .txt) pull once, here
-                prov.prefetch(fi, cfg=cfg, cache_dir=os.path.join(lib, slug, ".raw"))
+                prov.prefetch(fi, cfg=cfg,
+                              cache_dir=os.path.join(bdir, bundle.LAYOUT["raw"]))
             todo = (db.select(s["id"], spans) if explicit
                     else db.outstanding(s["id"], stage, limit))
             if explicit and limit:
@@ -747,7 +773,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
             touched.append(str(s["rr_id"]))
             log(f"\n{s['title']}: {len(todo)} chapter(s) to {stage.rstrip('ed')}"
                 f"{' (explicit range)' if explicit else ''}")
-            scfg = _series_cfg(cfg, slug)
+            scfg = _series_cfg(cfg, slug, bdir)
             vol_map = db.volume_map(s["id"])
             for c in todo:
                 num = c["ord"] + 1
@@ -762,7 +788,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                 t0 = time.time()
                 try:
                     log(f"  #{num} {c['title']}")
-                    ev = _advance(cfg, db, prov, scfg, slug, c, upto=stage,
+                    ev = _advance(cfg, db, prov, scfg, bdir, c, upto=stage,
                                   force=explicit, backend=backend, series_row=s,
                                   vol_map=vol_map)
                     res.rendered += 1

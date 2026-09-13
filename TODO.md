@@ -2,12 +2,10 @@
 
 Known gaps / follow-ups. Personal project — not a promise of when.
 
-- **Content bundles** — full proposal in `docs/plans/series-bundles.md`. Moves
-  config, lexicon, chapters, raw, covers and cache into a relocatable
-  `<bundle>/<slug>/` tree; the global `state.db` stays but becomes rebuildable
-  via `series import` from a `state.json` export. Amends the cache plan below:
-  decide the bundle layout **before** running `cache compact`, so the 28k-file
-  pass happens once.
+- **Content bundles** — `docs/plans/series-bundles.md`. Steps 1-4 done: the
+  layout is live and all four series are migrated. Remaining: `series archive`
+  (clean tar, `--with-cache` opt-in) and simplifying `forget --purge` to a
+  directory removal.
 
 - **Cache maintenance subsystem** — full proposal in
   `docs/plans/cache-maintenance.md`. Covers `cache status|prune|clear|compact|

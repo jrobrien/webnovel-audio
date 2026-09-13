@@ -17,6 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.sax.saxutils import escape
 
 from .config import Config
+from . import bundle
 from .db import DB
 from .feed import audio_mime, build_feed
 from .royalroad import _safe_slug
@@ -161,20 +162,37 @@ class _Handler(BaseHTTPRequestHandler):
             if path.startswith("/feed/") and path.endswith(".xml"):
                 return self._feed(_safe_slug(path[len("/feed/"):-len(".xml")], ""))
             if path.startswith("/audio/"):
-                return self._file(os.path.join(self.library, *path[len("/audio/"):].split("/")),
-                                  fallback_mime="audio/ogg")
+                parts = path[len("/audio/"):].split("/")
+                slug = _safe_slug(parts[0], "") if parts else ""
+                bdir = self._bundle(slug) if slug and len(parts) > 1 else None
+                if not bdir:
+                    return self._send(404, b"not found\n", "text/plain")
+                return self._file(bundle.artifact(bdir, "chapters", parts[-1]),
+                                  root=bdir, fallback_mime="audio/ogg")
             if path.startswith("/cover/"):
                 slug = _safe_slug(path[len("/cover/"):].removesuffix(".jpg"), "")
-                if not slug:
+                bdir = self._bundle(slug) if slug else None
+                if not bdir:
                     return self._send(404, b"not found\n", "text/plain")
-                return self._file(os.path.join(self.library, slug, "cover.jpg"),
-                                  fallback_mime="image/jpeg")
+                return self._file(bundle.artifact(bdir, "covers", "cover.jpg"),
+                                  root=bdir, fallback_mime="image/jpeg")
             self._send(404, b"not found\n", "text/plain")
         except (ValueError, OSError, *_QUIET_ERRORS):
             self._send(404, b"not found\n", "text/plain")
 
     def _db(self) -> DB:
         return DB(self.cfg.royalroad.state_db)
+
+    def _bundle(self, slug: str) -> str | None:
+        """The series' bundle directory, or None if it isn't tracked. Files are
+        served from here rather than from a fixed library root, so a relocated
+        bundle still serves."""
+        db = self._db()
+        try:
+            s = db.get_series(slug)
+            return bundle.bundle_dir(self.cfg, s) if s else None
+        finally:
+            db.close()
 
     def _index(self):
         db = self._db()
@@ -190,7 +208,8 @@ class _Handler(BaseHTTPRequestHandler):
                 continue
             feed = f"{base}/feed/{slug}.xml"
             tail = feed.split("://", 1)[1]
-            if os.path.exists(os.path.join(self.library, slug, "cover.jpg")):
+            if os.path.exists(bundle.artifact(
+                    bundle.bundle_dir(self.cfg, s), "covers", "cover.jpg")):
                 art = f'<img class=cover src="{_h(base)}/cover/{slug}.jpg" alt="" loading=lazy>'
             else:
                 art = f'<div class="cover ph">{_h((s["title"] or "?")[:1].upper())}</div>'
@@ -240,15 +259,18 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(404, b"unknown series\n", "text/plain")
         base = self._base_url()
         dslug = _safe_slug(s["slug"], slug)
-        cover_local = os.path.exists(os.path.join(self.library, dslug, "cover.jpg"))
+        cover_local = os.path.exists(bundle.artifact(
+            bundle.bundle_dir(self.cfg, s), "covers", "cover.jpg"))
         xml = build_feed(s, db.chapters(s["id"]), base,
                              volumes=db.volume_map(s["id"]),
                          self_url=f"{base}/feed/{dslug}.xml", cover_local=cover_local)
         db.close()
         self._send(200, xml.encode(), "application/rss+xml; charset=utf-8")
 
-    def _file(self, path: str, *, fallback_mime: str):
-        root = os.path.realpath(self.library)
+    def _file(self, path: str, *, fallback_mime: str, root: str | None = None):
+        # confined to the bundle being served, not to one fixed library root —
+        # a relocated series lives outside `library_dir` and must still serve
+        root = os.path.realpath(root or self.library)
         path = os.path.realpath(path)
         if os.path.commonpath((root, path)) != root or not os.path.isfile(path):
             return self._send(404, b"not found\n", "text/plain")

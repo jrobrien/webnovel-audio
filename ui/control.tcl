@@ -28,6 +28,7 @@ if {[tk windowingsystem] eq "aqua"} { set ::CTXBUT <Button-2> }
 array set ::geom {main 1280x820 topheight 230 botwidth 760}
 
 set ::CFGPATH "" ; set ::LEXDIR "data/lexicons" ; set ::SERIESDIR "data/series"
+array set ::BPATH {}
 set ::BASELEX ""
 set ::SERIES "" ; set ::RUNNING 0 ; set ::PIPE "" ; set ::SERVEPID ""
 set ::SERVEPIPE "" ; set ::STATUS "ready" ; set ::LIMIT 10
@@ -450,10 +451,24 @@ proc do_add {w} {
 ;# The cast/lexicon files are small and hand-owned, so edit them in-pane. But
 ;# `cast update` appends to the cast file behind our back — so track mtime and
 ;# refuse to clobber a file that changed on disk since we loaded it.
+;# Both files live in the series bundle now, whose location the CLI owns —
+;# a relocated series is not under the library root. Cached per series so
+;# selecting one costs a single `series show`.
 proc editor_path {which} {
     if {$::SERIES eq ""} { return "" }
+    if {![info exists ::BPATH($::SERIES,$which)]} { cache_bundle_paths $::SERIES }
+    if {[info exists ::BPATH($::SERIES,$which)]} { return $::BPATH($::SERIES,$which) }
+    ;# fall back to the pre-bundle layout so an un-migrated tree still edits
     if {$which eq "cast"} { return [file join $::SERIESDIR $::SERIES.toml] }
     return [file join $::LEXDIR $::SERIES.csv]
+}
+
+proc cache_bundle_paths {slug} {
+    set d [run_json series show $slug]
+    if {$d eq "" || ![dict exists $d paths]} return
+    set p [dict get $d paths]
+    set ::BPATH($slug,cast) [dict get $p config]
+    set ::BPATH($slug,lex)  [dict get $p lexicon]
 }
 
 proc load_editor {which {force 0}} {

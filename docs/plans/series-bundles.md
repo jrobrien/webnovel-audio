@@ -1,13 +1,21 @@
 # Plan: content bundles
 
-Status: **steps 1-2 implemented** (2026-09-13); steps 3-5 proposed. Revision of
+Status: **steps 1-4 implemented** (2026-09-13); step 5 (`series archive`)
+proposed. Revision of
 the "self-contained series directory" RFC, narrowed to the *content bundle*
 compromise: everything that describes a series moves into its directory, the
 operational state DB stays global and becomes rebuildable.
 
-Shipped so far: `manifest.toml` + `state.json` writers emitted into the existing
-`library/<slug>/` layout, and `series export|import|scan|path`. Nothing has
-moved on disk yet — that is step 3.
+Shipped: `manifest.toml` + `state.json`, `series export|import|scan|path`, and
+`series migrate` — the layout below is live. All four series are migrated;
+26,331 cache entries were hard-linked into their bundles, and the round trip
+stays exact afterwards.
+
+One deviation from the plan text: chapter rows keep **absolute** paths rather
+than bundle-relative ones. The DB is machine-local, so absolute is correct
+there, and portability comes from `state.json` (which stores them relative) plus
+`series scan` re-anchoring after a move. This kept every reader — `feed`,
+`package`, `retag` — unchanged instead of rewriting them all.
 
 ## Decision summary
 
@@ -265,9 +273,13 @@ because the cache is global.
 2. ~~**`series import` / `scan` / `path`**~~ **Done.** Round-trip verified
    against the live library: all 4 series / 559 chapters / 8 volumes rebuild
    into a scratch DB with zero column differences.
-3. **`migrate bundles`** — the file moves and the path rewrite, folded into
-   `cache compact` so the 28k-file pass happens once.
-4. **`serve.py` / `sync.py` path resolution** through `series.path`.
+3. ~~**`migrate bundles`**~~ **Done** as `series migrate` (`-n` for a dry run).
+   The cache moved by **hard link**, not by copy or re-encode, so it cost no
+   disk and left `cache compact`'s single FLAC pass still to be done once.
+   Unreferenced entries stay in the global cache for `cache prune`.
+4. ~~**`serve.py` / `sync.py` path resolution**~~ **Done.** `_file()` is now
+   confined to the bundle being served rather than one fixed library root —
+   the old guard would have 404'd a relocated series.
 5. **`series archive`**, and `forget --purge` simplified to a directory removal.
 
 Steps 1-2 are additive and reversible; step 3 is the commitment.

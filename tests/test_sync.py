@@ -273,8 +273,8 @@ def test_series_add_registers_only(tmp_path, monkeypatch):
     assert info["chapters"] == 6
     assert not any("/chapter/" in u for u in hits)          # no chapter fetched
     # ...but the resolved voices ARE pinned, so the series can't drift when the
-    # global defaults change later
-    overlay = os.path.join(cfg.general.series_config_dir, f"{info['slug']}.toml")
+    # global defaults change later. The overlay lives in the series bundle.
+    overlay = os.path.join(cfg.royalroad.library_dir, info["slug"], "config.toml")
     assert os.path.exists(overlay)
     import tomllib
     pinned = tomllib.loads(open(overlay).read())

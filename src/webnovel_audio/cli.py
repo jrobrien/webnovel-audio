@@ -383,7 +383,7 @@ def _cmd_pron(args) -> int:
 
     cfg = Config.load(args.config)
     if args.series:
-        cfg = _sync._series_cfg(cfg, args.series)
+        cfg = _sync._series_cfg(cfg, args.series, _bundle_dir_for(cfg, args.series))
     lex = None if args.no_lexicon else _load_lexicon(cfg)
 
     if args.check:
@@ -636,10 +636,27 @@ def _editor_open(path: str, stub: str = "") -> int:
     return subprocess.call(["xdg-open", path])
 
 
+def _bundle_dir_for(cfg: Config, slug: str) -> str:
+    """Look the series up so a relocated bundle resolves. Falls back to the
+    library layout for a slug that isn't tracked."""
+    from . import bundle
+    from .db import DB
+    db = DB(cfg.royalroad.state_db)
+    try:
+        s = db.get_series(slug)
+        return bundle.bundle_dir(cfg, s) if s else os.path.join(
+            os.path.expanduser(cfg.royalroad.library_dir), slug)
+    finally:
+        db.close()
+
+
 def _lex_paths(cfg: Config, slug: str | None = None) -> tuple[str, str]:
+    from . import bundle
     base = os.path.expanduser(cfg.general.base_lexicon or "data/lexicons/_base.csv")
-    d = os.path.expanduser(cfg.general.lexicon_dir or "data/lexicons")
-    return base, (os.path.join(d, f"{slug}.csv") if slug else "")
+    if not slug:
+        return base, ""
+    bdir = _bundle_dir_for(cfg, slug)
+    return base, bundle.resolve(cfg, slug, bdir, "lexicon")
 
 
 _LEX_HEADER = "surface,respell,ipa,notes\n"
@@ -701,8 +718,8 @@ def _cmd_lex(args) -> int:
 
 
 def _series_config_path(cfg: Config, slug: str) -> str:
-    return os.path.join(
-        os.path.expanduser(cfg.general.series_config_dir or "data/series"), f"{slug}.toml")
+    from . import bundle
+    return bundle.resolve(cfg, slug, _bundle_dir_for(cfg, slug), "config")
 
 
 def _cmd_cast(args) -> int:
@@ -730,7 +747,8 @@ def _cmd_cast(args) -> int:
             return _fail("unknown_voice", f"no such voice: {args.voice}",
                          hint="run `webnovel-audio voices list`",
                          json_mode=want_json, valid=_EN_VOICES[:8])
-        r = sync.set_cast_voice(cfg, slug, args.speaker, args.voice)
+        r = sync.set_cast_voice(cfg, slug, args.speaker, args.voice,
+                               _bundle_dir_for(cfg, slug))
         if want_json:
             _jprint({"ok": True, **r})
         else:
@@ -739,7 +757,7 @@ def _cmd_cast(args) -> int:
         return 0
 
     if args.action == "show":
-        scfg = sync._series_cfg(cfg, slug)
+        scfg = sync._series_cfg(cfg, slug, _bundle_dir_for(cfg, slug))
         assigned = {k: v for k, v in scfg.cast.voices.items() if v}
         unassigned = [k for k, v in scfg.cast.voices.items() if not v]
         if want_json:
@@ -865,6 +883,21 @@ def _cmd_series_bundle(args, cfg, db, bundle, want_json: bool) -> int:
             _jprint({"ok": True, "exported": out})
         return 0
 
+    if args.action == "migrate":
+        rows = [db.get_series(args.key)] if args.key else db.list_series()
+        if args.key and not rows[0]:
+            return _no_series(args.key, want_json)
+        if not want_json:
+            print(("would migrate" if args.dry_run else "migrating")
+                  + " into the bundle layout:")
+        out = bundle.migrate(cfg, db, args.key, dry_run=args.dry_run,
+                             log=(lambda *_: None) if want_json else print)
+        if want_json:
+            _jprint({"ok": True, "dry_run": args.dry_run, "series": out})
+        elif args.dry_run:
+            print("\nnothing written. re-run without -n to apply.")
+        return 0
+
     if args.action == "path":
         s = db.get_series(args.key)
         if not s:
@@ -929,7 +962,7 @@ def _cmd_series(args) -> int:
             _jprint({"ok": True, "series": results or []})
         return 0
 
-    if args.action in ("export", "import", "scan", "path"):
+    if args.action in ("export", "import", "scan", "path", "migrate"):
         from . import bundle
         db = DB(cfg.royalroad.state_db)
         try:
@@ -980,7 +1013,13 @@ def _cmd_series(args) -> int:
                 return 0
 
             # show
+            from . import bundle
             info = db.summary(args.key)[0]
+            bdir = bundle.bundle_dir(cfg, s)
+            info["bundle"] = bundle.status(cfg, s)
+            info["paths"] = {"dir": bdir,
+                             "config": bundle.resolve(cfg, slug, bdir, "config"),
+                             "lexicon": bundle.resolve(cfg, slug, bdir, "lexicon")}
             if want_json:
                 _jprint(info)
                 return 0
@@ -1201,7 +1240,7 @@ def _cmd_feed(args) -> int:
     from . import sync
 
     paths = sync.write_feeds(Config.load(args.config), args.key,
-                             out_dir=args.out, base_url=args.base_url or "")
+                             out_dir=args.out_dir, base_url=args.base_url or "")
     if not paths:
         print("no tracked series.")
         return 1
@@ -1329,6 +1368,11 @@ def _build_parser():
     pa = se_sub.add_parser("path", help="print a series' bundle directory")
     pa.add_argument("key")
     _cfg_json(pa)
+    mg = se_sub.add_parser(
+        "migrate", help="move a series into the bundle layout (chapters/, covers/, …)")
+    mg.add_argument("key", nargs="?", help="one series, or all if omitted")
+    mg.add_argument("-n", "--dry-run", action="store_true")
+    _cfg_json(mg)
 
     _cfg_json(se)
     se.set_defaults(func=_cmd_series, action=None, frm="start", purge=False,
