@@ -114,6 +114,7 @@ proc refresh_chapters {} {
     if {$::SERIES eq ""} return
     set d [run_json state show $::SERIES]
     if {$d eq ""} return
+    set vols 0
     foreach c [dict get $d chapters] {
         set n [dict get $c number]
         set dur [json::get $c duration_s]
@@ -121,15 +122,23 @@ proc refresh_chapters {} {
         set st [dict get $c status]
         set note [json::get $c error_stage]
         if {$note ne ""} { append note ": [string range [json::get $c error] 0 48]" }
+        set v [json::get $c volume_index]
+        if {$v ne "" && $v ne "0"} {
+            set v "V$v"
+            if {[json::get $c volume_chapter] ne ""} { incr vols }
+        } else { set v "" }
         .bl.tv insert {} end -id ch$n -values \
-            [list $n [dict get $c title] $st $dur $note] -tags $st
+            [list $n $v [dict get $c title] $st $dur $note] -tags $st
     }
     foreach {tag col} {rendered #2a7d4f error #b03030 skipped gray55
                        fetched #4a6fa5 parsed #6a5fa5} {
         .bl.tv tag configure $tag -foreground $col
     }
     foreach id $keep { if {[.bl.tv exists $id]} { .bl.tv selection add $id } }
-    set cols {n title status dur}
+    ;# Vol only earns its place when the series actually has volumes
+    set cols {n}
+    if {$vols} { lappend cols vol }
+    lappend cols title status dur
     foreach id [.bl.tv children {}] {
         if {[.bl.tv set $id note] ne ""} { lappend cols note ; break }
     }
@@ -633,10 +642,11 @@ ttk::panedwindow .bot -orient horizontal
 .ctop add .bot
 
 ttk::frame .bl
-ttk::treeview .bl.tv -columns {n title status dur note} -show headings \
+ttk::treeview .bl.tv -columns {n vol title status dur note} -show headings \
     -selectmode extended -yscrollcommand {.bl.sb set}
-foreach {c t w a s} {n "#" 55 center 0   title Title 380 w 1   status Stage 85 center 0
-                     dur Audio 65 center 0   note Note 260 w 0} {
+foreach {c t w a s} {n "#" 55 center 0   vol Vol 50 center 0   title Title 360 w 1
+                     status Stage 85 center 0   dur Audio 65 center 0
+                     note Note 260 w 0} {
     .bl.tv heading $c -text $t
     .bl.tv column $c -width $w -anchor $a -stretch $s
 }

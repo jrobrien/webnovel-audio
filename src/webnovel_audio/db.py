@@ -66,7 +66,19 @@ CREATE TABLE IF NOT EXISTS chapters (
     rendered_at  TEXT,
     render_started_at TEXT,   -- wall clock around the synth, for cost estimates
     render_ended_at   TEXT,
+    volume_rr_id      TEXT,   -- provider volumeId; NULL is normal (see replace_volumes)
+    volume_chapter    INTEGER,-- 1-based position within its volume
+    narrator          TEXT,   -- voice actually used, recorded at render time
     error        TEXT,
+    UNIQUE (series_id, rr_id)
+);
+CREATE TABLE IF NOT EXISTS volumes (
+    id          INTEGER PRIMARY KEY,
+    series_id   INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    rr_id       TEXT NOT NULL,        -- provider volumeId
+    title       TEXT,
+    cover_url   TEXT,
+    ord         INTEGER,              -- provider order; NOT contiguous (RR skips)
     UNIQUE (series_id, rr_id)
 );
 CREATE INDEX IF NOT EXISTS chapters_series_ord ON chapters(series_id, ord);
@@ -91,7 +103,9 @@ class DB:
         for name, decl in (("duration_s", "REAL"), ("error_stage", "TEXT"),
                            ("raw_path", "TEXT"), ("text_path", "TEXT"),
                            ("fetched_at", "TEXT"), ("parsed_at", "TEXT"),
-                           ("render_started_at", "TEXT"), ("render_ended_at", "TEXT")):
+                           ("render_started_at", "TEXT"), ("render_ended_at", "TEXT"),
+                           ("volume_rr_id", "TEXT"), ("volume_chapter", "INTEGER"),
+                           ("narrator", "TEXT")):
             if name not in cols:
                 self.con.execute(f"ALTER TABLE chapters ADD COLUMN {name} {decl}")
         scols = {r["name"] for r in self.con.execute("PRAGMA table_info(series)")}
@@ -204,6 +218,37 @@ class DB:
             })
         return out
 
+    # -- volumes ---------------------------------------------------------
+    def replace_volumes(self, series_id: int, volumes) -> int:
+        """Upsert the volume list. Volumes are optional and often incomplete:
+        Royal Road authors assign them per chapter, so a fiction can have none
+        at all, or leave most chapters unassigned (Spector: 529 of 746). A
+        chapter with no volume is normal, not an error."""
+        for v in volumes or []:
+            self.con.execute(
+                """INSERT INTO volumes (series_id, rr_id, title, cover_url, ord)
+                   VALUES (?,?,?,?,?)
+                   ON CONFLICT(series_id, rr_id) DO UPDATE SET
+                     title=excluded.title, cover_url=excluded.cover_url,
+                     ord=excluded.ord""",
+                (series_id, str(v.rr_id), v.title, v.cover_url, v.order))
+        self.con.commit()
+        return len(volumes or [])
+
+    def volumes(self, series_id: int) -> list[sqlite3.Row]:
+        return self.con.execute(
+            "SELECT * FROM volumes WHERE series_id=? ORDER BY ord", (series_id,)
+        ).fetchall()
+
+    def volume_map(self, series_id: int) -> dict:
+        """rr_id -> row, plus a 1-based `index` that IS contiguous (RR's `ord`
+        is not — Sky Pride runs 1,2,3,4,6,7)."""
+        out = {}
+        for i, v in enumerate(self.volumes(series_id), 1):
+            out[v["rr_id"]] = {"row": v, "index": i, "title": v["title"],
+                               "cover_url": v["cover_url"]}
+        return out
+
     # -- chapters --------------------------------------------------------
     def replace_chapters(self, series_id: int, chapters) -> int:
         """Upsert chapter rows (keeps status / audio_path). Returns how many are new."""
@@ -212,17 +257,28 @@ class DB:
                 "SELECT rr_id FROM chapters WHERE series_id=?", (series_id,)
             )
         }
+        # 1-based position within each volume, in chapter order
+        seq, counts = {}, {}
+        for c in sorted(chapters, key=lambda c: c.order):
+            vid = getattr(c, "volume_id", None)
+            counts[vid] = counts.get(vid, 0) + 1
+            seq[c.rr_id] = counts[vid] if vid else None
         for c in chapters:
             self.con.execute(
                 """INSERT INTO chapters
-                     (series_id, rr_id, ord, title, slug, url, published_at, unlocked)
-                   VALUES (?,?,?,?,?,?,?,?)
+                     (series_id, rr_id, ord, title, slug, url, published_at, unlocked,
+                      volume_rr_id, volume_chapter)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(series_id, rr_id) DO UPDATE SET
                      ord=excluded.ord, title=excluded.title, slug=excluded.slug,
                      url=excluded.url, published_at=excluded.published_at,
-                     unlocked=excluded.unlocked""",
+                     unlocked=excluded.unlocked,
+                     volume_rr_id=excluded.volume_rr_id,
+                     volume_chapter=excluded.volume_chapter""",
                 (series_id, c.rr_id, c.order, c.title, c.slug, c.url,
-                 c.published_at, int(c.unlocked)),
+                 c.published_at, int(c.unlocked),
+                 str(c.volume_id) if getattr(c, "volume_id", None) else None,
+                 seq.get(c.rr_id)),
             )
         self.con.commit()
         return sum(1 for c in chapters if c.rr_id not in existing)
@@ -295,7 +351,7 @@ class DB:
     def mark(self, chapter_id: int, status: str, *, raw_path: str | None = None,
              text_path: str | None = None, audio_path: str | None = None,
              duration_s: float | None = None, error: str | None = None,
-             error_stage: str | None = None,
+             error_stage: str | None = None, narrator: str | None = None,
              render_started_at: str | None = None,
              render_ended_at: str | None = None,
              _stage_time: str | None = None) -> None:
@@ -305,6 +361,7 @@ class DB:
         args: list = [status, error, error_stage]
         for col, val in (("raw_path", raw_path), ("text_path", text_path),
                          ("audio_path", audio_path), ("duration_s", duration_s),
+                         ("narrator", narrator),
                          ("render_started_at", render_started_at),
                          ("render_ended_at", render_ended_at)):
             if val is not None:

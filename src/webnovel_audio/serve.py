@@ -242,6 +242,7 @@ class _Handler(BaseHTTPRequestHandler):
         dslug = _safe_slug(s["slug"], slug)
         cover_local = os.path.exists(os.path.join(self.library, dslug, "cover.jpg"))
         xml = build_feed(s, db.chapters(s["id"]), base,
+                             volumes=db.volume_map(s["id"]),
                          self_url=f"{base}/feed/{dslug}.xml", cover_local=cover_local)
         db.close()
         self._send(200, xml.encode(), "application/rss+xml; charset=utf-8")

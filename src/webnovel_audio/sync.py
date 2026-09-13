@@ -105,6 +105,27 @@ def _cache_cover(cfg: Config, slug: str, cover_url: str) -> None:
         fh.write(data)
 
 
+def _cache_volume_covers(cfg: Config, slug: str, volumes) -> None:
+    """Each volume has its own cover on Royal Road — that's half the reason
+    volumes are worth modelling. Cached beside the series cover."""
+    slug = _safe_slug(slug, "")
+    if not slug:
+        return
+    base = os.path.join(os.path.expanduser(cfg.royalroad.library_dir), slug)
+    for v in volumes or []:
+        if not v.cover_url:
+            continue
+        dst = os.path.join(base, f"cover-v{_safe_slug(v.rr_id, '0')}.jpg")
+        if os.path.exists(dst):
+            continue
+        data = fetch_asset(v.cover_url)
+        if not data:
+            continue
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        with open(dst, "wb") as fh:
+            fh.write(data)
+
+
 def _chapter_view(c) -> tuple[int, str, bool]:
     """(order, rr_id, unlocked) from a ChapterRef or a sqlite3.Row."""
     if hasattr(c, "order"):
@@ -376,12 +397,14 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
         if not fi.rr_id or not fi.chapters:
             raise SystemExit(f"could not read a fiction + chapter list from {url}")
         sid = db.upsert_series(fi)
+        db.replace_volumes(sid, fi.volumes)
         new = db.replace_chapters(sid, fi.chapters)
         through = _skip_through(fi.chapters, start)
         if through:
             db.set_status([c["id"] for c in db.range(sid, None, through)
                            if c["status"] == "new"], "skipped")
         _cache_cover(cfg, fi.slug, fi.cover_url)
+        _cache_volume_covers(cfg, fi.slug, fi.volumes)
         row = db.get_series(fi.rr_id)
         pend = len(db.pending(sid))
 
@@ -414,8 +437,10 @@ def refresh(cfg: Config, key: str | None = None, log=print) -> list[dict]:
         targets = [db.get_series(key)] if key else db.list_series()
         for s in filter(None, targets):
             fi = _series_provider(s["url"]).series(s["url"], cfg=cfg)
+            db.replace_volumes(s["id"], fi.volumes)
             new = db.replace_chapters(s["id"], fi.chapters)
             _cache_cover(cfg, fi.slug, fi.cover_url)
+            _cache_volume_covers(cfg, fi.slug, fi.volumes)
             log(f"{s['title']}: {len(fi.chapters)} chapters (+{new} new)")
             out.append({"slug": fi.slug, "title": fi.title,
                         "chapters": len(fi.chapters), "new": new})
@@ -469,6 +494,7 @@ def write_feeds(cfg: Config, key: str | None = None, out_dir: str | None = None,
             dslug = _dir_slug(s)
             cover_local = os.path.exists(os.path.join(lib, dslug, "cover.jpg"))
             xml = build_feed(s, db.chapters(s["id"]), base or "http://localhost:8080",
+                             volumes=db.volume_map(s["id"]),
                              self_url=f"{base}/feed/{dslug}.xml" if base else "",
                              cover_local=cover_local)
             path = os.path.join(out_dir, f"{dslug}.xml")
@@ -541,7 +567,7 @@ def _do_parse(cfg, db, prov, slug, c, raw_path, *, force=False) -> str:
     return md_path
 
 
-def _opus_tags(scfg, series_row, c) -> dict:
+def _opus_tags(scfg, series_row, c, vol_info=None, rendered_at=None) -> dict:
     """Series/chapter provenance for the Opus stream (Vorbis comments).
 
     Verified to round-trip through libopus, custom keys included. No synopsis —
@@ -560,36 +586,47 @@ def _opus_tags(scfg, series_row, c) -> dict:
             tags = json.loads(series_row["tags"]) or []
         except (ValueError, TypeError):
             tags = []
+    vol = vol_info or {}
     out = {
-        "TRACKNUMBER": str(c["ord"] + 1),
+        # volume-relative track when the chapter is in a volume, else global
+        "TRACKNUMBER": str(c["volume_chapter"] or c["ord"] + 1),
         "DATE": (c["published_at"] or "")[:10],      # the chapter's publish date
         "PERFORMER": scfg.cast.narrator or scfg.voices.narrator,
         "ORGANIZATION": "webnovel-audio (Kokoro-82M)",
-        "RENDERED_AT": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        # when the audio was actually made — never "now", or a retag would
+        # silently rewrite real provenance
+        "RENDERED_AT": rendered_at or time.strftime("%Y-%m-%dT%H:%M:%S"),
         "CONTENT_WARNING": "; ".join(warnings),
         "KEYWORDS": "; ".join(tags[:20]),
+        "VOLUME": vol.get("title", ""),
+        "VOLUME_INDEX": str(vol["index"]) if vol.get("index") else "",
     }
+    if vol.get("title"):
+        out["album"] = f'{series_row["title"]} — {vol["title"]}'
     return {k: v for k, v in out.items() if v}
 
 
 def _do_render(cfg, db, scfg, slug, c, raw_path, *, backend="kokoro",
-               series_row=None) -> tuple[str, float]:
+               series_row=None, vol_info=None) -> tuple[str, float]:
     out_path = _out_stem(cfg, slug, c) + ".opus"
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
     rep = pipeline.render(raw_path, out_path, scfg, backend=backend,
                           md_meta={"chapter": c["ord"] + 1,
                                    "published": c["published_at"] or ""},
-                          tags=_opus_tags(scfg, series_row, c) if series_row is not None else None,
+                          tags=(_opus_tags(scfg, series_row, c, vol_info,
+                                           rendered_at=started)
+                                if series_row is not None else None),
                           log=lambda *_: None)
     db.mark_stage(c["id"], "rendered", audio_path=out_path,
                   duration_s=rep.audio_seconds or None,
+                  narrator=scfg.cast.narrator or scfg.voices.narrator,
                   render_started_at=started,
                   render_ended_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
     return out_path, rep.audio_seconds, rep
 
 
 def _advance(cfg, db, prov, scfg, slug, c, *, upto, force=False, backend="kokoro",
-             series_row=None):
+             series_row=None, vol_map=None):
     """Walk one chapter up to `upto`. Returns an event dict for the caller."""
     from .db import stage_rank
 
@@ -608,8 +645,9 @@ def _advance(cfg, db, prov, scfg, slug, c, *, upto, force=False, backend="kokoro
         _do_parse(cfg, db, prov, slug, c, raw, force=force and upto == "parsed")
         ev["parsed"] = True
     if want >= stage_rank("rendered"):
+        vol = (vol_map or {}).get(c["volume_rr_id"]) if c["volume_rr_id"] else None
         path, secs, rep = _do_render(cfg, db, scfg, slug, c, raw, backend=backend,
-                                     series_row=series_row)
+                                     series_row=series_row, vol_info=vol)
         ev["path"] = path
         ev["audio_seconds"] = round(secs, 1)
         # a fully cached re-render finishes in seconds; say so, or it looks wrong
@@ -653,6 +691,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
             lib = os.path.expanduser(cfg.royalroad.library_dir)
             if refresh_first:
                 fi = prov.series(s["url"], cfg=cfg)
+                db.replace_volumes(s["id"], fi.volumes)
                 db.replace_chapters(s["id"], fi.chapters)
                 # single-artifact providers (a Gutenberg .txt) pull once, here
                 prov.prefetch(fi, cfg=cfg, cache_dir=os.path.join(lib, slug, ".raw"))
@@ -667,6 +706,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
             log(f"\n{s['title']}: {len(todo)} chapter(s) to {stage.rstrip('ed')}"
                 f"{' (explicit range)' if explicit else ''}")
             scfg = _series_cfg(cfg, slug)
+            vol_map = db.volume_map(s["id"])
             for c in todo:
                 num = c["ord"] + 1
                 if dry_run:
@@ -681,7 +721,8 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                 try:
                     log(f"  #{num} {c['title']}")
                     ev = _advance(cfg, db, prov, scfg, slug, c, upto=stage,
-                                  force=explicit, backend=backend, series_row=s)
+                                  force=explicit, backend=backend, series_row=s,
+                                  vol_map=vol_map)
                     res.rendered += 1
                     _emit({"event": "chapter", "slug": slug,
                            "elapsed_seconds": round(time.time() - t0, 1), **ev})

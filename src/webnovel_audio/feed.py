@@ -44,8 +44,72 @@ def hms(seconds: float | None) -> str:
     return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
 
 
+def _col(row, name, default=None):
+    """Read a column from a sqlite3.Row or a plain dict, tolerating absence.
+
+    Feed building runs against rows from callers that may predate a column, and
+    against hand-built dicts in tests; a missing key is not an error here.
+    """
+    try:
+        keys = row.keys()
+    except AttributeError:
+        return default
+    if name not in keys:
+        return default
+    v = row[name]
+    return default if v is None else v
+
+
+def _show_notes(series, c, vol, num, dur):
+    """(plain, html) per-episode notes.
+
+    Carries the same provenance the .opus already embeds — source link, when it
+    was published, when we narrated it, and with what. Deliberately no synopsis:
+    that's the author's prose, and the source link stands in for it.
+    """
+    title = c["title"] or f"Chapter {num}"
+    where = series["title"]
+    if vol and vol.get("title"):
+        where += f" · {vol['title']}"
+    # Deliberately NOT printing the positional number here. It drifts from the
+    # author's numbering as soon as a volume contains an interstitial — Sky
+    # Pride V2 has "Just wanted to say thank you" at position 11, so every
+    # later chapter is one ahead of its own title. The title already carries
+    # the author's number; contradicting it would be worse than omitting it.
+    by = f" · by {series['author']}" if _col(series, "author") else ""
+
+    pub = str(_col(c, "published_at", ""))[:10]
+    ren = str(_col(c, "rendered_at", ""))[:10]
+    bits = []
+    if pub:
+        bits.append(f"published {pub}")
+    if ren:
+        bits.append(f"narrated {ren}")
+    if dur:
+        bits.append(dur)
+    line2 = " · ".join(bits)
+
+    voice = _col(c, "narrator", "")
+    line3 = f"Read by {voice} (Kokoro-82M), via webnovel-audio." if voice \
+        else "Narrated by webnovel-audio (Kokoro-82M)."
+    src_url = _col(c, "url", "")
+    tail = "Personal-use narration of a free web serial. Not an official audiobook."
+
+    plain = "\n".join(filter(None, [
+        title, where + by, line2, line3,
+        f"Source: {src_url}" if src_url else "", tail]))
+    link = (f"<p>Source: <a href={quoteattr(src_url)}>{escape(src_url)}</a></p>"
+            if src_url else "")
+    html = (f"<p><strong>{escape(title)}</strong><br/>{escape(where + by)}</p>"
+            + (f"<p>{escape(line2)}</p>" if line2 else "")
+            + f"<p>{escape(line3)}</p>" + link
+            + f"<p><em>{escape(tail)}</em></p>")
+    return plain, html
+
+
 def build_feed(series, chapters, base_url: str, *, self_url: str = "",
-               cover_local: bool = False) -> str:
+               cover_local: bool = False, volumes: dict | None = None) -> str:
+    volumes = volumes or {}
     base_url = base_url.rstrip("/")
     slug = series["slug"] or "series"
     rendered = [c for c in chapters
@@ -61,23 +125,31 @@ def build_feed(series, chapters, base_url: str, *, self_url: str = "",
     now = _dt.datetime.now(_dt.timezone.utc)
     items = []
     for c in rendered:
+        vid = _col(c, "volume_rr_id")
+        vol = volumes.get(vid) if vid else None
         fname = os.path.basename(c["audio_path"])
         size = os.path.getsize(c["audio_path"])
         url = f"{base_url}/audio/{slug}/{fname}"
         dur = hms(c["duration_s"])
         num = c["ord"] + 1
         title = c["title"] or f"Chapter {num}"
-        desc = f"{series['title']} — chapter {num}"
+        # Volume-relative episode number when we have one: the feed used to say
+        # "chapter 69" for what the fiction calls Volume 2, Chapter 15.
+        episode = _col(c, "volume_chapter") or num
+        plain, html = _show_notes(series, c, vol, num, dur)
         items.append(
             "    <item>\n"
             f"      <title>{escape(title)}</title>\n"
             f"      <guid isPermaLink=\"false\">rr-{escape(str(c['rr_id']))}</guid>\n"
             f"      <pubDate>{rfc822(c['published_at'], now)}</pubDate>\n"
-            f"      <itunes:episode>{num}</itunes:episode>\n"
-            f"      <itunes:title>{escape(title)}</itunes:title>\n"
+            f"      <itunes:episode>{episode}</itunes:episode>\n"
+            + (f"      <itunes:season>{vol['index']}</itunes:season>\n" if vol else "")
+            + f"      <itunes:title>{escape(title)}</itunes:title>\n"
             + (f"      <itunes:duration>{dur}</itunes:duration>\n" if dur else "")
-            + f"      <description>{escape(desc)}</description>\n"
-            f"      <enclosure url={quoteattr(url)} length=\"{size}\" "
+            + f"      <description>{escape(plain)}</description>\n"
+            + f"      <content:encoded><![CDATA[{html}]]></content:encoded>\n"
+            + f"      <itunes:summary>{escape(plain)}</itunes:summary>\n"
+            + f"      <enclosure url={quoteattr(url)} length=\"{size}\" "
             f"type=\"{audio_mime(fname)}\"/>\n"
             "    </item>"
         )
@@ -96,6 +168,7 @@ def build_feed(series, chapters, base_url: str, *, self_url: str = "",
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<rss version="2.0" xmlns:itunes="http://www.itunes.com/dtds/podcast-1.0.dtd" '
+        'xmlns:content="http://purl.org/rss/1.0/modules/content/" '
         'xmlns:atom="http://www.w3.org/2005/Atom">\n'
         "  <channel>\n"
         f"    <title>{escape(series['title'])}</title>\n"

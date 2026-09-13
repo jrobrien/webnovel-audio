@@ -581,3 +581,69 @@ def test_stage_never_demotes_a_finished_chapter(tmp_path):
     db.mark_stage(c2["id"], "fetched", raw_path="/y.html")
     assert db.chapters(sid)[1]["status"] == "fetched"
     db.close()
+
+
+def _vols():
+    from webnovel_audio.royalroad import VolumeRef
+    # RR order is NOT contiguous — Sky Pride really runs 1,2,3,4,6,7
+    return [VolumeRef(rr_id="10", title="Vol One", cover_url="", order=1),
+            VolumeRef(rr_id="20", title="Vol Two", cover_url="", order=3)]
+
+
+def test_volumes_and_positions(tmp_path):
+    """Volume membership is per chapter and optional; position within a volume
+    is computed, and is NOT the author's chapter number (an interstitial
+    shifts it — Sky Pride V2 has an author's note at position 11)."""
+    from webnovel_audio.royalroad import ChapterRef
+
+    db = DB(str(tmp_path / "s.db"))
+    fi = FictionInfo(rr_id="9", slug="demo", title="Demo", url="https://rr/9",
+                     volumes=_vols())
+    sid = db.upsert_series(fi)
+    db.replace_volumes(sid, fi.volumes)
+
+    chs = [
+        ChapterRef("1", 0, "V1 C1", "a", "u1", "", True, volume_id="10"),
+        ChapterRef("2", 1, "V1 C2", "b", "u2", "", True, volume_id="10"),
+        ChapterRef("3", 2, "announcement", "c", "u3", "", True, volume_id=""),  # orphan
+        ChapterRef("4", 3, "V2 C1", "d", "u4", "", True, volume_id="20"),
+        ChapterRef("5", 4, "a note", "e", "u5", "", True, volume_id="20"),
+        ChapterRef("6", 5, "V2 C2", "f", "u6", "", True, volume_id="20"),
+    ]
+    db.replace_chapters(sid, chs)
+    rows = {c["ord"] + 1: c for c in db.chapters(sid)}
+
+    assert rows[1]["volume_rr_id"] == "10" and rows[1]["volume_chapter"] == 1
+    assert rows[2]["volume_chapter"] == 2
+    assert rows[3]["volume_rr_id"] is None and rows[3]["volume_chapter"] is None
+    assert rows[4]["volume_chapter"] == 1          # position restarts per volume
+    # the interstitial at position 2 pushes "V2 C2" to position 3
+    assert rows[5]["volume_chapter"] == 2
+    assert rows[6]["volume_chapter"] == 3
+
+    vm = db.volume_map(sid)
+    assert vm["10"]["index"] == 1 and vm["20"]["index"] == 2   # contiguous...
+    assert vm["20"]["row"]["ord"] == 3                          # ...unlike RR's order
+    db.close()
+
+
+def test_opus_tags_use_volume(tmp_path):
+    from webnovel_audio.royalroad import ChapterRef
+
+    cfg = Config()
+    db = DB(str(tmp_path / "s.db"))
+    fi = FictionInfo(rr_id="9", slug="demo", title="Demo", author="A", url="https://rr/9",
+                     volumes=_vols())
+    sid = db.upsert_series(fi)
+    db.replace_volumes(sid, fi.volumes)
+    db.replace_chapters(sid, [
+        ChapterRef("4", 3, "V2 C1", "d", "u4", "2025-01-02T00:00:00Z", True, volume_id="20"),
+    ])
+    c = db.chapters(sid)[0]
+    vm = db.volume_map(sid)
+    t = sync._opus_tags(cfg, db.get_series("demo"), c, vm["20"], rendered_at="2026-01-01T00:00:00")
+    assert t["TRACKNUMBER"] == "1"                  # volume-relative, not global 4
+    assert t["VOLUME"] == "Vol Two" and t["VOLUME_INDEX"] == "2"
+    assert t["album"] == "Demo — Vol Two"
+    assert t["RENDERED_AT"] == "2026-01-01T00:00:00"   # never "now"
+    db.close()

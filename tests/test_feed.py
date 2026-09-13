@@ -59,3 +59,46 @@ def test_ffmeta_chapters_are_cumulative():
     assert meta.startswith(";FFMETADATA1")
     assert "START=1000\nEND=3500" in meta
     assert "title=Two, a-b" in meta                     # ';' and '=' sanitised
+
+
+def test_show_notes_carry_provenance():
+    """The feed used to say only 'Series — chapter 69'. It should carry what the
+    .opus already embeds: source, dates, voice."""
+    from webnovel_audio.feed import _show_notes
+
+    series = {"title": "Sky Pride", "author": "Warby Picus"}
+    chapter = {
+        "title": "Chapter 15- The Calculations of Heavenly People",
+        "url": "https://www.royalroad.com/fiction/107917/x/chapter/2266790/y",
+        "published_at": "2025-05-09T14:00:09Z",
+        "rendered_at": "2026-09-12T18:17:11",
+        "volume_chapter": 16,
+        "narrator": "af_nova",
+    }
+    vol = {"title": "V. 2 Lotuses Above, Snakes Below", "index": 2}
+    plain, html = _show_notes(series, chapter, vol, 69, "13:22")
+
+    assert "V. 2 Lotuses Above, Snakes Below" in plain
+    assert "by Warby Picus" in plain
+    assert "published 2025-05-09" in plain and "narrated 2026-09-12" in plain
+    assert "af_nova" in plain and "13:22" in plain
+    assert chapter["url"] in plain
+    assert "Not an official audiobook" in plain
+    # the positional number must NOT be asserted as a chapter number: it drifts
+    # from the author's numbering whenever a volume contains an interstitial
+    assert "chapter 16" not in plain
+    # html variant has a real clickable link, correctly quoted
+    assert f'<a href="{chapter["url"]}">' in html
+    assert "<p>" in html and "]]>" not in html
+
+
+def test_show_notes_without_volume_or_voice():
+    from webnovel_audio.feed import _show_notes
+
+    plain, html = _show_notes({"title": "Demo", "author": ""},
+                              {"title": "Ch 1", "url": "", "published_at": "",
+                               "rendered_at": "", "volume_chapter": None,
+                               "narrator": ""}, None, 1, "")
+    assert "Demo" in plain and "Source:" not in plain
+    assert "Narrated by webnovel-audio" in plain
+    assert html.startswith("<p>")

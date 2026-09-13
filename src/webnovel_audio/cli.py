@@ -505,6 +505,21 @@ def _cmd_ui(args) -> int:
     return 0
 
 
+def _cmd_retag(args) -> int:
+    """Refresh Vorbis tags on rendered chapters without re-encoding."""
+    from .retag import retag_series
+
+    cfg = Config.load(args.config)
+    r = retag_series(cfg, args.key, dry_run=args.dry_run,
+                     log=(lambda *_: None) if getattr(args, "json", False) else print)
+    if getattr(args, "json", False):
+        _jprint({"ok": True, **r})
+    else:
+        print(f"\n{r['retagged']} retagged, {r['failed']} failed "
+              f"({r['skipped']} not rendered)")
+    return 1 if r["failed"] else 0
+
+
 def _cmd_models(args) -> int:
     from .synth.kokoro import DEFAULT_CACHE, fetch_models, model_paths
 
@@ -704,6 +719,7 @@ def _cmd_state(args) -> int:
             return 0
 
         rows = db.select(s["id"], spans)
+        vmap = db.volume_map(s["id"])
         if want_json:
             _jprint({"slug": s["slug"], "title": s["title"], "chapters": [
                 {"number": c["ord"] + 1, "title": c["title"], "status": c["status"],
@@ -715,6 +731,10 @@ def _cmd_state(args) -> int:
                  "render_started_at": c["render_started_at"],
                  "render_ended_at": c["render_ended_at"],
                  "audio_path": c["audio_path"], "text_path": c["text_path"],
+                 "narrator": c["narrator"],
+                 "volume_chapter": c["volume_chapter"],
+                 "volume_index": (vmap.get(c["volume_rr_id"]) or {}).get("index"),
+                 "volume_title": (vmap.get(c["volume_rr_id"]) or {}).get("title"),
                  "unlocked": bool(c["unlocked"])} for c in rows]})
             return 0
         print(f"{s['title']}  [{s['slug']}]")
@@ -1208,6 +1228,12 @@ def main(argv=None) -> int:
     fd.add_argument("--out-dir")
     _cfg(fd)
     fd.set_defaults(func=_cmd_feed)
+
+    rt = sub.add_parser("retag", help="refresh Opus tags on rendered chapters (no re-encode)")
+    rt.add_argument("key", nargs="?", help="one series, or all if omitted")
+    rt.add_argument("--dry-run", action="store_true")
+    _cfg_json(rt)
+    rt.set_defaults(func=_cmd_retag)
 
     md = sub.add_parser("models", help="the Kokoro ONNX model files")
     md_sub = md.add_subparsers(dest="action")

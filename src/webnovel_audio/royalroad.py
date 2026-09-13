@@ -40,6 +40,16 @@ class ChapterRef:
     url: str
     published_at: str = ""
     unlocked: bool = True
+    volume_id: str = ""       # provider volumeId; "" is normal (many chapters
+                              # are in no volume at all)
+
+
+@dataclass
+class VolumeRef:
+    rr_id: str
+    title: str
+    cover_url: str = ""
+    order: int = 0
 
 
 @dataclass
@@ -52,6 +62,7 @@ class FictionInfo:
     cover_url: str = ""
     url: str = ""
     chapters: list[ChapterRef] = field(default_factory=list)
+    volumes: list[VolumeRef] = field(default_factory=list)
     provider: str = "royalroad"
     tags: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)   # "Graphic Violence", ...
@@ -261,6 +272,30 @@ def _soft(fn, default):
         return default
 
 
+def _parse_volumes(html: str) -> list[VolumeRef]:
+    """`window.volumes` -> VolumeRef list.
+
+    Authoritative JSON, same as `window.chapters`. Two things that bite a naive
+    reader, both seen in the wild: `order` is NOT contiguous (Sky Pride runs
+    1,2,3,4,6,7), and volumes are optional per chapter — Spector leaves 529 of
+    746 chapters unassigned, and plenty of fictions have no volumes at all.
+    """
+    def go():
+        raw = _extract_js_array(html, "volumes")
+        if not raw:
+            return []
+        out = []
+        for v in json.loads(raw):
+            vid = _safe_id(v.get("id"))
+            if not vid:
+                continue
+            cover = str(v.get("cover") or "")
+            out.append(VolumeRef(rr_id=vid, title=str(v.get("title", "")).strip(),
+                                 cover_url=cover, order=int(v.get("order") or 0)))
+        return sorted(out, key=lambda v: v.order)
+    return _soft(go, [])
+
+
 def _parse_tags(soup) -> list[str]:
     return _soft(lambda: [t for t in (a.get_text(strip=True)
                                       for a in soup.select(_TAG_SEL)) if t][:40], [])
@@ -327,6 +362,7 @@ def parse_fiction(html: str, url: str = "") -> FictionInfo:
                     url=f"{BASE}/fiction/{rr_id}/{slug}/chapter/{cid}/{cslug}",
                     published_at=str(c.get("date", "")),
                     unlocked=bool(c.get("isUnlocked", True)),
+                    volume_id=_safe_id(c.get("volumeId")),
                 ))
         except (json.JSONDecodeError, KeyError, TypeError, ValueError):
             chapters = []
@@ -357,4 +393,5 @@ def parse_fiction(html: str, url: str = "") -> FictionInfo:
         cover_url=cover, url=url or f"{BASE}/fiction/{rr_id}/{slug}", chapters=chapters,
         tags=_parse_tags(soup), warnings=_parse_warnings(soup),
         status=_parse_status(soup), rating=_parse_rating(soup),
+        volumes=_parse_volumes(html),
     )

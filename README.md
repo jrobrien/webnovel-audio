@@ -177,7 +177,30 @@ them first.
 | `voices list` / `voices demo` | the 28 ids / a chaptered audition file |
 
 **Delivery + misc:** `serve`, `feed <series>`, `book <series> [range]`,
-`models fetch`, `login`, `ui`.
+`retag [series]` (refresh Opus tags with no re-encode), `models fetch`,
+`login`, `ui`.
+
+### Volumes
+
+Royal Road serials often restart chapter numbering per volume, each with its own
+cover — Sky Pride has six. `window.volumes` gives an authoritative mapping and
+every chapter carries its `volumeId`, so this is modelled as an **attribute of
+the chapter**, not as separate series: one cast, one lexicon, one config, with
+volume driving display and delivery.
+
+- the chapter pane gains a **Vol** column (hidden for series without volumes)
+- the feed emits `<itunes:season>` per volume and a volume-relative
+  `<itunes:episode>`, so a chapter reads as "Volume 2, episode 16" instead of
+  "chapter 69"
+- each volume's cover is cached alongside the series cover
+- Opus tags carry `VOLUME`, `VOLUME_INDEX`, a volume-relative `TRACKNUMBER`,
+  and an `album` of `<series> — <volume>`
+
+Two things the data forces: **a chapter in no volume is normal** (authors assign
+them per chapter — Spector leaves 529 of 746 unassigned), and the position
+within a volume is *not* the author's chapter number, because an interstitial
+shifts it. Show notes therefore name the volume but never assert a chapter
+number that would contradict the title.
 
 `--json` is available on `series`, `state`, `check`, `config`, and the pipeline
 verbs; `sync`/`fetch`/`render` stream one JSON event per line. Only one
@@ -297,6 +320,7 @@ Per-series overrides: drop `data/series/<slug>.toml` (any `config.toml` section)
 | `NNN-<slug>.opus` | mastered mono Opus, −19 LUFS, tagged |
 | `NNN-<slug>.md` | readable story text — decoys removed, structure recovered (`#` / `* * *` / `> ` / `[Handle: …]`), italics → `*…*`, **before** spoken-form rewriting; YAML front-matter with `source`, IDs, fetch time, a SHA-256 of the raw HTML |
 | `NNN-<slug>.segments.json` | the internal narration script (voice/style/pause per line) |
+| `cover-v<id>.jpg` | per-volume cover art, when the fiction has volumes |
 | `.raw/<id>.html` | the raw fetched page (provenance; re-fetched if deleted) |
 
 `pandoc library/<slug>/*.md -o book.epub` works today.
