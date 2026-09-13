@@ -129,6 +129,11 @@ proc refresh_chapters {} {
         .bl.tv tag configure $tag -foreground $col
     }
     foreach id $keep { if {[.bl.tv exists $id]} { .bl.tv selection add $id } }
+    set cols {n title status dur}
+    foreach id [.bl.tv children {}] {
+        if {[.bl.tv set $id note] ne ""} { lappend cols note ; break }
+    }
+    .bl.tv configure -displaycolumns $cols
     status "$::SERIES — [llength [.bl.tv children {}]] chapters"
 }
 
@@ -610,10 +615,11 @@ grid columnconfigure . 0 -weight 1
 ttk::frame .top
 ttk::treeview .top.tv -columns {title status rendered pending err next} \
     -show headings -selectmode browse -yscrollcommand {.top.sb set}
-foreach {c t w a} {title Title 300 w  status Status 90 center  rendered Rendered 80 center
-                   pending Pending 80 center  err Err 50 center  next "Next up" 280 w} {
+foreach {c t w a s} {title Title 300 w 1   status Status 90 center 0
+                     rendered Rendered 80 center 0   pending Pending 80 center 0
+                     err Err 50 center 0   next "Next up" 280 w 1} {
     .top.tv heading $c -text $t
-    .top.tv column $c -width $w -anchor $a
+    .top.tv column $c -width $w -anchor $a -stretch $s
 }
 ttk::scrollbar .top.sb -orient vertical -command {.top.tv yview}
 grid .top.tv .top.sb -sticky nsew
@@ -629,11 +635,15 @@ ttk::panedwindow .bot -orient horizontal
 ttk::frame .bl
 ttk::treeview .bl.tv -columns {n title status dur note} -show headings \
     -selectmode extended -yscrollcommand {.bl.sb set}
-foreach {c t w a} {n "#" 55 center  title Title 330 w  status Stage 85 center
-                   dur Audio 65 center  note "" 200 w} {
+foreach {c t w a s} {n "#" 55 center 0   title Title 380 w 1   status Stage 85 center 0
+                     dur Audio 65 center 0   note Note 260 w 0} {
     .bl.tv heading $c -text $t
-    .bl.tv column $c -width $w -anchor $a
+    .bl.tv column $c -width $w -anchor $a -stretch $s
 }
+;# Note only carries the error stage/message, so it's empty for a healthy
+;# series — hide it entirely rather than leaving a blank column soaking up the
+;# width. -displaycolumns is re-set by refresh_chapters.
+.bl.tv configure -displaycolumns {n title status dur}
 ttk::scrollbar .bl.sb -orient vertical -command {.bl.tv yview}
 grid .bl.tv .bl.sb -sticky nsew
 grid rowconfigure .bl 0 -weight 1
