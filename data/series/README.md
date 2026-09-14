@@ -1,9 +1,15 @@
 # Per-series config overlays
 
-Drop `<series-slug>.toml` here and `sync` merges it over `config.toml` for that
-series only. Same sections as `config.toml`; only the keys you set change.
+> **Moved.** These now live in the series bundle as
+> `library/<slug>/config.toml`, not here — see "Where a series lives" in the
+> README. `webnovel-audio series path <slug>` prints the directory, and
+> `series migrate` moves a pre-bundle tree into the layout. Everything below
+> still describes the file's *contents*, which are unchanged.
 
-`webnovel-audio series add` writes a starter file here, pinning the *resolved*
+`sync` merges this file over `config.toml` for that series only. Same sections
+as `config.toml`; only the keys you set change.
+
+`webnovel-audio series add` writes a starter file, pinning the *resolved*
 voices so the series keeps sounding the same if you retune the global defaults
 later. `webnovel-audio cast update <slug> <range>` then fills in
 `[cast.voices]`, one line per detected speaker, commented with its line count

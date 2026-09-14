@@ -684,7 +684,7 @@ ttk::frame .top
 ttk::treeview .top.tv -columns {title sync status rendered pending err next} \
     -show headings -selectmode browse -yscrollcommand {.top.sb set}
 foreach {c t w a s} {title Title 280 w 1   sync Sync 70 center 0
-                     status Status 85 center 0   rendered Rendered 80 center 0
+                     status Status 105 center 0   rendered Rendered 80 center 0
                      pending Pending 80 center 0   err Err 50 center 0
                      next "Next up" 260 w 1} {
     .top.tv heading $c -text $t

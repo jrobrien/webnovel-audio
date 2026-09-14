@@ -85,12 +85,12 @@ flowchart TD
     MD --> CK["check &lt;target&gt; [range]"]
     CK --> REP{{"report — writes nothing<br/>cast · heteronyms · unknown names"}}
     REP --> AP["cast update &lt;slug&gt; [range]<br/>lex add · lex ignore"]
-    AP --> CFG[/"data/series/&lt;slug&gt;.toml<br/>data/lexicons/&lt;slug&gt;.csv"/]
+    AP --> CFG[/"&lt;bundle&gt;/config.toml<br/>&lt;bundle&gt;/lexicon.csv"/]
     CFG --> ED["cast edit · lex edit<br/>pron · voices demo"]
     ED --> R["render &lt;target&gt; [range]"]
     MD --> R
     R --> OP[/"NNN-slug.opus<br/>+ NNN-slug.segments.json"/]
-    OP --> D["serve · feed · book"]
+    OP --> D["serve · feed · book · archive"]
     D -.->|"hear a problem"| ED
     ED -.->|"render &lt;slug&gt; &lt;range&gt;"| R
 ```
@@ -99,9 +99,9 @@ flowchart TD
 |---|---|---|---|
 | `series add` | one page | yes | DB rows |
 | `fetch` | ~2.5 s (politeness delay, not work) | **yes** | `.raw/<id>.html` |
-| `parse` | ~30 ms | no | `NNN-slug.md` |
+| `parse` | ~30 ms | no | `chapters/NNN-slug.md` |
 | `check` | ~50 ms | no | nothing — report only (`cast update` / `lex add` apply) |
-| `render` | **~40 s per 3.6 min of audio** (88% TTS, 12% loudness) | no | `NNN-slug.opus` |
+| `render` | **~40 s per 3.6 min of audio** (88% TTS, 12% loudness) | no | `chapters/NNN-slug.opus` |
 
 `sync` is just `series refresh` + `render` with an implicit range, over every
 enabled series — the daily driver, not a special code path.
@@ -150,8 +150,26 @@ them first.
 | `series list` | dashboard: per-stage counts, what's next, errors |
 | `series show <slug>` | one series in detail |
 | `series enable\|disable <slug>` | include / exclude from `sync` — the UI calls this Pause/Resume |
-| `series refresh [slug]` | re-fetch chapter lists |
-| `series forget <slug> [--purge]` | untrack; `--purge` also deletes rendered files |
+| `series refresh [slug]` | re-fetch chapter lists **and series metadata** (tags, rating, status) |
+| `series forget <slug> [--purge]` | untrack; `--purge` deletes the whole bundle — audio, text, raw and cache |
+| `series path <slug>` | print the bundle directory, bare — `cd "$(… series path x)"` |
+| `series archive <slug> [-o F]` | tar the bundle; `--with-cache` to include `.cache/` |
+| `series import <path>` \| `series scan [root]` | adopt a bundle / re-locate moved ones |
+| `series export [slug]` | rewrite `manifest.toml` + `state.json` now |
+| `series migrate [slug]` | move a pre-bundle series into the layout |
+| `series reclaim` | drop shared-cache links now duplicated inside bundles |
+
+**Cache** — the synthesized-segment store (see [Segment cache](#segment-cache)):
+
+| command | what |
+|---|---|
+| `cache status [slug]` | size, generations, per-series totals, what's reclaimable |
+| `cache compact [slug]` | re-encode float32 wav → FLAC under the current generation |
+| `cache prune [slug]` | delete unreachable entries; `--stale` drops old generations |
+| `cache clear [slug]` | delete everything, reachable or not — quotes the CPU cost first |
+
+`prune` and `clear` need explicit consent: `-y`, or "yes" at a terminal.
+`--json` does **not** imply it. `-n` previews.
 
 **State** (plumbing — the chapter state machine, by hand):
 
@@ -179,7 +197,7 @@ them first.
 
 **Delivery + misc:** `serve`, `feed <series>`, `book <series> [range]`,
 `retag [series]` (refresh Opus tags with no re-encode), `schema` (the command
-surface as JSON), `models fetch`, `login`, `ui`.
+surface as JSON), `models fetch|path`, `login`, `ui`.
 
 ### Driving it from a script or an agent
 
@@ -284,17 +302,7 @@ uv run webnovel-audio ui        # or: wish ui/control.tcl
 A Tcl/Tk front end laid out like **gitk** — series across the top, chapters
 bottom-left, a notebook bottom-right:
 
-```
-┌ series ──────────────────────────────────────────────────────┐
-│ Title            Status   Rendered  Pending  Err  Next up    │
-├ chapters ──────────────────┬ Cast │ Lexicon │ Log ───────────┤
-│ 33  …      rendered   14m  │ [cast.voices]                   │
-│ 34  …      rendered   13m  │ "Tian" = "am_michael"           │
-│ 35  …      error       —   │              [Save][Reload][↗]  │
-├────────────────────────────┴─────────────────────────────────┤
-│ rendering #35 (4/10) · server :8080                          │
-└──────────────────────────────────────────────────────────────┘
-```
+![the control UI](docs/img/ui.png)
 
 Select chapters (shift/ctrl for ranges and scattered picks) and **right-click**
 to **Play** the chapter, run `fetch` / `parse` / `check` / `render` over exactly
@@ -304,7 +312,7 @@ Playback uses `$WEBNOVEL_AUDIO_PLAYER` (e.g. `mpv --no-video`) if set, else
 picking 1, 2, 3, 7, 20, 21 runs `render <slug> 1-3,7,20-21`.
 
 **Sync…** shows a live CPU estimate before it starts. The Cast and Lexicon tabs
-edit `data/series/<slug>.toml` and `data/lexicons/<slug>.csv` in place, with an
+edit the bundle's `config.toml` and `lexicon.csv` in place, with an
 mtime check so a file that `cast update` changed underneath is never silently
 clobbered; **Open in $EDITOR** hands off to `$WEBNOVEL_AUDIO_EDITOR` / `$VISUAL`
 / `$EDITOR` when you want real editing. The feed **server** starts and stops
@@ -326,23 +334,90 @@ plain `.txt` is passed through as-is. A new site (webnovel.com, an mbox, …) is
 audio, the readable `.md`, the feed, `.m4b` — is provider-agnostic. Contract and
 sketches: [`docs/PROVIDERS.md`](docs/PROVIDERS.md).
 
-Per-series overrides: drop `data/series/<slug>.toml` (any `config.toml` section) and `sync` merges it over the base config for that series — see [`data/series/README.md`](data/series/README.md).
+Per-series overrides live in the bundle: `library/<slug>/config.toml` takes any
+`config.toml` section and is merged over the base config for that series.
 
 ## How it works
 
-### Per-chapter outputs
+### Where a series lives
 
-`sync` (and `render` on HTML/URL) writes into `library/<slug>/`:
+Everything about one series is **one directory** — its *bundle*. Move it, tar it,
+park it on a slow disk, or `rm -rf` it; nothing else needs updating.
+
+```
+library/sky-pride/                  ← the bundle (relocatable)
+├── manifest.toml         identity + provenance      machine-written
+├── state.json            per-chapter state export   machine-written
+├── config.toml           voices, cast, DSP          hand-edited
+├── lexicon.csv           pronunciations             hand-edited
+├── chapters/
+│   ├── 069-….md              readable story text
+│   ├── 069-….opus            mastered mono Opus, −19 LUFS, tagged
+│   └── 069-….segments.json   the narration script (voice/style/pause per line)
+├── covers/
+│   ├── cover.jpg
+│   └── cover-v10397.jpg      per-volume art, when the fiction has volumes
+├── .raw/<id>.html        the fetched page (provenance; re-fetched if deleted)
+└── .cache/<backend>/<fingerprint>/<sha1>.flac      synthesized segments
+```
+
+The three hand-edited/machine-written files are split by **who writes them**:
+`config.toml` and `lexicon.csv` are yours (and `cast set` / `lex add` rewrite
+them in place, preserving comments); `manifest.toml` and `state.json` are
+rewritten on every sync, so hand edits there are lost.
 
 | file | |
 |---|---|
-| `NNN-<slug>.opus` | mastered mono Opus, −19 LUFS, tagged |
-| `NNN-<slug>.md` | readable story text — decoys removed, structure recovered (`#` / `* * *` / `> ` / `[Handle: …]`), italics → `*…*`, **before** spoken-form rewriting; YAML front-matter with `source`, IDs, fetch time, a SHA-256 of the raw HTML |
-| `NNN-<slug>.segments.json` | the internal narration script (voice/style/pause per line) |
-| `cover-v<id>.jpg` | per-volume cover art, when the fiction has volumes |
-| `.raw/<id>.html` | the raw fetched page (provenance; re-fetched if deleted) |
+| `chapters/NNN-….md` | readable story text — decoys removed, structure recovered (`#` / `* * *` / `> ` / `[Handle: …]`), italics → `*…*`, **before** spoken-form rewriting; YAML front-matter with `source`, IDs, fetch time, a SHA-256 of the raw HTML |
+| `manifest.toml` | uuid, provider + source URL, and hashes of the base lexicon/config it was rendered against |
+| `state.json` | every chapter row, paths bundle-relative — this is what makes `series import` exact, including render timings a file scan could never recover |
 
-`pandoc library/<slug>/*.md -o book.epub` works today.
+`pandoc library/<slug>/chapters/*.md -o book.epub` works today.
+
+**Not in the bundle**, deliberately:
+
+| | |
+|---|---|
+| `~/.local/state/webnovel-audio/state.db` | the operational index across all series. Rebuildable: `series scan` replays every bundle's `state.json` into a fresh one |
+| `config.toml` | base config, in the working directory (`-c` for another) |
+| `data/lexicons/_base.csv` | always-on respellings, applied under every series |
+| `~/.cache/webnovel-audio/` | the Kokoro model + voice weights (~400 MB, shared) |
+
+### Moving, archiving, deleting
+
+```sh
+webnovel-audio series path sky-pride                # where is it?
+mv library/sky-pride /mnt/big/ && webnovel-audio series scan /mnt/big
+webnovel-audio series archive sky-pride -o sp.tar.zst   # cache excluded
+webnovel-audio series forget sky-pride --purge      # bundle and all
+```
+
+A bundle that has gone missing is a **supported state**, not an error —
+`rm -rf` on a series directory is a legitimate way to reclaim space in a hurry.
+`series list` marks it, `series scan` reports it, and nothing infers a deletion
+from absence: an unplugged drive must never look like a decision. Restoring is
+`tar xf` plus `series scan`.
+
+### Segment cache
+
+Every synthesized segment is cached under
+`.cache/<backend>/<fingerprint>/<sha1>.flac`, keyed on
+`text|voice|style|rate|pitch|sample_rate` — post-lexicon, so a pronunciation fix
+invalidates exactly the lines that changed and nothing else. Re-rendering 38
+chapters after one lexicon edit re-synthesized 31 of 7,850 segments and ran
+**7.8× faster** than the original pass.
+
+`<fingerprint>` is a short hash of the model bytes, the voice embeddings, the
+language, and the g2p chain (espeak-ng / phonemizer / kokoro-onnx versions). It
+exists because those change the audio *without* changing the cache key — an
+`espeakng-loader` bump can re-phonemize the whole library with no model change
+and no visible signal. A bump starts a new generation instead of silently
+reusing the old model's audio; `chapters.synth_fingerprint` and the
+`SYNTH_MODEL` Opus tag record which generation made each file, and
+`cache status` warns when one series spans two.
+
+Segments are FLAC/PCM_16 — about 29% of the float32 they replaced, with a
+−96 dBFS error floor far below what the ~48 kbps Opus encode contributes.
 
 ### Internal monologue
 
@@ -362,7 +437,7 @@ rules-only and deterministic — it gets tags, pronoun tags, volleys and untagge
 continuations right, and mis-assigns the occasional oddly-phrased line, which you
 fix in the cast map.
 
-`series add` writes `data/series/<slug>.toml` immediately, pinning the
+`series add` writes the bundle's `config.toml` immediately, pinning the
 **resolved** voices — narrator, thought, dialogue default, system, chat pool.
 That's deliberate: global defaults get retuned as you start new series, and
 without a pin, re-rendering chapter 12 of an old one would come out in a
@@ -395,7 +470,7 @@ made; an empty value reads as unfinished.
   the list shrinks toward zero. Bulk-dumping candidates into the CSV was worse
   than nothing — a spell-checker's allowlist, not a to-do list.
 
-To pick voice ids by ear, `webnovel-audio voices --demo -o voices.opus` renders
+To pick voice ids by ear, `webnovel-audio voices demo -o voices.opus` renders
 one file that says each id then reads a sample paragraph in it (`--only a,b,c`
 for a shortlist, `--pause MS` for the gap). It's chaptered one-per-voice — in mpv
 jump with PgUp/PgDn (the voice id shows on the OSD), or `mpv --start='#5' …`.
@@ -422,7 +497,7 @@ don't — use `book` for a `.m4b`.
 `config.toml` (copy from `config.example.toml`, auto-detected in the working
 directory; `-c` for a different one):
 
-`[general]` `base_lexicon` (always-on) + `lexicon` / per-series-config paths · `[voices]` fallback voices · `[cast]` + `[cast.voices]`
+`[general]` `base_lexicon` (always-on) + cache/model paths · `[voices]` fallback voices · `[cast]` + `[cast.voices]`
 per-series casting (`seed_chapters` = `check`'s default sample window) · `[chat]` livestream-chat behaviour · `[synth]`
 (`thought_threshold`, `system_rate`) · `[pauses]` · `[audio]` loudness ·
 `[dsp.*]` effect chains keyed by speaker / voice / style · `[royalroad]`
@@ -432,9 +507,26 @@ per-series casting (`seed_chapters` = `check`'s default sample window) · `[chat
 ## Development
 
 ```sh
-uv run pytest -q            # ~84 tests, fully offline
+uv run pytest -q            # ~200 tests, fully offline
 uv run python -m compileall -q src/
 ```
+
+Regenerating `docs/img/ui.png` (Hyprland): let the window **map at its final
+size** and capture it without touching the geometry afterwards —
+
+```sh
+printf 'main 1600x1000+0+0\ntopheight 120\nbotwidth 690\nlimit 10\n' \
+    > ~/.config/webnovel-audio/ui.conf     # back yours up first
+uv run webnovel-audio ui &
+sleep 6
+read X Y W H < <(hyprctl clients -j | jq -r '.[]|select(.class=="Control.tcl")|"\(.at[0]) \(.at[1]) \(.size[0]) \(.size[1])"')
+grim -g "$X,$Y ${W}x${H}" docs/img/ui.png
+```
+
+Resizing the window *after* it maps (floating it, `hl.dsp.window.center()`, …)
+leaves stale framebuffer in the regions Tk doesn't repaint, which shows up as
+other windows bleeding through the empty parts of a pane. Tiled is fine — `grim
+-g` crops to the window, so nothing else is in frame.
 
 Layout: `providers` (source → `ingest` Document) → `normalize` / `dialogue` /
 `segment` (blocks → narration script) → `synth/` (Kokoro or a silent `null`
