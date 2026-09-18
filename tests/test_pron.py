@@ -40,5 +40,5 @@ def test_pron_command_shows_before_and_after(tmp_path, capsys):
         text=["Graham"], config=str(cfg), series=None, no_lexicon=False, check=False))
     out = capsys.readouterr().out
     assert rc == 0
-    assert "phonemes" in out and "with lexicon : gram" in out
+    assert "phonemes" in out and "with lexicon : Gram" in out
     assert "GRAM" in out                                  # the after-lexicon gloss

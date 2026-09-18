@@ -21,6 +21,14 @@ kokoro = [
     "onnxruntime>=1.18",
 ]
 
+# Optional POS tagger for heteronyms (`read` past vs present, CON-tent vs
+# con-TENT). Without it espeak decides and nothing else changes; see
+# docs/plans/heteronym-disambiguation.md. `tagger install` does this for you
+# and also fetches the model, which is not a PyPI package.
+spacy = [
+    "spacy>=3.8",
+]
+
 [project.scripts]
 webnovel-audio = "webnovel_audio.cli:main"
 

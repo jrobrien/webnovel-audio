@@ -99,8 +99,15 @@ def _emit(out: list[tuple[str, int, int]], src: str, start: int, end: int) -> No
     out.append((stripped.replace(_ABBREV_MARK, "."), a, a + len(stripped)))
 
 
-def _finish(text: str, lexicon) -> str:
-    return lexicon.apply(text) if lexicon is not None else text
+def _finish(text: str, lexicon, nlp=None) -> str:
+    """Rewrite one sentence into what the TTS should actually say.
+
+    One table, one pass: `Lexicon.apply` resolves phrases, part-of-speech rules
+    and plain rules together, most specific first, so there is no ordering
+    question between "the lexicon" and "the tagger" any more — they are the
+    same thing.
+    """
+    return lexicon.apply(text, nlp) if lexicon is not None else text
 
 
 def _voice_for(line, cfg) -> tuple[str, str]:
@@ -136,7 +143,7 @@ def _assign_chat_voice(user: str, cfg, assigned: dict[str, str]) -> str:
     return pick
 
 
-def build_segments(blocks: list[Block], cfg, lexicon=None) -> list[Segment]:
+def build_segments(blocks: list[Block], cfg, lexicon=None, nlp=None) -> list[Segment]:
     from .dialogue import Attributor, split_paragraph
 
     attr = Attributor(cfg)
@@ -162,7 +169,7 @@ def build_segments(blocks: list[Block], cfg, lexicon=None) -> list[Segment]:
                 if cfg.chat.speak_location and location:
                     lead = f"{lead}, from {location}"
                 if lead:
-                    segs.append(Segment(text=_finish(lead, lexicon), voice=voice,
+                    segs.append(Segment(text=_finish(lead, lexicon, nlp), voice=voice,
                                         style="chat", speaker=user, rate=crate,
                                         pause_after_ms=160))
             seen_chat.add(user)
@@ -170,7 +177,7 @@ def build_segments(blocks: list[Block], cfg, lexicon=None) -> list[Segment]:
             msg = normalize_chat_message(block.text, dampen_caps=cfg.chat.dampen_caps)
             sentences = split_sentences(msg) or ([msg] if msg else [])
             for i, sent in enumerate(sentences):
-                text = _finish(sent, lexicon)
+                text = _finish(sent, lexicon, nlp)
                 if not text:
                     continue
                 last = i == len(sentences) - 1
@@ -188,8 +195,8 @@ def build_segments(blocks: list[Block], cfg, lexicon=None) -> list[Segment]:
             continue
 
         if block.kind == "heading":
-            text = _finish(normalize_heading(block.text), lexicon)
-            fic = _finish(normalize_text(block.meta.get("fiction", "")), lexicon).strip(" .")
+            text = _finish(normalize_heading(block.text), lexicon, nlp)
+            fic = _finish(normalize_text(block.meta.get("fiction", "")), lexicon, nlp).strip(" .")
             if fic and text:
                 text = f"{fic}. {text}"          # "Salvage Run. Chapter One. Dead Air."
             if text and text[-1] not in ".!?…":
@@ -206,7 +213,7 @@ def build_segments(blocks: list[Block], cfg, lexicon=None) -> list[Segment]:
                 normalize_system(block.text)
             ]
             for sent in sentences:
-                text = _finish(sent, lexicon)
+                text = _finish(sent, lexicon, nlp)
                 if not text:
                     continue
                 segs.append(Segment(
@@ -220,7 +227,7 @@ def build_segments(blocks: list[Block], cfg, lexicon=None) -> list[Segment]:
 
         # paragraph: quote splitting + speaker attribution + italic -> thought
         for line in split_paragraph(block, attr, cfg):
-            text = _finish(normalize_text(line.text), lexicon)
+            text = _finish(normalize_text(line.text), lexicon, nlp)
             if not text:
                 continue
             voice, style = _voice_for(line, cfg)

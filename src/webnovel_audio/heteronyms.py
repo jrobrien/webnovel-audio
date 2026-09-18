@@ -1,11 +1,12 @@
-"""Flag known heteronyms for human review — never auto-corrected.
+"""Flag heteronyms in a chapter so `check` can list them.
 
-A heteronym's pronunciation depends on meaning/part of speech ("a *tear* in
-her eye" vs. "a *tear* in the fabric"), which the g2p can't reliably resolve
-from spelling alone. There's no safe blanket lexicon fix for one of these —
-the right reading changes occurrence to occurrence — so this only surfaces
-where they appear, with a bit of context, for you to judge by ear. Add or
-remove words freely; it's a plain set.
+A heteronym's reading depends on grammar or meaning ("a *tear* in her eye" vs.
+"a *tear* in the fabric"), which spelling alone cannot settle. The ones that
+turn on grammar are handled automatically now — `lexicon.py` resolves a rule
+against the part of speech, and `check` marks those `[tagger]`. This list is
+the wider net: it surfaces every known heteronym with a bit of context, so the
+ones that turn on *meaning* still reach your ear. Add or remove words freely;
+it is a plain set.
 """
 from __future__ import annotations
 

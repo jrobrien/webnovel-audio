@@ -1,20 +1,68 @@
-surface,respell,ipa,notes
-Montgomery,mahnt-gum-uh-ree,,"en-us g2p says ""mahnt-GAH-mer-ee""; classic American is mont-GUM-uh-ree"
-Eleanor,ell-uh-nor,,"en-us g2p says ""uh-LEE-ner""; wanted ELL-uh-nor"
-Graham,gram,,"g2p reads as two syllables ""gray-um""; American standard is one syllable rhyming with ""ram"""
-Joaquin,wah-keen,,"g2p reads as ""joh-kwin""; wanted the Spanish-American ""wah-KEEN"""
-chi,chee,,"g2p reads as ""kai"" (the Greek letter); wanted for the martial-arts life-force term"
-Chi,Chee,,capitalized form (sentence-initial) of the above
-qi,chee,,"g2p reads as ""kai""; same life-force term, pinyin spelling"
-Qi,Chee,,capitalized form (sentence-initial) of the above
-live music,lyve music,,adjective sense /laɪv/ — general English heteronym
-live wire,lyve wire,,adjective sense /laɪv/ — general English heteronym
-live stream,lyve stream,,adjective sense /laɪv/ — general English heteronym
-live show,lyve show,,adjective sense /laɪv/ — general English heteronym
-live broadcast,lyve broadcast,,adjective sense /laɪv/ — general English heteronym
-live audience,lyve audience,,adjective sense /laɪv/ — general English heteronym
-live television,lyve television,,adjective sense /laɪv/ — general English heteronym
-live chat,lyve chat,,adjective sense /laɪv/ — general English heteronym
-live feed,lyve feed,,adjective sense /laɪv/ — general English heteronym
-live action,lyve action,,adjective sense /laɪv/ — general English heteronym
-live recording,lyve recording,,adjective sense /laɪv/ — general English heteronym
+# Always-on pronunciation rules. A per-series lexicon.csv beats these.
+#
+#   surface   the word or phrase as it appears (case-insensitive)
+#   pos       when it applies: blank = always; else a spaCy POS (NOUN VERB
+#             ADJ ...), a Penn tag (VBD VBN ...), or TAG+lemma. Most
+#             specific wins; see lexicon.py for the full order.
+#   respell   plain-English respelling fed to the TTS
+#   notes     why, and what espeak says without the row
+#
+# Two kinds of row live here. Names and loanwords the g2p simply gets wrong,
+# which apply always; and heteronyms, where the reading depends on grammar and
+# the part of speech decides. Pin BOTH sides of a heteronym: leaving one side
+# to espeak is how `live` shipped as "Will he lyve?" — run
+# tools/audit_heteronym_rules.py to find any that are still one-sided.
+#
+# `d=` in the notes is edit distance to the reference pronunciation in Google's
+# WikipediaHomographData, 0 being exact.
+#
+# Deliberately absent: `lead` `bass` `row` `tear` `bow` and the other readings
+# that split on meaning rather than grammar. A tag cannot choose those; pin
+# them per series with a phrase, e.g.  a tear in,,a tair in
+surface,pos,respell,notes
+
+# --- names and loanwords -------------------------------------------
+Montgomery,,mahnt-gum-uh-ree,"en-us g2p says ""mahnt-GAH-mer-ee""; classic American is mont-GUM-uh-ree"
+Eleanor,,ell-uh-nor,"en-us g2p says ""uh-LEE-ner""; wanted ELL-uh-nor"
+Graham,,gram,"g2p reads as two syllables ""gray-um""; American standard is one syllable rhyming with ""ram"""
+Joaquin,,wah-keen,"g2p reads as ""joh-kwin""; wanted the Spanish-American ""wah-KEEN"""
+chi,,chee,"g2p reads as ""kai"" (the Greek letter); the martial-arts life-force term. Capitalization is carried, so no separate Chi row"
+qi,,chee,"g2p reads as ""kai""; same life-force term, pinyin spelling"
+
+# --- heteronyms: grammar decides -----------------------------------
+read,VBD,red,past tense; espeak says /riːd/ ~64% of the time. d=0
+read,VBN,red,past participle; same failure. d=0
+wound,VBD+wind,wownd,"past of wind, not an injury; needs the lemma. d=0"
+wound,VBN+wind,wownd,as above. d=0
+import,NOUN,im-port,noun stress IM-port; espeak always says im-PORT. d=0
+combine,NOUN,kom-bine,the harvester; espeak always says kom-BINE. d=0
+contrast,NOUN,kon-trast,noun stress; espeak is fixed on the verb. d=0
+compress,NOUN,kom-press,the dressing; espeak is fixed on the verb. d=0
+insult,NOUN,insult,noun stress IN-sult. d=0
+decrease,NOUN,deecreess,"noun stress DEE-creess, and /s/ not /z/. d=0"
+compact,NOUN,kompakt,KOM-pact the case/agreement; espeak says kom-PACT. d=0
+compact,ADJ,kompakt,KOM-pact as a modifier. d=0
+excuse,NOUN,exkewss,"noun takes /s/, verb /z/. d=1"
+incline,NOUN,innkline,noun stress IN-cline. d=1
+entrance,VERB,intranss,"to enchant, en-TRANCE; espeak is fixed on the noun. d=1"
+minute,ADJ,my-newt,"tiny, not sixty seconds. d=0"
+live,ADJ,lyve,/laɪv/; supersedes the hand-written `live X` rows in _base.csv. d=0
+live,VERB,liv,"/lɪv/. espeak gets the plain verb right but flips to /laɪv/ under subject-auxiliary inversion (\Will he live?\"")"
+advocate,NOUN,advokit,-ate reduces to /ət/ in the noun. d=1
+subject,NOUN,subjekt,noun stress SUB-ject. d=2
+discount,NOUN,dis-kount,noun stress DIS-count. d=2
+separate,NOUN,seprit,-ate reduction. d=2
+separate,ADJ,seprit,-ate reduction. d=2
+moderate,NOUN,moderit,-ate reduction. d=2
+moderate,ADJ,moderit,-ate reduction. d=2
+duplicate,NOUN,dooplikit,-ate reduction. d=2
+duplicate,ADJ,dooplikit,-ate reduction. d=2
+estimate,NOUN,estimit,-ate reduction. d=2
+delegate,NOUN,delegit,-ate reduction; espeak hardens the g slightly. d=3
+graduate,NOUN,grajooit,-ate reduction. d=3
+excuse,VERB,exkewz,verb takes /z/; espeak used the noun's /s/ in all 7 library uses
+insult,VERB,in-sult,verb stress in-SULT; espeak used the noun's IN-sult
+estimate,VERB,estimayt,full /eɪt/ in the verb; espeak reduced it to /ət/ 1 use in 4
+moderate,VERB,moderayt,full /eɪt/ in the verb; espeak reduced it 1 use in 2
+subject,VERB,sub-jekt,"verb stresses the second syllable. Partial: espeak will not leave the first unstressed, so this adds stress rather than moving it"
+contrast,VERB,cun-trast,"verb reduces the first vowel to schwa. Partial, as above, but the vowel is right"

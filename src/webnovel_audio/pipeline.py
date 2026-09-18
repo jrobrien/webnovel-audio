@@ -139,12 +139,30 @@ def _load_lexicon(cfg: Config) -> Lexicon | None:
     if not paths:
         return None
     lex = Lexicon.load_many(paths)
-    return lex if lex.entries else None
+    return lex if lex.rules else None
+
+
+def _load_nlp(cfg: Config):
+    """The POS tagger the pronunciation rules are resolved against.
+
+    Required: without it espeak decides heteronyms itself and gets them wrong
+    more often than always guessing the commoner reading would. Failing here
+    with a fix is better than silently shipping "Will he lyve?".
+    """
+    from . import tagger
+
+    model = getattr(cfg.general, "tagger", "") or tagger.DEFAULT_MODEL
+    nlp = tagger.load(model)
+    if nlp is None:
+        raise SystemExit(
+            f"the POS tagger ({model}) is not installed, and pronunciation "
+            f"rules need it.\n  install it with: webnovel-audio tagger install")
+    return nlp
 
 
 def build_script(source: str, cfg: Config):
     blocks, meta, doc = load_document(source, cfg)
-    segs = build_segments(blocks, cfg, _load_lexicon(cfg))
+    segs = build_segments(blocks, cfg, _load_lexicon(cfg), _load_nlp(cfg))
     return blocks, segs, meta, doc
 
 

@@ -30,7 +30,8 @@ llama.cpp annotation model. Not realtime, and that's fine.
 
 ```
 fetch (RoyalRoad) → clean/structure → normalize (LitRPG-aware) → annotate
-(BookNLP speakers + LLM tone + thought detection) → apply per-series lexicon →
+(BookNLP speakers + LLM tone + thought detection) → POS-tag + resolve
+pronunciation rules →
 segment script (JSON) → synthesize (cache per segment) → per-voice DSP +
 2-pass loudnorm → assemble → Opus / chapter-marked M4B → deliver (local podcast
 RSS feed the phone subscribes to)
@@ -51,10 +52,12 @@ RSS feed the phone subscribes to)
   a distinct, consistent `thought` voice (or narrator + intimacy DSP chain).
 - **Speaker attribution**: BookNLP + light LLM → per-character casting from a
   voice bank; LitRPG status boxes → a flatter `system_ui` voice.
-- **Per-series lexicon**: `surface → respelling` (+ optional IPA). Two layers —
-  an always-on `data/lexicons/_base.csv` (names the g2p mangles everywhere) with
-  `data/lexicons/<slug>.csv` stacked on top. Seed with `lexicon --write`, correct
-  by ear once (`pron` shows phonemes + a rough gloss, before/after), cached forever.
+- **Pronunciation rules**: one table, `surface,pos,respell,notes`, covering both
+  names the g2p mangles (`Montgomery`) and heteronyms grammar decides
+  (`live`/VERB against `live`/ADJ). Two layers — an always-on
+  `data/lexicons/_base.csv` with `<bundle>/lexicon.csv` stacked on top. Seed
+  from `check`, correct by ear once (`pron` shows phonemes + a rough gloss,
+  before/after), cached forever. See "Resolving a pronunciation" below.
 - **Headings**: `"<Series>. Chapter N. <Title>"`, forced to end in sentence
   punctuation — Kokoro clips the final word of an unterminated line.
 
@@ -169,8 +172,9 @@ dropped — with the CLI and data model settled, wiring a timer later is trivial
   speakers not already mapped (`_append_cast_voices` splices into the existing
   `[cast.voices]` table, leaving everything else in the file byte-identical), so
   a curated cast survives. The same pass reports `heteronyms.find_heteronyms`
-  hits with context — never auto-corrected, since the right reading changes per
-  sentence; a multi-word lexicon surface (`a tear in`) pins one where it matters.
+  hits with context, marking `[tagger]` on the ones a part-of-speech rule
+  already decides. What is left turns on *meaning* rather than grammar, which no
+  tag can settle — a multi-word surface (`a tear in`) pins those where it matters.
   Entirely best-effort: any fetch/parse/write failure is logged, never raised.
 
 ## Royal Road ingest notes
@@ -261,9 +265,50 @@ table, `[dsp.*]` merges per key. `_series_cfg` applies the auto per-series lexic
 first, then the overlay (which can still override `[general] lexicon`).
 
 Lexicons stack: `pipeline._load_lexicon` loads `[general] base_lexicon`
-(`data/lexicons/_base.csv` — standard names the g2p mangles) then the per-series
-CSV via `Lexicon.load_many`, so a per-series row overrides the base for the same
-`surface`. `inspect` / `lexicon --write` treat base entries as already-known.
+(`data/lexicons/_base.csv`) then the per-series CSV via `Lexicon.load_many`. The
+merge key is `(surface, pos, lemma)`, so a series can refine *one* part of
+speech without disturbing the others. `check` treats base rows as already-known.
+
+## Resolving a pronunciation
+
+There used to be two systems here — a literal find-and-replace lexicon and a
+separate POS-keyed heteronym table, applied in sequence with the lexicon barred
+from spans the tagger had touched. Two formats, two precedence rules, and a
+failure mode: a word pinned for one part of speech and left to espeak for the
+others. `live` shipped as "Will he lyve?" exactly that way.
+
+One table now, one pass, most specific first:
+
+```mermaid
+flowchart TD
+    T["sentence"] --> N["spaCy tag<br/>pos · tag · lemma"]
+    N --> M{"rules for this<br/>word or phrase?"}
+    M -->|no| K["leave it — espeak decides"]
+    M -->|yes| S1{"multi-word phrase?"}
+    S1 -->|yes| A["apply — phrases ignore pos"]
+    S1 -->|no| S2{"fine tag + lemma?<br/>wound/VBD+wind"}
+    S2 -->|match| A
+    S2 -->|no| S3{"fine tag?<br/>read/VBD"}
+    S3 -->|match| A
+    S3 -->|no| S4{"coarse POS?<br/>live/VERB"}
+    S4 -->|match| A
+    S4 -->|no| S5{"rule with no pos?"}
+    S5 -->|yes| A
+    S5 -->|no| S6{"tagged ADJ/ADV/NUM<br/>and exactly one noun rule?"}
+    S6 -->|yes| A
+    S6 -->|no| K
+```
+
+An empty `pos` is the default reading — what applies when no part-of-speech
+rule is more specific. Pin **both** sides of a heteronym, or espeak decides the
+rest; `tools/audit_heteronym_rules.py` finds any that are still one-sided by
+measuring espeak against the real corpus, since a static check cannot tell a
+deliberate omission from an oversight.
+
+Tagging is **required**: `pipeline._load_nlp` exits with the install command
+rather than let espeak guess. Measured on Google's WikipediaHomographData,
+espeak alone scores 74.4% against an 84.8% majority-class baseline — worse than
+a constant lookup table — and tagging lifts it to ~96%.
 
 ## Buffering note
 

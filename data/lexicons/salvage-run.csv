@@ -1,7 +1,28 @@
-surface,respell,ipa,notes
-Veketh,Veh-keth,,"VEH-keth — stress the first syllable"
-Resk,Resk,,rhymes with 'desk'; here only as a no-op example row
-Corvid,Korvid,,"KOR-vid (the derelict, the Corvid Anselm)"
-Anselm,An-selm,,AN-selm
-Ceres,Seer-eez,,"SEER-eez, not 'ker-ez'"
-Kuiper,Kye-per,,KY-per
+# salvage-run — pronunciation rules for this series.
+# Hand-edited; `check salvage-run` suggests candidates. Rows here beat
+# data/lexicons/_base.csv, which is always applied underneath.
+#
+#   surface   the word or phrase as it appears (case-insensitive)
+#   pos       when to apply it: blank = always; else a spaCy POS
+#             (NOUN VERB ADJ ...), a Penn tag (VBD VBN ...), or
+#             TAG+lemma. More specific wins.
+#   respell   plain-English respelling fed to the TTS
+#   notes     free text for your own reference
+#
+# Pin one sense of a heteronym by its grammar:
+#   live,VERB,liv         'will he live?'
+#   live,ADJ,lyve         'a live branch'
+# or by context, with a phrase (phrases ignore `pos`):
+#   a tear in,,a tair in
+#
+# An empty respell means 'I listened, it reads fine' and stops
+# `check` suggesting the word again.
+#
+# Quote any field containing a comma.
+surface,pos,respell,notes
+Veketh,,Veh-keth,VEH-keth — stress the first syllable
+Resk,,Resk,rhymes with 'desk'; here only as a no-op example row
+Corvid,,Korvid,"KOR-vid (the derelict, the Corvid Anselm)"
+Anselm,,An-selm,AN-selm
+Ceres,,Seer-eez,"SEER-eez, not 'ker-ez'"
+Kuiper,,Kye-per,KY-per

@@ -287,7 +287,7 @@ def test_series_add_registers_only(tmp_path, monkeypatch):
     assert os.path.exists(lex)
     assert open(lex).read().startswith(f"# {info['slug']} —")
     from webnovel_audio.lexicon import Lexicon
-    assert Lexicon.load(lex).entries == []
+    assert Lexicon.load(lex).rules == []
     # "--from 2" is recorded per chapter, not as an invisible cutoff
     db = DB(cfg.royalroad.state_db)
     s = db.get_series("salvage-run")

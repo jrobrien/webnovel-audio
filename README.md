@@ -21,8 +21,9 @@ no GPU, no cloud, no account required.
 - **Delivery** — a localhost/LAN server with a per-series **podcast RSS feed**
   (real dates, durations, cover art, HTTP Range), or a chapterised **`.m4b`**.
 - **Faithful text handling** — anti-piracy decoy paragraphs removed, LitRPG
-  number/stat normalization, a global respelling lexicon (`Montgomery`, `Eleanor`,
-  … — names the TTS g2p gets wrong) with per-series lexicons layered on top.
+  number/stat normalization, and one pronunciation table that covers both names
+  the g2p mangles (`Montgomery`, `Eleanor`) and heteronyms the grammar decides
+  (`live`/VERB vs `live`/ADJ), with per-series rules layered on top.
 
 Built for and tuned on an AMD Ryzen 7 8745HS / Radeon 780M laptop (no CUDA).
 Rendering is not realtime — a ~2,800-word chapter is ~17 min of audio in ~3–5 min
@@ -86,9 +87,11 @@ flowchart TD
     CK --> REP{{"report — writes nothing<br/>cast · heteronyms · unknown names"}}
     REP --> AP["cast update &lt;slug&gt; [range]<br/>lex add · lex ignore"]
     AP --> CFG[/"&lt;bundle&gt;/config.toml<br/>&lt;bundle&gt;/lexicon.csv"/]
-    CFG --> ED["cast edit · lex edit<br/>pron · voices demo"]
+    CFG --> ED["cast edit · lex edit<br/>pron · tagger test · voices demo"]
     ED --> R["render &lt;target&gt; [range]"]
     MD --> R
+    LEX[/"_base.csv + &lt;bundle&gt;/lexicon.csv<br/>surface · pos · respell"/] --> R
+    TAG(["spaCy POS tagger<br/>required"]) --> R
     R --> OP[/"NNN-slug.opus<br/>+ NNN-slug.segments.json"/]
     OP --> D["serve · feed · book · archive"]
     D -.->|"hear a problem"| ED
@@ -141,6 +144,8 @@ them first.
 | `check <target> [range]` | cast / heteronyms / unknown names report. **Never writes** |
 | `render <target> [range]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only. Reports how many segments came from cache |
 | `sync [series] [--limit N]` | refresh + render everything outstanding; shows a size estimate and confirms first (`-y` to skip) |
+| `tagger status` \| `install` \| `test` | the spaCy POS tagger the rules resolve against. **Required to render** |
+| `progress [series] [--watch]` | what a running sync is doing, from the live state DB. **Read-only**, safe mid-render |
 
 **Series** (porcelain):
 
@@ -380,7 +385,7 @@ rewritten on every sync, so hand edits there are lost.
 |---|---|
 | `~/.local/state/webnovel-audio/state.db` | the operational index across all series. Rebuildable: `series scan` replays every bundle's `state.json` into a fresh one |
 | `config.toml` | base config, in the working directory (`-c` for another) |
-| `data/lexicons/_base.csv` | always-on respellings, applied under every series |
+| `data/lexicons/_base.csv` | always-on rules — names and heteronyms — applied under every series |
 | `~/.cache/webnovel-audio/` | the Kokoro model + voice weights (~400 MB, shared) |
 
 ### Moving, archiving, deleting

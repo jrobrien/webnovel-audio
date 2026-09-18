@@ -286,9 +286,18 @@ def _cmd_check(args) -> int:
         print(f"  add them:  webnovel-audio cast update {report['slug']} {args.range or ''}".rstrip())
 
     if report["heteronyms"]:
+        from . import tagger as _tagger
+        from .pipeline import _load_lexicon
+
         print("\nheteronyms — context-dependent, judge by ear:")
+        # Mark the ones a part-of-speech rule already decides, so the list
+        # reads as a to-do rather than a wall of words that may need nothing.
+        _lex = _load_lexicon(cfg)
+        _auto = _lex.covered() if _lex else set()
+        print(f"  ({_tagger.describe(getattr(cfg.general, 'tagger', '') or _tagger.DEFAULT_MODEL)})")
         for h in report["heteronyms"]:
-            print(f"  {h['word']:<10} x{h['count']:<3} \"...{h['context']}...\"")
+            mark = " [tagger]" if h["word"].lower() in _auto else ""
+            print(f"  {h['word']:<10} x{h['count']:<3} \"...{h['context']}...\"{mark}")
         print(f'  pin one:  webnovel-audio lex add {report["slug"]} "a tear in" "a tair in"')
 
     cands = report["lexicon_candidates"]
@@ -392,21 +401,23 @@ def _cmd_pron(args) -> int:
         seen, rows = set(), []
         for path in (cfg.general.base_lexicon, cfg.general.lexicon):
             if path and os.path.exists(path):
-                rows += Lexicon.load(path).entries
+                rows += Lexicon.load(path).rules
         if not rows:
             print("no lexicon entries to check.")
             return 0
         for e in rows:
-            if e.surface in seen:
+            key = (e.surface, e.pos)
+            if key in seen:
                 continue
-            seen.add(e.surface)
+            seen.add(key)
             raw = _phonemes(e.surface)
+            tag = f"/{e.pos}" if e.pos else ""
             if not e.respell or e.respell == e.surface:
-                print(f"  {e.surface:16} {raw}   (no respell)")
+                print(f"  {e.surface + tag:20} {raw}   (no respell)")
                 continue
             new = _phonemes(e.respell)
             flag = "  = unchanged" if new == raw else ""
-            print(f"  {e.surface:16} {raw}  ->  {new}   [{_gloss(new)}]{flag}")
+            print(f"  {e.surface + tag:20} {raw}  ->  {new}   [{_gloss(new)}]{flag}")
         return 0
 
     text = " ".join(args.text).strip()
@@ -418,7 +429,9 @@ def _cmd_pron(args) -> int:
     print(f"phonemes  : {raw}")
     print(f"≈ say     : {_gloss(raw)}")
     if lex is not None:
-        applied = lex.apply(text)
+        from . import tagger as _tagger
+        applied = lex.apply(text, _tagger.load(getattr(cfg.general, "tagger", "")
+                                               or _tagger.DEFAULT_MODEL))
         if applied != text:
             new = _phonemes(applied)
             print(f"\nwith lexicon : {applied}")
@@ -618,6 +631,236 @@ def _cmd_models(args) -> int:
     return 0
 
 
+_TAGGER_ALIASES = {"sm": "en_core_web_sm", "md": "en_core_web_md"}
+
+
+def _tagger_write_config(path: str, model: str) -> bool:
+    """Set (or clear) `general.tagger` in config.toml, preserving everything else.
+
+    A text edit rather than a parse-and-dump: the file is hand-written and
+    heavily commented, and round-tripping it through a TOML writer would throw
+    all of that away.
+    """
+    import re
+
+    from . import sync
+
+    if not os.path.exists(path):
+        return False
+    text = open(path, encoding="utf-8").read()
+    line = f"tagger = {sync._toml_str(model)}" if model else 'tagger = ""'
+    rx = re.compile(r"^tagger\s*=.*$", re.M)
+    if rx.search(text):
+        text = rx.sub(line, text, count=1)
+    elif re.search(r"^\[general\]\s*$", text, re.M):
+        text = re.sub(r"^\[general\]\s*$", "[general]\n" + line, text, count=1, flags=re.M)
+    else:
+        text = f"[general]\n{line}\n\n" + text
+    open(path, "w", encoding="utf-8").write(text)
+    return True
+
+
+def _cmd_tagger(args) -> int:
+    """Install / inspect / remove the POS tagger the rules resolve against."""
+    import sys
+
+    from . import tagger
+    from .pipeline import _load_lexicon
+
+    cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
+    configured = getattr(cfg.general, "tagger", "")
+    model = configured or tagger.DEFAULT_MODEL
+
+    if args.action == "status":
+        lex = _load_lexicon(cfg)
+        rules = lex.rules if lex else []
+        info = {"configured": configured, "model": model,
+                "installed": tagger.available(model),
+                "rules": len(rules),
+                "pos_rules": sum(1 for r in rules if r.pos),
+                "phrase_rules": sum(1 for r in rules if r.is_phrase)}
+        if want_json:
+            _jprint({"ok": True, **info})
+            return 0
+        print(f"model {model:<16}: {'installed' if info['installed'] else 'NOT INSTALLED'}")
+        print(f"config general.tagger : {configured or '(default)'}")
+        print(f"rules                 : {info['rules']} "
+              f"({info['pos_rules']} keyed on a part of speech, "
+              f"{info['phrase_rules']} phrase)")
+        if not info["installed"]:
+            print(f"\n  rendering will refuse until this is installed:"
+                  f"\n  webnovel-audio tagger install --model {model}")
+        return 0
+
+    if args.action == "test":
+        nlp = tagger.load(model)
+        if nlp is None:
+            return _fail("tagger_unavailable", f"{model} is not installed",
+                         hint="webnovel-audio tagger install", json_mode=want_json)
+        from .segment import _finish
+
+        out = _finish(args.text, _load_lexicon(cfg), nlp)
+        if want_json:
+            _jprint({"ok": True, "before": args.text, "after": out,
+                     "changed": out != args.text})
+            return 0
+        print(f"  in  : {args.text}")
+        print(f"  out : {out}")
+        if out == args.text:
+            print("  (no rule applied)")
+        else:
+            print("  tags:", ", ".join(f"{t.text}/{t.pos_}" for t in nlp(args.text)
+                                       if not t.is_punct and not t.is_space))
+        return 0
+
+    model = _TAGGER_ALIASES.get(getattr(args, "model", ""), getattr(args, "model", ""))
+
+    if args.action == "remove":
+        if not args.yes:
+            if want_json or not sys.stdin.isatty():
+                return _fail("needs_confirmation",
+                             "remove uninstalls the spaCy model from this venv",
+                             hint="webnovel-audio tagger remove --yes", json_mode=want_json)
+            if input("uninstall spaCy + model and disable the tagger? [y/N] ").strip().lower() \
+                    not in ("y", "yes"):
+                print("aborted.")
+                return 0
+        target = model
+        rc = _pip(["uninstall", target, "spacy"], check=False)
+        _tagger_write_config(args.config, "")
+        print(f"removed {target}; general.tagger cleared" if rc == 0
+              else f"uninstall reported an error; general.tagger cleared anyway")
+        return 0
+
+    # -- install ---------------------------------------------------------
+    model = model or tagger.DEFAULT_MODEL
+    if model not in tagger.KNOWN_MODELS:
+        return _fail("unknown_model", f"not a known model: {model}",
+                     hint=f"one of: {', '.join(tagger.KNOWN_MODELS)}",
+                     json_mode=want_json, valid=list(tagger.KNOWN_MODELS))
+    if not args.yes:
+        # This mutates the venv the renderer runs in. Doing it mid-render
+        # would change pronunciations under a job already in flight.
+        if want_json or not sys.stdin.isatty():
+            return _fail("needs_confirmation",
+                         f"install {model} into this venv (do not run during a render)",
+                         hint="webnovel-audio tagger install --yes", json_mode=want_json)
+        print(f"installs spacy + {model} into this venv (~{'15' if model.endswith('sm') else '57'} MB)")
+        print("do NOT run this while a render is in flight — it changes pronunciations")
+        if input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+            print("aborted.")
+            return 0
+
+    # Only one model is ever installed: switching just replaces it. The
+    # download is small enough that keeping a cache of both is not worth the
+    # extra state to reason about.
+    for other in tagger.KNOWN_MODELS:
+        if other != model and tagger.available(other):
+            print(f"replacing {other}")
+            _pip(["uninstall", other], check=False)
+
+    if _pip(["install", "spacy"]) != 0:
+        return _fail("install_failed", "could not install spacy", json_mode=want_json)
+    url = _model_wheel(model)
+    print(f"downloading {model} …")
+    if _pip(["install", url]) != 0:
+        return _fail("install_failed", f"could not download {model}",
+                     hint="check network access", json_mode=want_json, url=url)
+    if not tagger.available(model):
+        return _fail("install_failed", f"{model} still not importable",
+                     json_mode=want_json)
+    if not _tagger_write_config(args.config, model):
+        print(f"installed, but {args.config} not found — set general.tagger = \"{model}\" by hand")
+        return 0
+    print(f"\ninstalled {model}; general.tagger set in {args.config}")
+    print('try: webnovel-audio tagger test "He read the book yesterday."')
+    return 0
+
+
+def _model_wheel(model: str) -> str:
+    """The release wheel URL for `model`, matched to the installed spaCy.
+
+    Deliberately not `spacy download`: that shells out to whichever installer
+    it finds and resolves the *ambient* environment, so it will happily drop
+    the model into the wrong venv. Installing the wheel through `_pip` keeps
+    it pinned to this interpreter. Model releases track spaCy's minor version.
+    """
+    ver = "3.8"
+    try:
+        import spacy
+
+        ver = ".".join(spacy.about.__version__.split(".")[:2])
+    except Exception:                       # noqa: BLE001 - fall back to 3.8
+        pass
+    tag = f"{model}-{ver}.0"
+    return ("https://github.com/explosion/spacy-models/releases/download/"
+            f"{tag}/{tag}-py3-none-any.whl")
+
+
+def _run(cmd: list[str], check: bool = True) -> int:
+    import subprocess
+
+    try:
+        return subprocess.run(cmd).returncode
+    except OSError:
+        return 1
+
+
+def _pip(argv: list[str], check: bool = True) -> int:
+    """Install into the running interpreter's environment, uv first.
+
+    `uv pip` is how this project is set up (`uv sync --extra kokoro`), but a
+    plain venv must work too, so fall back to pip.
+    """
+    import shutil
+    import sys
+
+    if shutil.which("uv"):
+        extra = ["--python", sys.executable]
+        quiet = ["-q"] if argv[0] == "install" else []
+        return _run(["uv", "pip", *argv[:1], *quiet, *extra, *argv[1:]], check)
+    flags = ["-y"] if argv[0] == "uninstall" else []
+    return _run([sys.executable, "-m", "pip", *argv[:1], *flags, *argv[1:]], check)
+
+
+def _cmd_progress(args) -> int:
+    """What a sync is doing right now. Read-only; safe to run mid-render."""
+    import sys
+    import time
+
+    from . import progress
+
+    cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
+    try:
+        snap = progress.snapshot(cfg, args.key or None, recent=args.recent)
+    except FileNotFoundError as exc:
+        return _fail("no_state_db", f"no state database at {exc}",
+                     hint="track a series first: webnovel-audio series add <url>",
+                     json_mode=want_json)
+    if want_json:
+        _jprint({"ok": True, **snap})
+        return 0
+    if not args.watch:
+        print(progress.render_text(snap))
+        return 0
+
+    # --watch redraws in place. It only ever reads, so it is safe to leave
+    # running beside a sync for as long as you like.
+    try:
+        while True:
+            sys.stdout.write("\x1b[H\x1b[2J")
+            print(progress.render_text(snap))
+            print(f"\n(refreshing every {args.watch}s — ctrl-c to stop)")
+            sys.stdout.flush()
+            time.sleep(args.watch)
+            snap = progress.snapshot(cfg, args.key or None, recent=args.recent)
+    except KeyboardInterrupt:
+        print()
+        return 0
+
+
 def _editor_open(path: str, stub: str = "") -> int:
     """Open `path` in the user's editor. WEBNOVEL_AUDIO_EDITOR wins, then
     $VISUAL/$EDITOR, then xdg-open — xdg-open guesses from *content*, so an
@@ -659,7 +902,7 @@ def _lex_paths(cfg: Config, slug: str | None = None) -> tuple[str, str]:
     return base, bundle.resolve(cfg, slug, bdir, "lexicon")
 
 
-_LEX_HEADER = "surface,respell,ipa,notes\n"
+from .lexicon import HEADER as _LEX_HEADER
 
 
 def _lex_header_for(path: str, slug: str | None, cfg: Config) -> str:
@@ -708,8 +951,9 @@ def _cmd_lex(args) -> int:
             if not exists:
                 fh.write(_lex_header_for(path, None if args.base else args.slug, cfg))
             csv.writer(fh, lineterminator="\n").writerow(
-                [args.surface, args.respell, "", args.note or ""])
-        print(f"{path}: {args.surface} -> {args.respell}")
+                [args.surface, args.pos or "", args.respell, args.note or ""])
+        pos = f" ({args.pos})" if args.pos else ""
+        print(f"{path}: {args.surface}{pos} -> {args.respell}")
         return 0
 
     # list: the merged, effective view
@@ -719,12 +963,13 @@ def _cmd_lex(args) -> int:
         return 0
     lex = Lexicon.load_many(paths)
     if getattr(args, "json", False):
-        _jprint({"entries": [vars(e) for e in lex.entries], "files": paths})
+        _jprint({"rules": [vars(r) for r in lex.rules], "files": paths})
         return 0
-    for e in lex.entries:
-        print(f"  {e.surface:<20} {e.respell or e.ipa or '(no respell)'}"
-              f"{'   # ' + e.notes if e.notes else ''}")
-    print(f"\n{len(lex.entries)} entr(ies) from: {', '.join(paths)}")
+    for r in sorted(lex.rules, key=lambda r: (r.surface.lower(), r.pos)):
+        pos = f"{r.pos}+{r.lemma}" if r.lemma else (r.pos or "any")
+        print(f"  {r.surface:<22} {pos:<10} {r.respell or '(no respell)'}"
+              f"{'   # ' + r.notes if r.notes else ''}")
+    print(f"\n{len(lex.rules)} rule(s) from: {', '.join(paths)}")
     return 0
 
 
@@ -1632,6 +1877,9 @@ def _build_parser():
     le.add_argument("--base", action="store_true", help="the always-on _base.csv")
     _cfg(le)
     la = lx_sub.add_parser("add", help="append a row")
+    la.add_argument("--pos", default="",
+                    help="only when tagged this way: NOUN VERB ADJ, a Penn tag "
+                         "(VBD), or TAG+lemma. Omit to always apply")
     la.add_argument("slug")
     la.add_argument("surface", help="word or phrase as it appears in the text")
     la.add_argument("respell", help="sound-it-out spelling, e.g. kay-lith")
@@ -1737,6 +1985,31 @@ def _build_parser():
     rt.add_argument("--dry-run", action="store_true")
     _cfg_json(rt)
     rt.set_defaults(func=_cmd_retag)
+
+    pg = sub.add_parser("progress", help="what a running sync is doing (read-only)")
+    pg.add_argument("key", nargs="?", default="", help="one series (default: all enabled)")
+    pg.add_argument("--watch", type=float, nargs="?", const=5.0, default=0,
+                    help="redraw every N seconds (default 5)")
+    pg.add_argument("--recent", type=int, default=8, help="how many finished chapters to list")
+    _cfg_json(pg)
+    pg.set_defaults(func=_cmd_progress)
+
+    tg = sub.add_parser("tagger", help="optional spaCy POS tagger for heteronyms")
+    tg_sub = tg.add_subparsers(dest="action")
+    ti = tg_sub.add_parser("install", help="install the model and switch it on")
+    ti.add_argument("--model", default="", help="sm | md (default: sm)")
+    ti.add_argument("-y", "--yes", action="store_true", help="skip the confirmation")
+    _cfg_json(ti)
+    tr = tg_sub.add_parser("remove", help="uninstall the model and switch it off")
+    tr.add_argument("-y", "--yes", action="store_true", help="skip the confirmation")
+    _cfg_json(tr)
+    ts = tg_sub.add_parser("status", help="what is installed, configured and active")
+    _cfg_json(ts)
+    tt = tg_sub.add_parser("test", help="show before/after for one sentence")
+    tt.add_argument("text")
+    _cfg_json(tt)
+    _cfg_json(tg)
+    tg.set_defaults(func=_cmd_tagger, action="status", model="", yes=False, text="")
 
     md = sub.add_parser("models", help="the Kokoro ONNX model files")
     md_sub = md.add_subparsers(dest="action")

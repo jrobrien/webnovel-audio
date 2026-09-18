@@ -1,9 +1,11 @@
 # Copy to config.toml and edit. CLI flags (--voice, --speed, --backend) override these.
 
 [general]
-lexicon = "data/lexicons/salvage-run.csv"     # per-series pronunciation dictionary (CSV); `sync` auto-picks data/lexicons/<slug>.csv
-base_lexicon = "data/lexicons/_base.csv"      # always-on respellings (per-series rows win); "" disables
+lexicon = "data/lexicons/salvage-run.csv"     # per-series pronunciation rules (CSV); `sync` auto-picks data/lexicons/<slug>.csv
+base_lexicon = "data/lexicons/_base.csv"      # always-on rules: names + heteronyms (per-series rows win); "" disables
 cache_dir = ".cache/segments"                 # per-segment wav cache (hash-keyed)
+tagger = ""                                   # spaCy model the POS rules resolve against; "" = en_core_web_sm
+                                              #   required to render; `webnovel-audio tagger install`
 speak_title  = true                           # narrate the chapter title first (html/url input)
 speak_series = true                           # ...prefixed with the series title
 
