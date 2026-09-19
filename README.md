@@ -301,13 +301,26 @@ webnovel-audio series list --json | jq '.series[] | {slug, pending}'
 ### Control UI
 
 ```sh
-uv run webnovel-audio ui        # or: wish ui/control.tcl
+uv run webnovel-audio ui                      # picks a usable interpreter
+uv run webnovel-audio ui --interpreter /usr/bin/python3     # or name one
 ```
 
 A Tcl/Tk front end laid out like **gitk** — series across the top, chapters
-bottom-left, a notebook bottom-right:
+bottom-left, a notebook bottom-right (Cast, Lexicon, Markdown, Log):
 
 ![the control UI](docs/img/ui.png)
+
+The UI is hosted by `ui/host.py`, which imports `tkinter` and nothing else —
+it talks to the CLI over `--json` for everything it shows. That is why it can
+run under a *different* interpreter than the one this package is installed
+in, and why it goes looking for one: a Tk compiled without Xft sees a single
+font family and draws chapter text in the X11 `fixed` bitmap font, which has
+no apostrophes, curly quotes, em dashes or ellipses. Every uv-managed
+interpreter has such a Tk, so `ui` prefers its own and quietly reroutes to the
+system Python when its own cannot render. It says so when it does.
+
+The theme follows the desktop's light/dark preference, and the toolbar's
+**Theme** menu switches it live.
 
 Select chapters (shift/ctrl for ranges and scattered picks) and **right-click**
 to **Play** the chapter, run `fetch` / `parse` / `check` / `render` over exactly
@@ -323,10 +336,17 @@ clobbered; **Open in $EDITOR** hands off to `$WEBNOVEL_AUDIO_EDITOR` / `$VISUAL`
 / `$EDITOR` when you want real editing. The feed **server** starts and stops
 from the toolbar, and window/sash geometry persists.
 
-`ui` execs `wish` if it's on `PATH`, else falls back to Python's bundled Tcl/Tk
-(`--python` forces that); either way it exports `WEBNOVEL_AUDIO` so the UI finds
-the CLI. Running `wish ui/control.tcl` directly works too — set
-`WEBNOVEL_AUDIO=/path/to/webnovel-audio` if it isn't found.
+The **Markdown** tab shows the selected chapter's `.md` — read-only, wrapped,
+and with the filename on the tab. It needs exactly one chapter selected, and
+when there is no `.md` yet it says which stage is missing rather than going
+blank. All three tabs get shallow syntax highlighting; `$EDITOR` is a button
+away and does it properly.
+
+`ui` runs the UI under `ui/host.py` and exports `WEBNOVEL_AUDIO` so it finds
+the CLI. `python ui/host.py ui/control.tcl` works directly too — set
+`WEBNOVEL_AUDIO=/path/to/webnovel-audio` if it isn't found. `wish
+ui/control.tcl` still runs, and is occasionally handy for a Tcl-level problem,
+but tkinter is the supported and tested host.
 
 It has no DB or network access of its own: everything goes through the CLI's
 `--json` output, so every capability here is one you also have from a terminal.
@@ -512,26 +532,43 @@ per-series casting (`seed_chapters` = `check`'s default sample window) · `[chat
 ## Development
 
 ```sh
-uv run pytest -q            # ~200 tests, fully offline
+uv run pytest -q            # ~230 tests, fully offline
 uv run python -m compileall -q src/
 ```
 
 Regenerating `docs/img/ui.png` (Hyprland): let the window **map at its final
-size** and capture it without touching the geometry afterwards —
+size** and capture it without touching the geometry afterwards. Put the
+geometry in `ui.conf` — `control.tcl` applies it late, so a `wm geometry`
+set before sourcing is overwritten:
 
 ```sh
-printf 'main 1600x1000+0+0\ntopheight 120\nbotwidth 690\nlimit 10\n' \
-    > ~/.config/webnovel-audio/ui.conf     # back yours up first
-uv run webnovel-audio ui &
-sleep 6
-read X Y W H < <(hyprctl clients -j | jq -r '.[]|select(.class=="Control.tcl")|"\(.at[0]) \(.at[1]) \(.size[0]) \(.size[1])"')
+cp ~/.config/webnovel-audio/ui.conf{,.bak}
+printf 'main 1600x950+24+60\ntopheight 150\nbotwidth 690\nlimit 10\ntheme forest-dark\n' \
+    > ~/.config/webnovel-audio/ui.conf
+python ui/host.py ui/control.tcl &            # WEBNOVEL_AUDIO must be set
+sleep 8
+ADDR=$(hyprctl clients -j | jq -r '.[]|select(.title=="webnovel-audio")|.address')
+hyprctl setprop "address:$ADDR" opaque true   # else the desktop bleeds through
+read X Y W H < <(hyprctl clients -j | jq -r --arg a "$ADDR" '.[]|select(.address==$a)|"\(.at[0]) \(.at[1]) \(.size[0]) \(.size[1])"')
 grim -g "$X,$Y ${W}x${H}" docs/img/ui.png
+mv ~/.config/webnovel-audio/ui.conf{.bak,}
 ```
 
-Resizing the window *after* it maps (floating it, `hl.dsp.window.center()`, …)
-leaves stale framebuffer in the regions Tk doesn't repaint, which shows up as
-other windows bleeding through the empty parts of a pane. Tiled is fine — `grim
--g` crops to the window, so nothing else is in frame.
+Three traps, all of which have bitten:
+
+- Resizing *after* the window maps (floating it, `centerwindow`, …) leaves
+  stale framebuffer where Tk doesn't repaint, so other windows bleed through
+  the empty parts of a pane. Match on `.title`, not `.class`: tkinter reports
+  class `Tk`, and the old `Control.tcl` was wish's.
+- Omarchy's default opacity rule makes the dark panes translucent, which
+  `grim` captures faithfully. `setprop … opaque true` is the fix; `hyprctl
+  keyword` does not work on a non-legacy-parser Hyprland.
+- Give the window an offset clear of the top bar, and let the event loop run
+  while waiting. A blocking Tcl `after` stops redraws, and `grim` then
+  captures a half-painted frame.
+
+To float it at an exact size without a compositor rule, set the X11 window
+type before it maps: `wm attributes . -type dialog`.
 
 Layout: `providers` (source → `ingest` Document) → `normalize` / `dialogue` /
 `segment` (blocks → narration script) → `synth/` (Kokoro or a silent `null`
