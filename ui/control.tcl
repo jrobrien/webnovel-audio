@@ -8,8 +8,13 @@
 # access of its own — every capability here is one you also have from a
 # terminal, which is what keeps the two honest.
 #
-#   webnovel-audio ui          # preferred: finds and exports the CLI path
-#   wish ui/control.tcl        # direct
+#   webnovel-audio ui                    # finds and exports the CLI path
+#   python ui/host.py ui/control.tcl     # same thing, without the CLI
+#
+# The supported host is Python's tkinter — one interpreter, one path to test.
+# `wish ui/control.tcl` still works and is occasionally handy for poking at a
+# Tcl-level problem, but it is not what `webnovel-audio ui` runs and is not
+# covered by the tests.
 
 package require Tk
 source [file join [file dirname [info script]] json.tcl]
@@ -33,6 +38,211 @@ set ::BASELEX ""
 set ::SERIES "" ; set ::RUNNING 0 ; set ::PIPE "" ; set ::SERVEPID ""
 set ::SERVEPIPE "" ; set ::STATUS "ready" ; set ::LIMIT 10
 array set ::EDIT {}          ;# tab -> path / mtime / dirty
+array set ::MD {}            ;# chapter row id -> text_path / status, from refresh
+array set ::HLAFTER {}       ;# tab -> pending re-highlight, coalesced
+
+# ---------------------------------------------------------------- theme -------
+;# The vendored Forest theme (ui/theme) calls tk_setPalette from inside its
+;# -settings block, which ttk evaluates once, at `theme create` time. Switching
+;# back to an already-created theme therefore does NOT re-run it, and the
+;# classic widgets (text panes, menus) stay painted for the theme you left.
+;# So we never rely on it: every colour a non-ttk widget shows is applied by
+;# repaint_theme, on startup and on every switch.
+
+set ::THEME auto                ;# auto | a ttk theme name; persisted in ui.conf
+set ::THEMEDIR [file join [file dirname [file normalize [info script]]] theme]
+
+;# Colours ttk cannot tell us: the treeview row tags (chapter stage, paused
+;# series) and the classic-widget palette. A theme with no entry here borrows
+;# whichever of these two its background luminance is closer to.
+array set ::PALETTE {
+    forest-dark {
+        bg #313131  fg #eeeeee  sel #217346  selfg #ffffff  dim #9aa0a6
+        rendered #5ec27f  error #ff7b72  skipped #8b949e
+        fetched  #79b8ff  parsed #c3a6ff  off     #8b949e
+        com #8b949e  key #ffa657  str #7ee787  head #79b8ff  em #eeeeee
+    }
+    forest-light {
+        bg #ffffff  fg #313131  sel #217346  selfg #ffffff  dim #57606a
+        rendered #2a7d4f  error #b03030  skipped #6e7781
+        fetched  #4a6fa5  parsed #6a5fa5  off     #6e7781
+        com #6e7781  key #953800  str #0a7d33  head #0550ae  em #313131
+    }
+}
+
+;# Luminance of the live theme's background, so a theme we ship no palette for
+;# (clam, alt, …) still gets legible row colours instead of guessing dark.
+proc theme_is_dark {} {
+    if {[catch {winfo rgb . [ttk::style lookup . -background]} rgb]} { return 1 }
+    lassign $rgb r g b
+    return [expr {(0.299*$r + 0.587*$g + 0.114*$b) / 65535.0 < 0.5}]
+}
+
+proc pal {key} {
+    set t [ttk::style theme use]
+    if {![info exists ::PALETTE($t)]} {
+        set t [expr {[theme_is_dark] ? "forest-dark" : "forest-light"}]
+    }
+    return [dict get $::PALETTE($t) $key]
+}
+
+;# The desktop's light/dark preference. The freedesktop appearance portal is
+;# the cross-desktop answer and the one Hyprland/GNOME/KDE all publish;
+;# gsettings is the fallback for a session without the portal running.
+;# 1 = prefer dark, 2 = prefer light, 0 = no preference.
+proc detect_dark {} {
+    set call [list exec busctl --user --timeout=2 call \
+        org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop \
+        org.freedesktop.portal.Settings Read ss \
+        org.freedesktop.appearance color-scheme]
+    if {![catch $call out] && [regexp {u\s+(\d+)} $out -> v]} {
+        if {$v == 1} { return 1 }
+        if {$v == 2} { return 0 }
+    }
+    foreach k {color-scheme gtk-theme} {
+        if {[catch {exec gsettings get org.gnome.desktop.interface $k} out]} continue
+        if {[string match -nocase *dark*  $out]} { return 1 }
+        if {$k eq "color-scheme" && [string match -nocase *light* $out]} { return 0 }
+    }
+    return 1                    ;# documented default when nothing answers
+}
+
+proc theme_resolve {name} {
+    if {$name ne "auto"} { return $name }
+    return [expr {[detect_dark] ? "forest-dark" : "forest-light"}]
+}
+
+proc apply_theme {{name ""}} {
+    if {$name ne ""} { set ::THEME $name }
+    set want [theme_resolve $::THEME]
+    if {[lsearch -exact [ttk::style theme names] $want] < 0} {
+        set f [file join $::THEMEDIR $want.tcl]
+        if {![file readable $f]} {
+            log "! theme $want: no such file $f"
+        } elseif {[catch {uplevel #0 [list source $f]} e]} {
+            log "! theme $want: $e"
+        }
+    }
+    if {[lsearch -exact [ttk::style theme names] $want] < 0} {
+        log "! theme $want unavailable — falling back to clam"
+        set want clam
+    }
+    ttk::style theme use $want
+    repaint_theme
+}
+
+;# Every colour the ttk theme does not reach: classic text widgets, menus,
+;# treeview row tags, and the syntax tags.
+proc repaint_theme {} {
+    set bg [pal bg] ; set fg [pal fg] ; set sel [pal sel] ; set selfg [pal selfg]
+    foreach w {cast lex md log} {
+        set t .br.$w.t
+        if {![winfo exists $t]} continue
+        $t configure -background $bg -foreground $fg -insertbackground $fg \
+            -selectbackground $sel -selectforeground $selfg \
+            -highlightthickness 0 -borderwidth 0
+        foreach {tag key} {hl_com com hl_key key hl_str str hl_head head} {
+            $t tag configure $tag -foreground [pal $key]
+        }
+        $t tag configure hl_em -foreground [pal em]
+        $t tag configure hl_dim -foreground [pal dim]
+    }
+    foreach m {.ctx .sctx .tool.theme.m} {
+        if {![winfo exists $m]} continue
+        $m configure -background $bg -foreground $fg \
+            -activebackground $sel -activeforeground $selfg \
+            -selectcolor $fg
+    }
+    retag_rows
+    foreach w {cast lex md} { if {[winfo exists .br.$w.t]} { highlight $w } }
+}
+
+;# Stage colours for the chapter rows, and the greyed-out paused series.
+proc retag_rows {} {
+    if {[winfo exists .bl.tv]} {
+        foreach tag {rendered error skipped fetched parsed} {
+            .bl.tv tag configure $tag -foreground [pal $tag]
+        }
+    }
+    if {[winfo exists .top.tv]} { .top.tv tag configure off -foreground [pal off] }
+}
+
+proc set_theme {name} {
+    apply_theme $name
+    set live [ttk::style theme use]
+    log [expr {$name eq $live ? "theme: $name" : "theme: $name ($live)"}]
+}
+
+# ---------------------------------------------------------------- highlight ---
+;# Deliberately shallow: enough structure to find your place, not a parser.
+;# $EDITOR is one button away and does this properly — so every rule here is
+;# line-anchored and single-pass, which is what keeps re-highlighting on every
+;# keystroke affordable and keeps a wrong guess cosmetic.
+set ::HL_MAX 400000          ;# characters; past this, skip rather than stall
+
+proc highlight {which} {
+    set t .br.$which.t
+    if {![winfo exists $t]} return
+    foreach tg {hl_com hl_key hl_str hl_head hl_em hl_dim} { $t tag remove $tg 1.0 end }
+    if {[$t count -chars 1.0 end] > $::HL_MAX} return
+    set last [lindex [split [$t index end-1c] .] 0]
+    switch -- $which {
+        lex  { hl_csv  $t $last }
+        cast { hl_toml $t $last }
+        md   { hl_md   $t $last }
+    }
+}
+
+;# one tagged span on line $i, from character offsets within the line
+proc hl_span {t i tag from to} { $t tag add $tag $i.$from $i.$to }
+
+proc hl_csv {t last} {
+    for {set i 1} {$i <= $last} {incr i} {
+        set ln [$t get $i.0 $i.end]
+        if {[string index [string trimleft $ln] 0] eq "#"} {
+            hl_span $t $i hl_com 0 end ; continue
+        }
+        if {$ln eq ""} continue
+        ;# the surface column — the field you scan for when hunting a word
+        if {[set c [string first "," $ln]] > 0} { hl_span $t $i hl_key 0 $c }
+        if {[regexp -indices {^surface,pos,respell,notes} $ln m]} {
+            hl_span $t $i hl_head 0 end
+        }
+    }
+}
+
+proc hl_toml {t last} {
+    for {set i 1} {$i <= $last} {incr i} {
+        set ln [$t get $i.0 $i.end]
+        set trimmed [string trimleft $ln]
+        if {[string index $trimmed 0] eq "#"} { hl_span $t $i hl_com 0 end ; continue }
+        if {[string index $trimmed 0] eq "\["} { hl_span $t $i hl_head 0 end ; continue }
+        if {[regexp -indices {^[ \t]*[^=]+=} $ln m]} {
+            lassign $m a b ; hl_span $t $i hl_key $a [expr {$b}]
+        }
+        foreach m [regexp -all -indices -inline {"[^"]*"} $ln] {
+            lassign $m a b ; hl_span $t $i hl_str $a [expr {$b + 1}]
+        }
+    }
+}
+
+proc hl_md {t last} {
+    set fm 0                              ;# inside the --- front matter block
+    for {set i 1} {$i <= $last} {incr i} {
+        set ln [$t get $i.0 $i.end]
+        if {$i == 1 && $ln eq "---"} { set fm 1 ; hl_span $t $i hl_dim 0 end ; continue }
+        if {$fm} {
+            hl_span $t $i hl_dim 0 end
+            if {$ln eq "---"} { set fm 0 }
+            continue
+        }
+        if {[regexp {^#{1,6}\s} $ln]} { hl_span $t $i hl_head 0 end ; continue }
+        if {[regexp {^\s*([-*_])(\s*\1){2,}\s*$} $ln]} { hl_span $t $i hl_dim 0 end ; continue }
+        foreach m [regexp -all -indices -inline {\*\*[^*]+\*\*|\*[^*]+\*|_[^_]+_} $ln] {
+            lassign $m a b ; hl_span $t $i hl_em $a [expr {$b + 1}]
+        }
+    }
+}
 
 # ---------------------------------------------------------------- exe ---------
 proc find_exe {} {
@@ -61,6 +271,11 @@ proc run_json {args} {
 proc status {msg} { set ::STATUS $msg }
 
 proc log {msg} {
+    ;# Startup work (theme loading) runs before the log pane exists. Falling
+    ;# back to stderr rather than erroring is what makes a failure there
+    ;# visible — a silently swallowed one hid a broken theme load for a whole
+    ;# interpreter version.
+    if {![winfo exists .br.log.t]} { puts stderr $msg ; return }
     .br.log.t configure -state normal
     .br.log.t insert end "$msg\n"
     .br.log.t see end
@@ -114,7 +329,8 @@ proc on_series_select {} {
 proc refresh_chapters {} {
     set keep [.bl.tv selection]
     .bl.tv delete [.bl.tv children {}]
-    if {$::SERIES eq ""} return
+    array unset ::MD
+    if {$::SERIES eq ""} { load_md ; return }
     set d [run_json state show $::SERIES]
     if {$d eq ""} return
     set vols 0
@@ -132,11 +348,11 @@ proc refresh_chapters {} {
         } else { set v "" }
         .bl.tv insert {} end -id ch$n -values \
             [list $n $v [dict get $c title] $st $dur $note] -tags $st
+        ;# stashed for the Markdown pane, so selecting a row costs no subprocess
+        set ::MD(ch$n,path)   [json::get $c text_path]
+        set ::MD(ch$n,status) $st
     }
-    foreach {tag col} {rendered #2a7d4f error #b03030 skipped gray55
-                       fetched #4a6fa5 parsed #6a5fa5} {
-        .bl.tv tag configure $tag -foreground $col
-    }
+    retag_rows
     foreach id $keep { if {[.bl.tv exists $id]} { .bl.tv selection add $id } }
     ;# Vol only earns its place when the series actually has volumes
     set cols {n}
@@ -151,6 +367,7 @@ proc refresh_chapters {} {
     } else {
         status "$::SERIES — [llength [.bl.tv children {}]] chapters"
     }
+    load_md
 }
 
 ;# selected chapter numbers -> a CLI range like "1-3,7,20-25"
@@ -493,6 +710,70 @@ proc load_editor {which {force 0}} {
     $t edit reset
     set ::EDIT($which,dirty) 0
     editor_title $which
+    highlight $which
+}
+
+# ---------------------------------------------------------------- markdown ---
+;# The parsed chapter text, read-only. Its path comes from the `state show`
+;# already done by refresh_chapters (text_path is in that payload), so moving
+;# the selection costs a file read and no subprocess.
+proc md_set {body {path ""}} {
+    set t .br.md.t
+    $t configure -state normal
+    $t delete 1.0 end
+    $t insert 1.0 $body
+    $t configure -state disabled
+    set ::EDIT(md,path) $path
+    .br.md.b.ext state [expr {$path eq "" ? "disabled" : "!disabled"}]
+    .br tab .br.md -text [expr {$path eq "" ? "Markdown" : "Markdown — [file tail $path]"}]
+    highlight md
+}
+
+proc load_md {} {
+    if {![winfo exists .br.md.t]} return
+    set sel [.bl.tv selection]
+    if {$::SERIES eq "" || ![llength $sel]} {
+        md_set "Select a chapter to read its Markdown here." ; return
+    }
+    if {[llength $sel] > 1} {
+        md_set "Markdown view only supported for single chapter selected.\
+                \n\n[llength $sel] chapters are selected." ; return
+    }
+    set id [lindex $sel 0]
+    set n [.bl.tv set $id n]
+    set path [expr {[info exists ::MD($id,path)] ? $::MD($id,path) : ""}]
+    set st   [expr {[info exists ::MD($id,status)] ? $::MD($id,status) : ""}]
+    if {$path eq ""} {
+        ;# No .md recorded. Which stage is missing decides what to suggest.
+        switch -- $st {
+            new     { set why "Chapter #$n has not been fetched yet.\
+                               \n\nRight-click it and run Fetch, then Parse, to\
+                               produce the Markdown." }
+            fetched { set why "Chapter #$n is fetched but not parsed.\
+                               \n\nRight-click it and run Parse to produce the\
+                               Markdown." }
+            skipped { set why "Chapter #$n is marked skipped, so it was never\
+                               parsed.\n\nMark it new and run Fetch/Parse to\
+                               produce the Markdown." }
+            default { set why "No Markdown file is recorded for chapter #$n\
+                               (stage: $st).\n\nRight-click it and run Parse to\
+                               regenerate it." }
+        }
+        md_set $why ; return
+    }
+    if {![file exists $path]} {
+        md_set "The Markdown for chapter #$n is recorded at\n\n  $path\n\nbut\
+                that file is missing. Right-click the chapter and run Parse to\
+                write it again."
+        return
+    }
+    if {[catch {open $path r} fh]} { md_set "! cannot open $path\n\n$fh" ; return }
+    fconfigure $fh -encoding utf-8
+    set body [read $fh] ; close $fh
+    md_set $body $path
+    ;# the filename goes on the tab, not the status bar — the status bar
+    ;# belongs to the running command, and a filename left there goes stale
+    ;# the moment the selection changes to something with no Markdown.
 }
 
 ;# Offer to keep unsaved work before a load/series-switch throws it away.
@@ -522,6 +803,14 @@ proc editor_modified {which} {
     set cur [string trimright [.br.$which.t get 1.0 end] "\n"]
     set ::EDIT($which,dirty) [expr {$cur ne $::EDIT($which,text)}]
     editor_title $which
+    hl_soon $which
+}
+
+;# Re-highlight after the typing stops rather than on every keystroke: one
+;# coalesced pass, so holding a key down cannot queue a pass per character.
+proc hl_soon {which} {
+    if {[info exists ::HLAFTER($which)]} { after cancel $::HLAFTER($which) }
+    set ::HLAFTER($which) [after 150 [list highlight $which]]
 }
 
 proc save_editor {which} {
@@ -626,6 +915,7 @@ proc save_conf {} {
     catch {set ::geom(botwidth) [.bot sashpos 0]}
     foreach k {main topheight botwidth} { puts $fh "$k $::geom($k)" }
     puts $fh "limit $::LIMIT"
+    puts $fh "theme $::THEME"
     close $fh
 }
 proc load_conf {} {
@@ -636,6 +926,7 @@ proc load_conf {} {
         set k [lindex $line 0] ; set v [lrange $line 1 end]
         if {$k in {main topheight botwidth}} { set ::geom($k) $v }
         if {$k eq "limit"} { set ::LIMIT $v }
+        if {$k eq "theme"} { set ::THEME $v }
     }
     close $fh
 }
@@ -654,6 +945,9 @@ proc quit {} {
 
 # ================================================================ build UI ====
 load_conf
+;# Before any widget is built: the theme file's own tk_setPalette then gives
+;# the classic widgets (text panes, menus) the right defaults at creation.
+apply_theme
 wm title . "webnovel-audio"
 wm minsize . 900 560
 wm protocol . WM_DELETE_WINDOW quit
@@ -667,6 +961,14 @@ ttk::button .tool.sync    -text "Sync…"       -command dlg_sync
 ttk::button .tool.stop    -text "Stop"        -command stop_cmd
 ttk::separator .tool.s2 -orient vertical
 ttk::button .tool.srv     -text "Start server" -command server_toggle
+ttk::menubutton .tool.theme -text "Theme" -direction below -menu .tool.theme.m
+menu .tool.theme.m -tearoff 0
+foreach {lbl val} {"Follow desktop" auto  "Forest dark" forest-dark
+                   "Forest light" forest-light  "Tk default (clam)" clam} {
+    .tool.theme.m add radiobutton -label $lbl -value $val -variable ::THEME \
+        -command [list set_theme $val]
+}
+pack .tool.theme -side right -padx 2
 pack .tool.add .tool.refresh -side left -padx 2
 pack .tool.s1 -side left -fill y -padx 6
 pack .tool.sync .tool.stop -side left -padx 2
@@ -730,6 +1032,7 @@ grid rowconfigure .bl 0 -weight 1
 grid columnconfigure .bl 0 -weight 1
 bind .bl.tv $::CTXBUT {chapter_ctx %X %Y %x %y}
 bind .bl.tv <Double-1> {play_selected ; break}
+bind .bl.tv <<TreeviewSelect>> load_md
 
 menu .ctx -tearoff 0
 .ctx add command -label "Play"   -command play_selected
@@ -745,7 +1048,7 @@ menu .ctx -tearoff 0
 .ctx add command -label "Mark new (re-do)" -command {do_state new}
 .ctx add command -label "Reset errors" -command do_reset_errors
 
-# -- notebook: Cast | Lexicon | Log
+# -- notebook: Cast | Lexicon | Markdown | Log
 ttk::notebook .br
 foreach {w label} {cast Cast lex Lexicon} {
     ttk::frame .br.$w
@@ -766,6 +1069,23 @@ foreach {w label} {cast Cast lex Lexicon} {
     .br add .br.$w -text $label
     bind .br.$w.t <<Modified>> [list editor_modified $w]
 }
+
+;# Markdown: read-only, so no Save and no dirty tracking — and wrapped, since
+;# it is prose rather than a table.
+ttk::frame .br.md
+text .br.md.t -wrap word -state disabled -font TkFixedFont -padx 6 -pady 4 \
+    -yscrollcommand {.br.md.sb set}
+ttk::scrollbar .br.md.sb -orient vertical -command {.br.md.t yview}
+ttk::frame .br.md.b
+ttk::button .br.md.b.rev -text Reload -command load_md
+ttk::button .br.md.b.ext -text "Open in \$EDITOR" -command {external_editor md}
+pack .br.md.b.rev .br.md.b.ext -side left -padx 3
+grid .br.md.t .br.md.sb -sticky nsew
+grid .br.md.b -columnspan 2 -sticky w -pady 4
+grid rowconfigure .br.md 0 -weight 1
+grid columnconfigure .br.md 0 -weight 1
+.br add .br.md -text Markdown
+
 ttk::frame .br.log
 text .br.log.t -wrap word -state disabled -font TkFixedFont \
     -yscrollcommand {.br.log.sb set}
@@ -789,8 +1109,14 @@ bind .bot  <Map> { bind %W <Map> {} ; after idle [list %W sashpos 0 $::geom(botw
 catch {wm geometry . $::geom(main)}
 
 # ---------------------------------------------------------------- start ------
+;# Now that every widget exists, paint the ones ttk does not reach. The theme
+;# itself was selected before the build so classic widgets were created with
+;# the right defaults; this is what makes a later switch stick.
+repaint_theme
 ui_busy 0
+load_md
 log "webnovel-audio control — $::EXE"
+log "theme: $::THEME ([ttk::style theme use])"
 if {[set c [run_json config]] ne ""} {
     set ::CFGPATH   [json::get $c config_path]
     set ::LEXDIR    [json::get $c lexicon_dir]
