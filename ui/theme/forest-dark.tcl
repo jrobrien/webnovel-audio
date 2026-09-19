@@ -226,10 +226,16 @@ namespace eval ttk::theme::forest-dark {
         # Button
         ttk::style configure TButton -padding {8 4 8 4} -width -10 -anchor center
 
+        # LOCAL PATCH (see README.md): upstream leaves disabled buttons on the
+        # global -disabledfg, #595959, which is invisible against this theme's
+        # #313131 background -- a disabled button reads as an empty rectangle.
+        # Fix taken from the AnjaRy/Forest-ttk-theme fork.
+        ttk::style map TButton -foreground [list disabled #bbbbbb]
+
         ttk::style element create Button.button image \
             [list $I(rect-basic) \
-                {selected disabled} $I(rect-basic) \
-                disabled $I(rect-basic) \
+                {selected disabled} $I(rect-disabled) \
+                disabled $I(rect-disabled) \
                 selected $I(rect-basic) \
                 pressed $I(rect-basic) \
                 active $I(rect-hover) \

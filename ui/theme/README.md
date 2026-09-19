@@ -11,7 +11,29 @@ which runs at `ttk::style theme create` time rather than on `theme use` — so
 sourcing both would leave the classic widgets (`text`, `menu`) painted by
 whichever file was sourced last, regardless of the theme actually selected.
 
-## Local patch
+## Local patches
+
+### 1. Disabled buttons in `forest-dark.tcl`
+
+Upstream leaves disabled widgets on the global `-disabledfg`, `#595959`.
+Against the dark theme's `#313131` background that is invisible: a disabled
+button renders as an empty grey rectangle with no label. Two lines from the
+[AnjaRy fork](https://github.com/AnjaRy/Forest-ttk-theme) fix it —
+
+```tcl
+ttk::style map TButton -foreground [list disabled #bbbbbb]
+```
+
+plus a `rect-disabled.png` sprite for the disabled Button element, so the
+background dims too. `forest-light.tcl` needs neither: `#595959` on `#ffffff`
+reads fine, which is why the fork patches only the dark file.
+
+That fork also adds `apply_theme` / `switch_theme` procs. Those are
+deliberately **not** taken: `control.tcl` has its own `apply_theme`, which
+has to re-apply the palette on every switch anyway (see the note above about
+`tk_setPalette` running only at `theme create` time).
+
+### 2. `package require`
 
 One line is changed from upstream, in **both** `.tcl` files:
 

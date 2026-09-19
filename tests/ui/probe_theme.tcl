@@ -19,6 +19,10 @@ proc report {} {
         puts $::LOG "  md.t.fg [.br.md.t cget -foreground]"
         puts $::LOG "  tag.rendered [.bl.tv tag configure rendered -foreground]"
     }
+    ;# a disabled button must stay legible: upstream leaves it on
+    ;# -disabledfg #595959, invisible against forest-dark's #313131
+    apply_theme forest-dark
+    puts $::LOG "dark.disabled.fg [ttk::style map TButton -foreground]"
     ;# auto must resolve to one of ours, never the clam fallback
     apply_theme auto
     puts $::LOG "auto -> [ttk::style theme use]"

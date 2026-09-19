@@ -108,6 +108,13 @@ def test_theme_loads_and_is_not_the_clam_fallback(tmp_path, tk_version):
     assert "tag.rendered #5ec27f" in log, log                           # dark
     assert "tag.rendered #2a7d4f" in log, log                           # light
 
+    # A disabled button must still be readable. Upstream leaves it on the
+    # global -disabledfg (#595959), which against forest-dark's #313131 is
+    # invisible -- the button renders as an empty rectangle. The vendored
+    # file carries a local patch for that; re-vendoring would silently drop
+    # it, so assert on the mapping rather than trusting the file.
+    assert "dark.disabled.fg disabled #bbbbbb" in log, log
+
 
 @needs_display
 def test_ui_host_has_a_tk_that_can_render_text():
