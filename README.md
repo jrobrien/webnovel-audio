@@ -340,8 +340,14 @@ no apostrophes, curly quotes, em dashes or ellipses. Every uv-managed
 interpreter has such a Tk, so `ui` prefers its own and quietly reroutes to the
 system Python when its own cannot render. It says so when it does.
 
-The theme follows the desktop's light/dark preference, and the toolbar's
-**Theme** menu switches it live.
+On an Omarchy system, the UI follows the live desktop theme — same colours as
+the terminal it was launched from, including the five chapter-stage colours,
+picked at runtime to stay visually distinct rather than trusted by name (some
+Omarchy themes collapse `blue` onto their own accent colour). **Theme** in the
+toolbar also offers **Reload from Omarchy** to pick up a `omarchy theme set`
+made after the UI started, without restarting it. Off Omarchy — or with no
+theme generated yet — it falls back to a plain dark/light pair that follows
+the desktop's light/dark preference the same way.
 
 Beyond running a stage over the selection, the right-click menu marks chapters
 skipped/new and clears errors; shift/ctrl select ranges and scattered picks.
@@ -567,7 +573,7 @@ set before sourcing is overwritten:
 
 ```sh
 cp ~/.config/webnovel-audio/ui.conf{,.bak}
-printf 'main 1600x950+24+60\ntopheight 150\nbotwidth 690\nlimit 10\ntheme forest-dark\n' \
+printf 'main 1600x950+24+60\ntopheight 150\nbotwidth 690\nlimit 10\ntheme omarchy\n' \
     > ~/.config/webnovel-audio/ui.conf
 python ui/host.py ui/control.tcl &            # WEBNOVEL_AUDIO must be set
 sleep 8

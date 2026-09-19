@@ -42,54 +42,63 @@ array set ::MD {}            ;# chapter row id -> text_path / status, from refre
 array set ::HLAFTER {}       ;# tab -> pending re-highlight, coalesced
 
 # ---------------------------------------------------------------- theme -------
-;# The vendored Forest theme (ui/theme) calls tk_setPalette from inside its
-;# -settings block, which ttk evaluates once, at `theme create` time. Switching
-;# back to an already-created theme therefore does NOT re-run it, and the
-;# classic widgets (text panes, menus) stay painted for the theme you left.
-;# So we never rely on it: every colour a non-ttk widget shows is applied by
-;# repaint_theme, on startup and on every switch.
+;# Three theme states: "omarchy" (github.com jro/tk-omarchy-theme, generated
+;# from the live desktop theme — see ui/omarchy.tcl), and a "dark"/"light"
+;# fallback of our own for a machine without it. "auto" picks omarchy when
+;# available, else follows the desktop's light/dark preference.
+;#
+;# The fallback is drawn from colours (`clam`, configured below), not blitted
+;# from sprites the way the old vendored Forest theme was — Forest is dropped
+;# entirely, since the reason to keep a second theme around (Tk sprites cannot
+;# be recoloured) no longer applies to anything we ship.
+source [file join [file dirname [file normalize [info script]]] omarchy.tcl]
 
-set ::THEME auto                ;# auto | a ttk theme name; persisted in ui.conf
-set ::THEMEDIR [file join [file dirname [file normalize [info script]]] theme]
+set ::THEME auto                ;# auto | omarchy | dark | light; persisted in ui.conf
+set ::ACTIVE_THEME ""           ;# what apply_theme actually landed on, for `pal`
+set ::OMARCHY_PAL ""            ;# cached dict from omarchy::palette, while active
 
-;# Colours ttk cannot tell us: the treeview row tags (chapter stage, paused
-;# series) and the classic-widget palette. A theme with no entry here borrows
-;# whichever of these two its background luminance is closer to.
+;# Colours ttk cannot tell us for the *fallback* theme: our classic widgets,
+;# the syntax tags, and the treeview row tags. Under "omarchy" these come from
+;# omarchy::palette instead — see `pal`.
 array set ::PALETTE {
-    forest-dark {
-        bg #313131  fg #eeeeee  sel #217346  selfg #ffffff  dim #9aa0a6
+    dark {
+        bg #313131  fg #eeeeee  field #313131  sel #217346  selfg #ffffff  dim #9aa0a6
         rendered #5ec27f  error #ff7b72  skipped #8b949e
         fetched  #79b8ff  parsed #c3a6ff  off     #8b949e
         com #8b949e  key #ffa657  str #7ee787  head #79b8ff  em #eeeeee
     }
-    forest-light {
-        bg #ffffff  fg #313131  sel #217346  selfg #ffffff  dim #57606a
+    light {
+        bg #ffffff  fg #313131  field #ffffff  sel #217346  selfg #ffffff  dim #57606a
         rendered #2a7d4f  error #b03030  skipped #6e7781
         fetched  #4a6fa5  parsed #6a5fa5  off     #6e7781
         com #6e7781  key #953800  str #0a7d33  head #0550ae  em #313131
     }
 }
 
-;# Luminance of the live theme's background, so a theme we ship no palette for
-;# (clam, alt, …) still gets legible row colours instead of guessing dark.
+;# Luminance of the live theme's background, for the "auto" fallback when
+;# omarchy is unavailable — there is no desktop-preference query this cheap
+;# that also works before any theme has been applied yet.
 proc theme_is_dark {} {
     if {[catch {winfo rgb . [ttk::style lookup . -background]} rgb]} { return 1 }
     lassign $rgb r g b
     return [expr {(0.299*$r + 0.587*$g + 0.114*$b) / 65535.0 < 0.5}]
 }
 
+;# Every colour repaint_theme paints with comes from here, regardless of
+;# whether the live theme is omarchy or our own dark/light fallback.
 proc pal {key} {
-    set t [ttk::style theme use]
-    if {![info exists ::PALETTE($t)]} {
-        set t [expr {[theme_is_dark] ? "forest-dark" : "forest-light"}]
+    if {$::ACTIVE_THEME eq "omarchy" && $::OMARCHY_PAL ne ""} {
+        return [dict get $::OMARCHY_PAL $key]
     }
+    set t [expr {$::ACTIVE_THEME in {dark light} ? $::ACTIVE_THEME
+               : ([theme_is_dark] ? "dark" : "light")}]
     return [dict get $::PALETTE($t) $key]
 }
 
-;# The desktop's light/dark preference. The freedesktop appearance portal is
-;# the cross-desktop answer and the one Hyprland/GNOME/KDE all publish;
-;# gsettings is the fallback for a session without the portal running.
-;# 1 = prefer dark, 2 = prefer light, 0 = no preference.
+;# The desktop's light/dark preference, for the dark/light fallback only.
+;# The freedesktop appearance portal is the cross-desktop answer and the one
+;# Hyprland/GNOME/KDE all publish; gsettings is the fallback for a session
+;# without the portal running. 1 = prefer dark, 2 = prefer light, 0 = none.
 proc detect_dark {} {
     set call [list exec busctl --user --timeout=2 call \
         org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop \
@@ -109,32 +118,68 @@ proc detect_dark {} {
 
 proc theme_resolve {name} {
     if {$name ne "auto"} { return $name }
-    return [expr {[detect_dark] ? "forest-dark" : "forest-light"}]
+    if {[omarchy::available]} { return "omarchy" }
+    return [expr {[detect_dark] ? "dark" : "light"}]
+}
+
+;# Paint `clam` (drawn from colours, so it can follow an arbitrary palette —
+;# unlike Forest's sprites) from ::PALETTE(dark|light). Only used for the
+;# fallback; the omarchy theme styles itself entirely on `source`.
+proc clam_style {which} {
+    set p $::PALETTE($which)
+    set bg [dict get $p bg] ; set fg [dict get $p fg]
+    set sel [dict get $p sel] ; set selfg [dict get $p selfg]
+    set dim [dict get $p dim]
+    ;# ttk::setTheme, not `ttk::style theme use`: only setTheme updates
+    ;# ::ttk::currentTheme, which is what a Python host's Style().theme_use()
+    ;# actually reads. Tk's own ttk.tcl says so in so many words -- the
+    ;# omarchy theme hit the identical bug and this is the same fix.
+    ttk::setTheme clam
+    ttk::style configure . -background $bg -foreground $fg \
+        -fieldbackground $bg -troughcolor $bg -bordercolor $dim \
+        -focuscolor $sel -selectbackground $sel -selectforeground $selfg \
+        -insertcolor $fg
+    ttk::style map . -foreground [list disabled $dim] -background [list disabled $bg]
+    foreach w {Treeview TNotebook.Tab TButton TMenubutton TEntry TSpinbox TLabel} {
+        ttk::style configure $w -background $bg -foreground $fg
+    }
+    ttk::style configure Treeview -fieldbackground $bg
+    ttk::style map Treeview -background [list selected $sel] \
+                            -foreground [list selected $selfg]
+    ttk::style configure Treeview.Heading -background $bg -foreground $fg
+    ttk::style configure TNotebook -background $bg
+    ttk::style map TNotebook.Tab -background [list selected $bg] \
+                                 -foreground [list selected $fg]
+    ttk::style map TButton -background [list active $sel disabled $bg] \
+                           -foreground [list disabled $dim]
+    ttk::style configure TEntry -fieldbackground $bg
+    ttk::style configure TSpinbox -fieldbackground $bg
+    ttk::style configure TFrame -background $bg
 }
 
 proc apply_theme {{name ""}} {
     if {$name ne ""} { set ::THEME $name }
     set want [theme_resolve $::THEME]
-    if {[lsearch -exact [ttk::style theme names] $want] < 0} {
-        set f [file join $::THEMEDIR $want.tcl]
-        if {![file readable $f]} {
-            log "! theme $want: no such file $f"
-        } elseif {[catch {uplevel #0 [list source $f]} e]} {
-            log "! theme $want: $e"
+    if {$want eq "omarchy"} {
+        if {[omarchy::load]} {
+            set ::ACTIVE_THEME omarchy
+            set ::OMARCHY_PAL [omarchy::palette]
+        } else {
+            log "! omarchy theme unavailable — falling back"
+            set want [expr {[theme_is_dark] ? "dark" : "light"}]
         }
     }
-    if {[lsearch -exact [ttk::style theme names] $want] < 0} {
-        log "! theme $want unavailable — falling back to clam"
-        set want clam
+    if {$want ne "omarchy"} {
+        clam_style $want
+        set ::ACTIVE_THEME $want
     }
-    ttk::style theme use $want
     repaint_theme
 }
 
 ;# Every colour the ttk theme does not reach: classic text widgets, menus,
 ;# treeview row tags, and the syntax tags.
 proc repaint_theme {} {
-    set bg [pal bg] ; set fg [pal fg] ; set sel [pal sel] ; set selfg [pal selfg]
+    set bg [pal field] ; set fg [pal fg] ; set sel [pal sel] ; set selfg [pal selfg]
     foreach w {cast lex md log} {
         set t .br.$w.t
         if {![winfo exists $t]} continue
@@ -149,9 +194,9 @@ proc repaint_theme {} {
     }
     foreach m {.ctx .sctx .tool.theme.m} {
         if {![winfo exists $m]} continue
-        $m configure -background $bg -foreground $fg \
+        $m configure -background [pal bg] -foreground [pal fg] \
             -activebackground $sel -activeforeground $selfg \
-            -selectcolor $fg
+            -selectcolor [pal fg]
     }
     retag_rows
     foreach w {cast lex md} { if {[winfo exists .br.$w.t]} { highlight $w } }
@@ -169,8 +214,7 @@ proc retag_rows {} {
 
 proc set_theme {name} {
     apply_theme $name
-    set live [ttk::style theme use]
-    log [expr {$name eq $live ? "theme: $name" : "theme: $name ($live)"}]
+    log "theme: $name ($::ACTIVE_THEME)"
 }
 
 # ---------------------------------------------------------------- highlight ---
@@ -999,11 +1043,17 @@ ttk::separator .tool.s2 -orient vertical
 ttk::button .tool.srv     -text "Start server" -command server_toggle
 ttk::menubutton .tool.theme -text "Theme" -direction below -menu .tool.theme.m
 menu .tool.theme.m -tearoff 0
-foreach {lbl val} {"Follow desktop" auto  "Forest dark" forest-dark
-                   "Forest light" forest-light  "Tk default (clam)" clam} {
+foreach {lbl val} {"Follow desktop" auto  "Omarchy" omarchy
+                   "Dark" dark  "Light" light} {
     .tool.theme.m add radiobutton -label $lbl -value $val -variable ::THEME \
         -command [list set_theme $val]
 }
+.tool.theme.m add separator
+;# `omarchy theme set` does not push a live-update signal to a running app;
+;# this re-sources the generated file (apply_theme's omarchy branch always
+;# does, unconditionally) to pick up whatever the desktop theme is now.
+.tool.theme.m add command -label "Reload from Omarchy" \
+    -command {apply_theme ; log "theme reloaded ($::ACTIVE_THEME)"}
 pack .tool.theme -side right -padx 2
 pack .tool.add .tool.refresh -side left -padx 2
 pack .tool.s1 -side left -fill y -padx 6

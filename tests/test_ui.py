@@ -6,6 +6,7 @@ ever completed a chapter. Feeding it every event shape catches that class of bug
 without needing a render.
 """
 import os
+import re
 import subprocess
 import sys
 
@@ -76,14 +77,9 @@ def test_ui_handles_every_event_shape(tmp_path):
 @needs_display
 @pytest.mark.parametrize("tk_version", sorted(_tk_interpreters()) or [""])
 def test_theme_loads_and_is_not_the_clam_fallback(tmp_path, tk_version):
-    """The vendored Forest theme must actually load, under every Tk here.
-
-    It once did not: `package require Tk 8.6` is unsatisfiable under Tcl 9
-    (there it means "major 8"), so the theme refused to load and apply_theme
-    silently fell back to clam. The UI still came up — just in the wrong
-    colours, which nothing could see. Parametrising over interpreters is the
-    point: run this only against the Tk the UI prefers and the Tcl 9 break is
-    invisible, because the preferred one is 8.6.
+    """The theme machinery must work under every Tk here, and must degrade to
+    a legible dark/light fallback on a machine with no Omarchy theme at all —
+    which is most machines this test suite runs on, including CI.
     """
     interps = _tk_interpreters()
     if not tk_version:
@@ -95,25 +91,35 @@ def test_theme_loads_and_is_not_the_clam_fallback(tmp_path, tk_version):
     assert r.returncode == 0, f"{r.stderr}\n{log}"
     assert "DONE" in log, log
 
-    # both themes load and are actually selected, not silently swapped for clam
-    assert "use forest-dark -> forest-dark" in log, log
-    assert "use forest-light -> forest-light" in log, log
-    assert "auto -> forest-" in log, log
-
-    # and the colours ttk does not reach followed the switch. This is the
-    # half that breaks if tk_setPalette is trusted: it runs once, at theme
-    # *create* time, so switching back leaves the text panes on the old palette.
+    # the fallback: both explicit choices actually select clam and repaint
+    assert "use dark -> ttk=clam active=dark" in log, log
+    assert "use light -> ttk=clam active=light" in log, log
     assert "md.t.bg #313131" in log and "md.t.fg #eeeeee" in log, log   # dark
     assert "md.t.bg #ffffff" in log and "md.t.fg #313131" in log, log   # light
     assert "tag.rendered #5ec27f" in log, log                           # dark
     assert "tag.rendered #2a7d4f" in log, log                           # light
+    # disabled buttons must be legible against clam's own background, on
+    # both fallback themes -- not the invisible-on-dark bug Forest had
+    assert "dark.disabled.fg" in log and "distinct 1" in log, log
 
-    # A disabled button must still be readable. Upstream leaves it on the
-    # global -disabledfg (#595959), which against forest-dark's #313131 is
-    # invisible -- the button renders as an empty rectangle. The vendored
-    # file carries a local patch for that; re-vendoring would silently drop
-    # it, so assert on the mapping rather than trusting the file.
-    assert "dark.disabled.fg disabled #bbbbbb" in log, log
+    if "omarchy.available 1" in log:
+        assert "use omarchy -> ttk=omarchy active=omarchy" in log, log
+        # `ttk::style theme use` does not update ::ttk::currentTheme, only
+        # `ttk::setTheme` does -- and that variable is exactly what a Python
+        # tkinter host's Style().theme_use() reads. Regress this and the UI
+        # still looks right under `wish` while a Python host reports
+        # "default" and every ttk widget stays unthemed underneath it.
+        assert "ttk::currentTheme omarchy" in log, log
+        # five chapter-stage rows must be five actually-distinct colours: a
+        # theme's red/green/yellow/blue/magenta are terminal palette slots,
+        # not a categorical scale, and some Omarchy themes collapse them
+        # (measured: osaka-jade's `blue` is literally its `accent`).
+        assert "distinct.count 5" in log, log
+    else:
+        assert "use omarchy -> SKIPPED" in log, log
+
+    # auto must land on something real -- never a silent unstyled fallback
+    assert re.search(r"auto -> ttk=(omarchy|clam) active=(omarchy|dark|light)", log), log
 
 
 @needs_display
