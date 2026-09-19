@@ -135,8 +135,17 @@ proc clam_style {which} {
     ;# actually reads. Tk's own ttk.tcl says so in so many words -- the
     ;# omarchy theme hit the identical bug and this is the same fix.
     ttk::setTheme clam
+    ;# clam's own -darkcolor/-lightcolor default to near-white (#bab5ab /
+    ;# #eeebe7 — clamTheme.tcl's -darker/-lighter) because clam assumes a
+    ;# light Motif-style background. Every raised/pressed bevel edge (button
+    ;# borders, treeview headings, notebook tabs) draws with those unless
+    ;# told otherwise — which is the whole reason the fallback looked like a
+    ;# grey window full of chunky white-bordered boxes rather than a themed
+    ;# dark app: -background/-foreground alone leaves clam's bevel behind.
+    ;# Matching both to $bg goes flat instead of guessing a derived shade.
     ttk::style configure . -background $bg -foreground $fg \
         -fieldbackground $bg -troughcolor $bg -bordercolor $dim \
+        -darkcolor $bg -lightcolor $bg \
         -focuscolor $sel -selectbackground $sel -selectforeground $selfg \
         -insertcolor $fg
     ttk::style map . -foreground [list disabled $dim] -background [list disabled $bg]
@@ -146,7 +155,10 @@ proc clam_style {which} {
     ttk::style configure Treeview -fieldbackground $bg
     ttk::style map Treeview -background [list selected $sel] \
                             -foreground [list selected $selfg]
-    ttk::style configure Treeview.Heading -background $bg -foreground $fg
+    ;# clam's Heading is `-relief raised` by default, which is exactly the
+    ;# chunky-bevel look even once the colours match -- flatten it too.
+    ttk::style configure Treeview.Heading -background $bg -foreground $fg \
+        -relief flat -borderwidth 1
     ttk::style configure TNotebook -background $bg
     ttk::style map TNotebook.Tab -background [list selected $bg] \
                                  -foreground [list selected $fg]
@@ -155,6 +167,9 @@ proc clam_style {which} {
     ttk::style configure TEntry -fieldbackground $bg
     ttk::style configure TSpinbox -fieldbackground $bg
     ttk::style configure TFrame -background $bg
+    ttk::style configure TScrollbar -background $bg -troughcolor $bg \
+        -bordercolor $bg -arrowcolor $fg
+    ttk::style map TScrollbar -background [list active $sel]
 }
 
 proc apply_theme {{name ""}} {
