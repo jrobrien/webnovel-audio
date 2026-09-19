@@ -295,6 +295,7 @@ proc refresh_series {} {
         .top.tv insert {} end -id [dict get $r slug] -values [list \
             [dict get $r title] \
             [expr {$on ? "on" : "paused"}] \
+            [json::get $r priority] \
             [json::get $r status] \
             [json::get $st rendered] \
             [dict get $r pending] \
@@ -302,7 +303,7 @@ proc refresh_series {} {
             [json::get $r next title]] \
             -tags [expr {$on ? "on" : "off"}]
     }
-    .top.tv tag configure off -foreground gray55
+    retag_rows              ;# themed, not hardcoded gray55
     status "[llength $rows] series"
     if {$keep ne "" && [.top.tv exists $keep]} {
         .top.tv selection set $keep
@@ -398,6 +399,41 @@ proc toggle_pause {} {
     log "$slug: sync [expr {$verb eq {enable} ? {resumed} : {paused}}]"
     refresh_series
     on_series_status
+}
+
+# Render order. Higher goes first; pausing is a separate axis and leaves this
+# alone, so resuming puts the series back where it was.
+proc dlg_priority {} {
+    set slug [selected_series]
+    if {$slug eq ""} return
+    set cur [.top.tv set $slug prio]
+    set w .prio ; catch {destroy $w}
+    toplevel $w ; wm title $w "Priority" ; wm transient $w .
+    ttk::label $w.l -text "Render priority for $slug:"
+    ttk::spinbox $w.n -from -9999 -to 9999 -increment 100 -width 8
+    $w.n set $cur
+    ttk::label $w.h -text "higher renders first · 100 is the default\npausing is separate and keeps this value" \
+        -justify left -foreground [pal dim]
+    ttk::frame $w.b
+    ttk::button $w.b.ok -text "Set" -command [list do_priority $w $slug]
+    ttk::button $w.b.cx -text "Cancel" -command [list destroy $w]
+    pack $w.b.ok $w.b.cx -side left -padx 4
+    grid $w.l -row 0 -column 0 -columnspan 2 -padx 10 -pady {10 4} -sticky w
+    grid $w.n -row 1 -column 0 -padx 10 -sticky w
+    grid $w.h -row 2 -column 0 -columnspan 2 -padx 10 -pady 6 -sticky w
+    grid $w.b -row 3 -column 0 -columnspan 2 -pady 8
+    focus $w.n
+    bind $w <Return> [list do_priority $w $slug]
+    bind $w <Escape> [list destroy $w]
+}
+
+proc do_priority {w slug} {
+    set v [string trim [$w.n get]]
+    destroy $w
+    if {![string is integer -strict $v]} { log "! priority must be an integer" ; return }
+    run_json series priority $slug $v
+    log "$slug: priority $v"
+    refresh_series
 }
 
 proc series_ctx {X Y x y} {
@@ -983,9 +1019,10 @@ grid rowconfigure . 1 -weight 1
 grid columnconfigure . 0 -weight 1
 
 ttk::frame .top
-ttk::treeview .top.tv -columns {title sync status rendered pending err next} \
+ttk::treeview .top.tv -columns {title sync prio status rendered pending err next} \
     -show headings -selectmode browse -yscrollcommand {.top.sb set}
 foreach {c t w a s} {title Title 280 w 1   sync Sync 70 center 0
+                     prio Prio 55 center 0
                      status Status 105 center 0   rendered Rendered 80 center 0
                      pending Pending 80 center 0   err Err 50 center 0
                      next "Next up" 260 w 1} {
@@ -1005,6 +1042,7 @@ menu .sctx -tearoff 0
 .sctx add command -label "Refresh chapter list" -command {
     if {[selected_series] ne ""} { run_cmd [list series refresh [selected_series]] }
 }
+.sctx add command -label "Set priority…" -command dlg_priority
 .sctx add command -label "Edit cast"    -command {.br select .br.cast}
 .sctx add command -label "Edit lexicon" -command {.br select .br.lex}
 

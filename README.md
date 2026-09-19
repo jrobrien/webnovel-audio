@@ -177,6 +177,7 @@ them first.
 | `series list` | dashboard: per-stage counts, what's next, errors |
 | `series show <slug>` | one series in detail |
 | `series enable\|disable <slug>` | include / exclude from `sync` — the UI calls this Pause/Resume |
+| `series priority <slug> <n>` | render order: higher goes first, 100 default. Orders `sync`, the CLI listing and the UI together. Separate from pause, so a paused series keeps its priority |
 | `series refresh [slug]` | re-fetch chapter lists **and series metadata** (tags, rating, status) |
 | `series forget <slug> [--purge]` | untrack; `--purge` deletes the whole bundle — audio, text, raw and cache |
 | `series path <slug>` | print the bundle directory, bare — `cd "$(… series path x)"` |
@@ -347,6 +348,13 @@ skipped/new and clears errors; shift/ctrl select ranges and scattered picks.
 Playback uses `$WEBNOVEL_AUDIO_PLAYER` (e.g. `mpv --no-video`) if set, else
 `xdg-open`. The selection becomes one comma range —
 picking 1, 2, 3, 7, 20, 21 runs `render <slug> 1-3,7,20-21`.
+
+Right-click a series to pause/resume it or **set its priority** — one number
+that orders `sync`, this list and the CLI together, so what renders first and
+what is at the top of the window cannot disagree. Higher goes first (100 is
+the default; leave gaps so you can insert between). Pausing is a separate
+axis: a paused series sinks to the bottom but keeps its priority, and gets it
+back on resume.
 
 **Sync…** shows a live CPU estimate before it starts. The Cast and Lexicon tabs
 edit the bundle's `config.toml` and `lexicon.csv` in place, with an

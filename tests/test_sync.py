@@ -735,3 +735,67 @@ def test_schema_covers_every_command(capsys):
     cast_set = next(n for n in d["detail"] if n["path"] == ["cast", "set"])
     assert [p["name"] for p in cast_set["positional"]] == ["key", "speaker", "voice"]
     assert cast_set["help"]
+
+
+def _series(db, slug, title):
+    return db.upsert_series(FictionInfo(rr_id=slug, slug=slug, title=title,
+                                        author="A", url=f"https://rr/{slug}"))
+
+
+def test_priority_orders_every_consumer_the_same_way(tmp_path):
+    """One ordering drives `sync`, the CLI and the UI, because they all go
+    through list_series. If they drifted apart, "what renders first" and
+    "what is at the top of the screen" would stop agreeing."""
+    db = DB(str(tmp_path / "s.db"))
+    low = _series(db, "low", "Aaa Low")        # alphabetically first
+    high = _series(db, "high", "Zzz High")     # alphabetically last
+
+    # defaults: nothing set, so it falls back to title order
+    assert [s["slug"] for s in db.list_series()] == ["low", "high"]
+
+    db.set_priority(high, 900)
+    assert [s["slug"] for s in db.list_series()] == ["high", "low"]
+
+
+def test_pausing_preserves_priority(tmp_path):
+    """The reason priority is a separate column from `enabled`.
+
+    Overloading one integer -- 0 meaning paused -- would have to destroy the
+    priority to pause, leaving nothing to restore on resume.
+    """
+    db = DB(str(tmp_path / "s.db"))
+    a = _series(db, "a", "A")
+    _series(db, "b", "B")
+    db.set_priority(a, 900)
+
+    db.set_enabled(a, False)
+    rows = db.list_series()
+    assert [s["slug"] for s in rows] == ["b", "a"], "paused sorts last"
+    assert dict(rows[1])["priority"] == 900, "but keeps its priority"
+
+    db.set_enabled(a, True)
+    assert [s["slug"] for s in db.list_series()] == ["a", "b"], "resume restores it"
+
+
+def test_priority_column_is_added_to_an_existing_db(tmp_path):
+    """Upgrading a tracked library must not need a re-import."""
+    import sqlite3
+
+    path = str(tmp_path / "old.db")
+    db = DB(path)
+    sid = _series(db, "x", "X")
+    db.close()
+
+    # simulate the pre-priority schema
+    con = sqlite3.connect(path)
+    con.execute("ALTER TABLE series DROP COLUMN priority")
+    con.commit()
+    assert "priority" not in {r[1] for r in con.execute("PRAGMA table_info(series)")}
+    con.close()
+
+    db = DB(path)                                   # migrates on open
+    assert "priority" in {r["name"] for r in
+                          db.con.execute("PRAGMA table_info(series)")}
+    assert dict(db.list_series()[0])["priority"] == 100, "existing rows get the default"
+    db.set_priority(sid, 300)
+    assert dict(db.list_series()[0])["priority"] == 300

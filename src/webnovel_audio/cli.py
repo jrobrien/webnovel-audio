@@ -1564,7 +1564,7 @@ def _cmd_series(args) -> int:
         finally:
             db.close()
 
-    if args.action in ("enable", "disable", "forget", "show"):
+    if args.action in ("enable", "disable", "priority", "forget", "show"):
         db = DB(cfg.royalroad.state_db)
         try:
             s = db.get_series(args.key)
@@ -1583,6 +1583,17 @@ def _cmd_series(args) -> int:
                              "title": s["title"]})
                 else:
                     print(f"{s['title']}: sync {'resumed' if on else 'paused'}")
+                return 0
+
+            if args.action == "priority":
+                db.set_priority(s["id"], args.value)
+                if want_json:
+                    _jprint({"ok": True, "slug": s["slug"], "title": s["title"],
+                             "priority": args.value,
+                             "enabled": bool(s["enabled"])})
+                else:
+                    where = "" if s["enabled"] else "  (paused, so still not synced)"
+                    print(f"{s['title']}: priority {args.value}{where}")
                 return 0
 
             if args.action == "forget":
@@ -1644,6 +1655,9 @@ def _cmd_series(args) -> int:
         print("no tracked series. add one:  webnovel-audio series add <fiction-url>")
     for r in rows:
         flag = "" if r["enabled"] else "  (sync disabled)"
+        # only worth the noise once it has been set away from the default
+        if r.get("priority", 100) != 100:
+            flag += f"  (priority {r['priority']})"
         # a bundle deleted out from under us is a supported state, not an error
         flag += "" if r["bundle"] == "ok" else f"  (bundle {r['bundle']})"
         print(f"{r['title']}{flag}")
@@ -1952,6 +1966,14 @@ def _build_parser():
         q = se_sub.add_parser(name, help=f"{name} this series for `sync`")
         q.add_argument("key")
         _cfg_json(q)
+    pr_ = se_sub.add_parser(
+        "priority", help="render order: higher goes first (default 100)")
+    pr_.add_argument("key")
+    pr_.add_argument("value", type=int,
+                     help="any integer; leave gaps (100, 200, …) so you can "
+                          "insert between later. Pausing is separate — a "
+                          "paused series keeps its priority")
+    _cfg_json(pr_)
     fg = se_sub.add_parser("forget", help="untrack a series")
     fg.add_argument("key")
     fg.add_argument("--purge", action="store_true", help="also delete its library files")

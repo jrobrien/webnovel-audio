@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS series (
     url            TEXT,
     cover_url      TEXT,
     enabled        INTEGER DEFAULT 1,    -- 0 = excluded from `sync`
+    priority       INTEGER DEFAULT 100,  -- higher renders first; see list_series
     tags           TEXT,                 -- JSON array, from the source page
     warnings       TEXT,                 -- JSON array: "Graphic Violence", ...
     status         TEXT,                 -- ONGOING | COMPLETED | ...
@@ -119,7 +120,8 @@ class DB:
             self.con.execute("ALTER TABLE series ADD COLUMN enabled INTEGER DEFAULT 1")
         for name, decl in (("tags", "TEXT"), ("warnings", "TEXT"),
                            ("status", "TEXT"), ("rating", "REAL"),
-                           ("uuid", "TEXT"), ("path", "TEXT")):
+                           ("uuid", "TEXT"), ("path", "TEXT"),
+                           ("priority", "INTEGER DEFAULT 100")):
             if name not in scols:
                 self.con.execute(f"ALTER TABLE series ADD COLUMN {name} {decl}")
 
@@ -195,7 +197,22 @@ class DB:
         ).fetchone()
 
     def list_series(self) -> list[sqlite3.Row]:
-        return self.con.execute("SELECT * FROM series ORDER BY title").fetchall()
+        """Every series, most important first.
+
+        One ordering for everything: `sync` renders in this order, and the CLI
+        and UI list in it, so "what gets rendered first" and "what is at the
+        top of my screen" cannot drift apart.
+
+        `priority` is deliberately not overloaded to mean paused. A paused
+        series is not a low-priority one — it is excluded entirely — and
+        folding the two together would lose the priority on pause, leaving
+        nothing to restore on resume. Paused series sort last (`enabled DESC`)
+        while keeping whatever priority they had.
+        """
+        return self.con.execute(
+            "SELECT * FROM series "
+            "ORDER BY enabled DESC, COALESCE(priority, 100) DESC, title"
+        ).fetchall()
 
     def set_bundle(self, series_id: int, path: str, uuid_: str | None = None) -> None:
         """Record where this series' bundle lives. `path` is absolute and
@@ -234,6 +251,7 @@ class DB:
                 "url": s["url"], "rr_id": s["rr_id"],
                 "provider": s["provider"] if "provider" in keys else "royalroad",
                 "enabled": bool(s["enabled"]) if "enabled" in keys else True,
+                "priority": (s["priority"] if "priority" in keys else None) or 100,
                 "tags": _jlist("tags"), "warnings": _jlist("warnings"),
                 "status": (s["status"] if "status" in keys else "") or "",
                 "rating": (s["rating"] if "rating" in keys else 0.0) or 0.0,
@@ -438,6 +456,11 @@ class DB:
             [status, *ids])
         self.con.commit()
         return len(ids)
+
+    def set_priority(self, series_id: int, priority: int) -> None:
+        self.con.execute("UPDATE series SET priority=? WHERE id=?",
+                         (int(priority), series_id))
+        self.con.commit()
 
     def set_enabled(self, series_id: int, enabled: bool) -> None:
         self.con.execute("UPDATE series SET enabled=? WHERE id=?",
