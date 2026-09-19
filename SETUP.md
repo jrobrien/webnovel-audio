@@ -34,7 +34,7 @@ Verify:
 
 ```sh
 uv run webnovel-audio --version
-uv run pytest -q                 # ~240 tests, all offline
+uv run pytest -q                 # ~240 tests, all offline (no network)
 ```
 
 Every command below is `uv run webnovel-audio …`. If you'd rather type
@@ -58,14 +58,14 @@ most likely to touch:
 | `[royalroad] state_db` | SQLite tracking file (default `~/.local/state/webnovel-audio/state.db`) |
 | `[royalroad] request_delay` | seconds between requests to royalroad.com (be polite; default 2.5) |
 | `[serve] port` / `base_url` | the LAN feed server |
-| `[general] lexicon_dir` | drop `data/lexicons/<series-slug>.csv` here and `sync` uses it automatically |
 | `[general] base_lexicon` | always-on respelling CSV (`data/lexicons/_base.csv`) applied to every series; a per-series row for the same word wins. `""` to disable |
-| `[general] series_config_dir` | drop `data/series/<series-slug>.toml` here to override any config section for one series |
+| `[general] lexicon_dir` / `series_config_dir` | pre-bundle fallbacks, still read for a tree that has not been migrated |
 
-Pass `-c /path/to/other.toml` to any command to use a different config. For
-per-series tweaks (a cast, chat behaviour, pauses…) prefer a
-`data/series/<slug>.toml` overlay — `sync` merges it over `config.toml`
-automatically; see `data/series/README.md`.
+Pass `-c /path/to/other.toml` to any command to use a different config. A
+tracked series keeps its own `config.toml` and `lexicon.csv` inside its bundle
+directory (`webnovel-audio series path <slug>`), and `sync` merges that config
+over the global one automatically — `cast edit <slug>` and `lex edit <slug>`
+open them.
 
 ## 4. One-off render (sanity check)
 
@@ -294,16 +294,20 @@ paths above. Nothing else is touched; no system packages are installed.
   `curl -sI http://<ip>:8080/feed/<slug>.xml` → `200`).
 - **A chapter mis-attributes dialogue or mispronounces a name** — that's per
   series: `webnovel-audio check <slug> <range>` for a `[cast.voices]` starter,
-  `webnovel-audio cast update <slug> <range>` to queue pronunciations into
-  `data/lexicons/<slug>.csv`. See `README.md`.
-- **Fixing a pronunciation** — for a name that's wrong everywhere (e.g.
-  `Montgomery`, `Eleanor`), add a row to `data/lexicons/_base.csv` — it applies to
-  every series. For a name specific to one series, use `data/lexicons/<slug>.csv`
-  (a row here overrides `_base.csv` for the same word). One row per term,
-  `surface,respell,ipa,notes`; give a phonetic **respell** — lowercase
-  sound-it-out syllables joined by hyphens (`Kaelith,kay-lith`), *not* uppercase
-  (the g2p reads `KAY` as letters). The `ipa` column is reserved and ignored
-  today; leave it blank. `sync` auto-loads both files. Check a respell before
+  `webnovel-audio cast update <slug> <range>` to queue pronunciations into the
+  series' `lexicon.csv`. See `README.md`.
+- **Fixing a pronunciation** — for a word that's wrong everywhere (e.g.
+  `Montgomery`, `lapis`), add a row to `data/lexicons/_base.csv` — it applies to
+  every series. For a name specific to one series, use that series'
+  `<bundle>/lexicon.csv` (a row there overrides `_base.csv` for the same word);
+  `webnovel-audio lex edit <slug>` opens it, and `lex promote <slug> <word>`
+  moves a row from there into the base file once it turns out to be general.
+  One row per rule, `surface,pos,respell,notes`. Leave `pos` blank to apply
+  always; set it (`NOUN`, `VERB`, `ADJ`, a Penn tag like `VBD`, or `TAG+lemma`)
+  to pin one reading of a heteronym — `live,VERB,liv` vs `live,ADJ,lyve`. Most
+  specific wins. Give a phonetic **respell** — lowercase sound-it-out syllables
+  joined by hyphens (`Kaelith,,kay-lith`), *not* uppercase (the g2p reads `KAY`
+  as letters). `sync` auto-loads both files. Check a respell before
   committing to it: `webnovel-audio pron Montgomery` prints the raw phonemes and a
   rough gloss, then the same after the lexicon; `webnovel-audio pron --check`
   audits every row (add `--series <slug>` for that series' file). The UI's

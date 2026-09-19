@@ -44,7 +44,11 @@ git clone <this-repo> ~/Projects/webnovel-audio && cd ~/Projects/webnovel-audio
 uv sync --extra kokoro                 # venv + deps + Kokoro TTS + the POS tagger
 uv run webnovel-audio models fetch     # ~400 MB, once
 cp config.example.toml config.toml
+```
 
+### From the command line
+
+```sh
 # 1. track it (metadata only — no chapter downloads)
 uv run webnovel-audio series add <royal-road-fiction-url> --from start
 
@@ -70,6 +74,23 @@ renders everything new across every enabled series, after showing you how much
 CPU that will cost. When a new character shows up 40 chapters later, drop back to step 3
 with `cast update <slug> 50-55`; it only ever *adds* speakers, never rewrites
 the ones you've tuned.
+
+### From the control UI
+
+```sh
+uv run webnovel-audio ui
+```
+
+The same steps in one window — series across the top, chapters bottom-left, a
+notebook bottom-right (Cast, Lexicon, Markdown, Log). Select chapters and
+right-click to run `fetch` / `parse` / `check` / `render` over exactly that
+selection; double-click to play one.
+
+![the control UI](docs/img/ui.png)
+
+It shells the same CLI and parses its `--json`, with no DB or network access
+of its own — so every capability here is one you also have from a terminal.
+Full details in [Control UI](#control-ui) below.
 
 ## The pipeline
 
@@ -195,7 +216,8 @@ them first.
 | `cast show <slug>` | the effective cast, including unassigned speakers |
 | `lex edit <slug>` / `lex edit --base` | open the per-series / always-on CSV in `$EDITOR` |
 | `lex ignore <slug> <word>…` | mark words "reads fine", so `check` stops listing them |
-| `lex add <slug> <surface> <respell>` | append a row without opening an editor |
+| `lex add <slug> <surface> <respell>` | append a row without opening an editor (`--pos` to scope it, `--base` to write the always-on file) |
+| `lex promote <slug> <surface>` | move a row from the series file into the always-on base, once it turns out not to be series-specific |
 | `lex list [slug]` | show effective entries (base + series, merged) |
 | `config show` / `config edit` | resolved paths / open `config.toml` |
 | `pron <text> [--series S]` | how the TTS will say it: phonemes + a rough gloss |
@@ -306,10 +328,7 @@ uv run webnovel-audio ui                      # picks a usable interpreter
 uv run webnovel-audio ui --interpreter /usr/bin/python3     # or name one
 ```
 
-A Tcl/Tk front end laid out like **gitk** — series across the top, chapters
-bottom-left, a notebook bottom-right (Cast, Lexicon, Markdown, Log):
-
-![the control UI](docs/img/ui.png)
+A Tcl/Tk front end laid out like **gitk** ([screenshot](#from-the-control-ui)).
 
 The UI is hosted by `ui/host.py`, which imports `tkinter` and nothing else —
 it talks to the CLI over `--json` for everything it shows. That is why it can
@@ -323,9 +342,8 @@ system Python when its own cannot render. It says so when it does.
 The theme follows the desktop's light/dark preference, and the toolbar's
 **Theme** menu switches it live.
 
-Select chapters (shift/ctrl for ranges and scattered picks) and **right-click**
-to **Play** the chapter, run `fetch` / `parse` / `check` / `render` over exactly
-that selection, or mark them skipped/new and clear errors. Double-click plays.
+Beyond running a stage over the selection, the right-click menu marks chapters
+skipped/new and clears errors; shift/ctrl select ranges and scattered picks.
 Playback uses `$WEBNOVEL_AUDIO_PLAYER` (e.g. `mpv --no-video`) if set, else
 `xdg-open`. The selection becomes one comma range —
 picking 1, 2, 3, 7, 20, 21 runs `render <slug> 1-3,7,20-21`.
@@ -348,9 +366,6 @@ the CLI. `python ui/host.py ui/control.tcl` works directly too — set
 `WEBNOVEL_AUDIO=/path/to/webnovel-audio` if it isn't found. `wish
 ui/control.tcl` still runs, and is occasionally handy for a Tcl-level problem,
 but tkinter is the supported and tested host.
-
-It has no DB or network access of its own: everything goes through the CLI's
-`--json` output, so every capability here is one you also have from a terminal.
 
 ### Adding a content source
 
@@ -533,7 +548,7 @@ per-series casting (`seed_chapters` = `check`'s default sample window) · `[chat
 ## Development
 
 ```sh
-uv run pytest -q            # ~230 tests, fully offline
+uv run pytest -q            # ~240 tests, fully offline
 uv run python -m compileall -q src/
 ```
 
