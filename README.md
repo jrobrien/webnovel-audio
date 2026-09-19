@@ -32,7 +32,8 @@ Setup, deployment, automation, troubleshooting: [`SETUP.md`](SETUP.md).
 
 ## Requirements
 
-- Linux, Python **3.12** (pinned; [`uv`](https://docs.astral.sh/uv/) fetches it)
+- Linux, Python **3.12+** — [`uv`](https://docs.astral.sh/uv/) prefers your
+  distribution's (`tk` must be installed alongside it, for the control UI)
 - `ffmpeg` on `PATH`
 - optional: `qrencode` (`serve` prints a scannable QR), `pandoc` (Markdown → EPUB)
 

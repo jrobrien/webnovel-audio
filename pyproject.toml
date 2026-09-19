@@ -41,3 +41,19 @@ packages = ["src/webnovel_audio"]
 
 [dependency-groups]
 dev = ["pytest>=8"]
+
+[tool.uv]
+# Prefer the distribution's Python over a uv-downloaded one.
+#
+# Not a version preference — a *build* preference. uv's managed interpreters
+# come from python-build-standalone, whose Linux Tk is compiled without Xft:
+# it sees one font family and draws every string in the X11 `fixed` bitmap
+# font, which has no apostrophe, curly quote, em dash or ellipsis. That makes
+# the control UI's Markdown pane unreadable for prose, and nothing can be
+# configured to fix it — _tkinter is built against one Tk at interpreter build
+# time. A distro Python links the system Tk and renders correctly.
+#
+# "system" rather than "only-system" so a machine without a suitable system
+# Python still resolves; `ui` detects such an interpreter and says so. This
+# costs nothing on Windows, where Tk uses native font APIs either way.
+python-preference = "system"

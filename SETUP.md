@@ -9,7 +9,7 @@ paywalled chapters only).
 | | |
 |---|---|
 | OS | Linux (developed on Arch/Omarchy; anything with Python + ffmpeg works) |
-| Python | 3.12 (pinned in `.python-version`; `uv` fetches it for you) |
+| Python | 3.12 or newer. `uv` prefers the one your distro ships (`python-preference = "system"` in `pyproject.toml`) — its Tk is built with Xft, which the control UI needs to render quotes and dashes. A uv-downloaded or conda Python is not, and `ui` will say so. |
 | [`uv`](https://docs.astral.sh/uv/) | package/venv manager — `curl -LsSf https://astral.sh/uv/install.sh | sh` |
 | `ffmpeg` | on `PATH` (`ffmpeg -version`) — used for mastering, Opus, and `.m4b` |
 | `qrencode` | optional — `serve` shows a scannable QR of the feed URL if present (`pacman -S qrencode`; `libsixel` too for `qr -s`) |
