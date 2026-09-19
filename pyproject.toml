@@ -15,18 +15,26 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Baseline narration engine. Installs onnxruntime (CPU, uses AVX-512/VNNI on Zen 4).
+# Baseline narration engine. Installs onnxruntime (CPU, uses AVX-512/VNNI on
+# Zen 4), and the POS tagger, which rendering refuses to run without: the
+# pronunciation rules are keyed on part of speech, and with no tagger espeak
+# decides heteronyms itself and gets them wrong. Pulling it in here means
+# `uv sync --extra kokoro` produces something that can actually render,
+# rather than one that stops at the first chapter to tell you so.
 kokoro = [
     "kokoro-onnx>=0.4.0",
     "onnxruntime>=1.18",
+    "webnovel-audio[spacy]",
 ]
 
-# Optional POS tagger for heteronyms (`read` past vs present, CON-tent vs
-# con-TENT). Without it espeak decides and nothing else changes; see
-# docs/plans/heteronym-disambiguation.md. `tagger install` does this for you
-# and also fetches the model, which is not a PyPI package.
+# The POS tagger and its smallest model. The model is not on PyPI — it is a
+# GitHub release wheel — so it is named by URL here. `sm` is the default
+# because the accuracy difference on this workload is small and `md` is ~40x
+# the download; `webnovel-audio tagger install --model en_core_web_md`
+# upgrades in place, and the model wheel URL is built the same way there.
 spacy = [
-    "spacy>=3.8",
+    "spacy>=3.8,<3.9",
+    "en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl",
 ]
 
 [project.scripts]
@@ -35,6 +43,12 @@ webnovel-audio = "webnovel_audio.cli:main"
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.metadata]
+# The spaCy model is a GitHub release wheel, not a PyPI package, so the
+# `spacy` extra names it by URL. Hatchling rejects direct references unless
+# told they are intentional — they are: there is nowhere else to get it.
+allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/webnovel_audio"]

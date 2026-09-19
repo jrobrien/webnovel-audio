@@ -25,7 +25,8 @@ fifth of its playback length.
 git clone <this repo> ~/Projects/webnovel-audio      # or copy it there
 cd ~/Projects/webnovel-audio
 
-uv sync --extra kokoro           # create .venv, install deps + the Kokoro engine
+uv sync --extra kokoro           # .venv, deps, the Kokoro engine, and the
+                                 # POS tagger + en_core_web_sm (render needs it)
 uv run webnovel-audio models fetch   # ~400 MB, once, into ~/.cache/webnovel-audio
 ```
 
@@ -33,7 +34,7 @@ Verify:
 
 ```sh
 uv run webnovel-audio --version
-uv run pytest -q                 # ~92 tests, all offline
+uv run pytest -q                 # ~240 tests, all offline
 ```
 
 Every command below is `uv run webnovel-audio …`. If you'd rather type
