@@ -125,6 +125,11 @@ class KokoroSynth:
             raise SystemExit(
                 "Kokoro model files missing.  ->  webnovel-audio models fetch"
             )
+        # Kokoro builds the espeak phonemizer here. If the data path is too
+        # deep espeak exits the process instead of raising, so this has to
+        # refuse *before* that, while there is still something to refuse with.
+        from ..espeak import require_usable
+        require_usable("cannot render:")
         self._k = Kokoro(model, voices)
         self.default_voice = default_voice
         self.speed = speed

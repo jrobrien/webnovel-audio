@@ -250,6 +250,37 @@ paths above. Nothing else is touched; no system packages are installed.
 - **Podcast app won't play the audio** — it doesn't support Opus. Use AntennaPod
   / Podcast Addict, or make a `.m4b` with `book`.
 - **`ffmpeg not found`** — install it (`sudo pacman -S ffmpeg`).
+- **Rendering dies with no traceback, mentioning `/home/runner/...`** — the
+  process is *gone*, not raising:
+
+  ```
+  Error processing file '/home/runner/work/espeakng-loader/espeakng-loader/
+  espeak-ng/_dynamic/share/espeak-ng-data/phontab': No such file or directory.
+  ```
+
+  Nobody has that path. espeak-ng keeps its data directory in a fixed 160-byte
+  buffer; install the venv deep enough and the path stops fitting, espeak
+  ignores the one it was handed, falls back to the directory it was *compiled*
+  in on some CI machine, and calls `exit()`. Check it with:
+
+  ```sh
+  webnovel-audio config show | grep espeak
+  ```
+
+  `espeak_ok True` means it really phonemized (in a subprocess — that failure
+  cannot be caught in-process). Rendering refuses outright past 120
+  characters rather than risking it, and says so; move the project somewhere
+  shorter and re-run `uv sync`. Symlinking a short name onto a deep directory
+  does not help, because the limit applies to the resolved path. This bites
+  hardest on Windows, where `C:\Users\<name>\AppData\Local\...` is already
+  long before the venv.
+
+  The 120 is deliberately well under espeak's real limit: it is a buffer
+  overrun, so the boundary is not crisp — measured here, 139 characters
+  worked on one run and failed on the next. espeak-ng raises the POSIX limit
+  to `PATH_MAX` in releases after 1.52.0, and the check reads the bundled
+  library's version and stops applying itself once one of those is
+  installed.
 - **`models fetch` fails** — network/proxy issue; the files are two GitHub-release
   URLs (see `src/webnovel_audio/synth/kokoro.py`), download them manually into
   `~/.cache/webnovel-audio/`.

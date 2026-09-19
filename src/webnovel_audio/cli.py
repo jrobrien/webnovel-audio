@@ -323,6 +323,10 @@ def _phonemes(text: str) -> str:
             from kokoro_onnx.tokenizer import Tokenizer
         except ModuleNotFoundError:
             raise SystemExit("`pron` needs the TTS engine:  uv sync --extra kokoro")
+        # espeak exits the process rather than raising when it cannot reach
+        # its data, so this has to refuse first or not at all.
+        from .espeak import require_usable
+        require_usable("cannot phonemize:")
         _TOKENIZER = Tokenizer()
     return _TOKENIZER.phonemize(text)
 
@@ -1753,11 +1757,27 @@ def _cmd_config(args) -> int:
         "voices": _EN_VOICES,
         "serve_port": cfg.serve.port,
     }
+    # The one check here that runs something rather than reporting a setting:
+    # espeak's data path is the failure that cannot report itself, because it
+    # takes the process down before any handler sees it.
+    from . import espeak as _espeak
+    ep = _espeak.data_path()
+    if ep:
+        ok, detail = _espeak.probe()
+        info["espeak_data"] = ep
+        info["espeak_ok"] = ok
+        if not ok:
+            info["espeak_error"] = detail
     if getattr(args, "json", False):
         _jprint(info)
     else:
         for k, v in info.items():
             print(f"{k:14} {v}")
+        if ep and not info.get("espeak_ok", True):
+            print(f"\n! espeak-ng cannot read its data ({len(ep)} character path).")
+            print(f"  {info.get('espeak_error', '')}")
+            print("  Rendering will abort with no traceback. Move the project or")
+            print("  its venv somewhere shorter and re-run `uv sync`.")
     return 0
 
 
