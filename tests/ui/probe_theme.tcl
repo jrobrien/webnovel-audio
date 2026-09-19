@@ -48,10 +48,14 @@ proc report {} {
         puts $::LOG "  tag.fetched $fetched"
         puts $::LOG "  tag.parsed $parsed"
         puts $::LOG "  tag.skipped $skipped"
-        ;# the five status colours must actually be five colours -- this is
-        ;# the furthest-point-picking guard, not upstream's problem to solve
+        ;# the five status colours must actually be five colours -- backed by
+        ;# ttk::theme::omarchy::distinct_hues (exhaustive over the theme's
+        ;# palette, contrast-floored) for four of them; `skipped` is always
+        ;# the muted/dim colour, a deliberate de-emphasis rather than a fifth
+        ;# hue to keep apart
         set five [list $rendered $error $fetched $parsed $skipped]
         puts $::LOG "  distinct.count [llength [lsort -unique $five]]"
+        puts $::LOG "  spread [omarchy::spread [list $rendered $error $fetched $parsed]]"
     } else {
         puts $::LOG "use omarchy -> SKIPPED (not available on this machine)"
     }

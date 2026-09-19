@@ -4,7 +4,7 @@
 # The theme itself is not this file's business. Sourcing the file it generates
 # is completely self-contained: it creates ttk theme "omarchy" (parent clam),
 # selects it, runs tk_setPalette for the classic widgets, and walks the
-# existing widget tree fixing up Text/Listbox/Entry/Spinbox — all before
+# existing widget tree fixing up Text/Listbox/Entry/Spinbox/Menu — all before
 # `source` returns. Re-sourcing is the documented reload path (`omarchy theme
 # set` changes the file on disk; nothing re-sources it for you), and it is
 # safe to call more than once: `theme create` is guarded, `theme settings` and
@@ -68,49 +68,23 @@ proc omarchy::color {name {fallback ""}} {
     return [expr {$v eq "" ? $fallback : $v}]
 }
 
-proc omarchy::_rgb {hex} {
-    if {![regexp {^#([0-9a-fA-F]{6})$} $hex -> h]} { return {0 0 0} }
-    return [list [scan [string range $h 0 1] %x] \
-                 [scan [string range $h 2 3] %x] \
-                 [scan [string range $h 4 5] %x]]
-}
-
-proc omarchy::_dist {a b} {
-    lassign [_rgb $a] r1 g1 b1
-    lassign [_rgb $b] r2 g2 b2
-    return [expr {sqrt(($r1-$r2)**2 + ($g1-$g2)**2 + ($b1-$b2)**2)}]
-}
-
-;# Pick `n` colours from `pool` that stay apart from each other and from
-;# `taken`, greedily by furthest point.
-;#
-;# The chapter-stage colours cannot just be assigned "blue" and "magenta" and
-;# trusted: a theme names its hues after intent, not hue angle, and nothing
-;# stops two of them landing close together. Measured, not hypothetical: in
-;# osaka-jade, `blue` is #509475 — 15 units (of ~440 possible) from that same
-;# theme's `green`, which is already spoken for by the `rendered` row. Picking
-;# `fetched`'s colour by nominal name would render it the same colour as
-;# `rendered` in that theme specifically. Furthest-point selection keeps every
-;# status legible in any theme, at the cost of "fetched" not always being the
-;# colour literally called blue — legible beats nominal, since nobody reads
-;# that column by checking which hue name a stylesheet gave it.
-proc omarchy::_spread {pool taken n} {
-    set out {}
-    for {set i 0} {$i < $n} {incr i} {
-        set best "" ; set bestd -1
-        foreach c $pool {
-            if {$c eq "" || $c in $out} continue
-            set d 1e9
-            foreach t [concat $taken $out] {
-                if {$t eq ""} continue
-                set d [expr {min($d, [_dist $c $t])}]
-            }
-            if {$d > $bestd} { set bestd $d ; set best $c }
-        }
-        if {$best eq ""} break
-        lappend out $best
+;# Thin wrappers over the theme's own exhaustive picker (docs/consuming.md).
+;# Not reimplemented here: an earlier version of this file did its own
+;# greedy furthest-point selection, which the theme's author measured losing
+;# to plain hue naming on three themes (seeded with one colour, never
+;# recovers from a bad seed). Exhaustive over an 8-9 candidate pool has no
+;# such failure mode, and folds in a WCAG contrast floor against the
+;# background that the greedy version never had at all.
+proc omarchy::distinct_hues {n {fallback ""}} {
+    if {[catch {ttk::theme::omarchy::distinct_hues $n} v] || [llength $v] < $n} {
+        return $fallback
     }
-    return $out
+    return $v
+}
+
+proc omarchy::spread {hexes} {
+    if {[catch {ttk::theme::omarchy::spread $hexes} v]} { return -1 }
+    return $v
 }
 
 ;# The live Omarchy palette, translated into the keys repaint_theme expects.
@@ -121,26 +95,39 @@ proc omarchy::palette {} {
     set bg    [color bg  "#1e1e1e"]
     set field [color field $bg]
     set dim   [color muted [color disabledfg $fg]]
-    set green [color green $fg]
-    set red   [color red $fg]
-    ;# rendered/error keep their named meaning; the other two chapter-stage
-    ;# colours are otherwise arbitrary, so let them be whichever named hues
-    ;# stay furthest from the ones already spoken for
-    set rest [_spread [list [color cyan ""] [color blue ""] [color magenta ""] \
-                            [color orange ""] [color yellow ""]] \
-                      [list $green $red $dim] 2]
-    set fetched [lindex $rest 0] ; set parsed [lindex $rest 1]
-    if {$fetched eq ""} { set fetched $fg }
-    if {$parsed  eq ""} { set parsed  $fg }
+
+    ;# Deliberately NOT red=error, green=rendered: those are terminal palette
+    ;# slots, not a categorical scale, and a theme is free to collapse them —
+    ;# measured elsewhere at deltaE 0.0, one colour wearing all five hats.
+    ;# distinct_hues gives the best four the theme can supply, full stop;
+    ;# which stage gets which is an arbitrary but stable (same theme, same
+    ;# order every run) assignment. Colour is the redundant channel here —
+    ;# the Stage column's text is the one that actually carries the meaning.
+    set named [list [color red $fg] [color green $fg] \
+                    [color yellow $fg] [color blue $fg]]
+    set hues [distinct_hues 4 $named]
+    if {$hues eq ""} {
+        ;# a cached theme file from before distinct_hues existed: fall back
+        ;# to plain naming rather than fail. Still correct, just not immune
+        ;# to the collision distinct_hues exists to avoid.
+        log "! omarchy theme has no distinct_hues (stale cache?) — using named colours"
+        set hues $named
+    }
+    lassign $hues rendered error fetched parsed
+    set s [spread $hues]
+    if {$s >= 0 && $s < 25} {
+        log "! theme colours for chapter stages are hard to tell apart (spread $s) — relying on the Stage column text"
+    }
+
     return [dict create \
         bg $bg  fg $fg  field $field  dim $dim \
         sel   [color selectbg [color accent $bg]] \
         selfg [color selectfg $fg] \
-        rendered $green  error $red  skipped $dim \
-        fetched  $fetched  parsed $parsed  off $dim \
+        rendered $rendered  error $error  skipped $dim \
+        fetched  $fetched   parsed $parsed  off $dim \
         com $dim \
         key [color orange [color yellow $fg]] \
-        str $green \
+        str [color green $fg] \
         head [color accent [color blue $fg]] \
         em [color bright_fg $fg]]
 }
