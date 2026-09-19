@@ -915,6 +915,85 @@ def _lex_header_for(path: str, slug: str | None, cfg: Config) -> str:
     return Lexicon.starter_text(slug, cfg.general.base_lexicon)
 
 
+def _lex_promote(args, base: str, series: str) -> int:
+    """Move one rule from a series lexicon to the always-on base file.
+
+    A rule earns this once it turns out to be a generic g2p mistake rather
+    than something particular to that series (`diviner`, not `Broadsky`).
+    Reads and rewrites the series CSV by hand rather than through `csv`
+    end-to-end, so the leading `#` comment block survives untouched.
+    """
+    import csv
+
+    from .lexicon import Rule
+
+    if not series or not os.path.exists(series):
+        print(f"no lexicon file for {args.slug}")
+        return 1
+
+    with open(series, encoding="utf-8") as fh:
+        raw_lines = fh.readlines()
+    comments = [ln for ln in raw_lines if ln.lstrip().startswith("#")]
+    data_lines = [ln for ln in raw_lines if not ln.lstrip().startswith("#")]
+    if not data_lines:
+        print(f"{series}: no rules")
+        return 1
+
+    rows = list(csv.DictReader(data_lines))          # data_lines[0] is the header
+    target_pos, _, target_lemma = args.pos.strip().partition("+")
+    target_pos, target_lemma = target_pos.strip(), target_lemma.strip().lower()
+
+    matches = []
+    for i, row in enumerate(rows):
+        surface = (row.get("surface") or "").strip()
+        if surface.lower() != args.surface.lower():
+            continue
+        rule = Rule.parse(surface, row.get("pos") or "", row.get("respell") or "",
+                          row.get("notes") or "")
+        if args.pos and (rule.pos != target_pos or rule.lemma != target_lemma):
+            continue
+        matches.append((i, rule))
+
+    if not matches:
+        print(f"no rule for {args.surface!r} in {series}"
+              + (f" with pos {args.pos!r}" if args.pos else ""))
+        return 1
+    if len(matches) > 1:
+        opts = ", ".join(r.pos or "(any)" for _, r in matches)
+        print(f"{args.surface!r} has multiple rules in {series}: {opts}\n"
+              f"  disambiguate:  webnovel-audio lex promote {args.slug} "
+              f"{args.surface} --pos <POS>")
+        return 1
+    idx, rule = matches[0]
+
+    base_exists = os.path.exists(base)
+    if base_exists:
+        from .lexicon import Lexicon as _Lexicon
+        dupe = any(r.surface.lower() == rule.surface.lower() and r.pos == rule.pos
+                  and r.lemma == rule.lemma for r in _Lexicon.load(base).rules)
+        if dupe and not args.force:
+            tag = f" ({rule.pos})" if rule.pos else ""
+            print(f"{base} already has a rule for {rule.surface!r}{tag} — edit it "
+                  "there directly, or pass --force to add a duplicate row")
+            return 1
+
+    os.makedirs(os.path.dirname(os.path.abspath(base)) or ".", exist_ok=True)
+    with open(base, "a", newline="", encoding="utf-8") as fh:
+        if not base_exists:
+            fh.write(_LEX_HEADER)
+        pos_field = f"{rule.pos}+{rule.lemma}" if rule.lemma else rule.pos
+        csv.writer(fh, lineterminator="\n").writerow(
+            [rule.surface, pos_field, rule.respell, rule.notes])
+
+    del data_lines[idx + 1]                            # +1: header at index 0
+    with open(series, "w", newline="", encoding="utf-8") as fh:
+        fh.writelines(comments + data_lines)
+
+    tag = f" ({rule.pos})" if rule.pos else ""
+    print(f"promoted {rule.surface}{tag} -> {base}\n  removed from {series}")
+    return 0
+
+
 def _cmd_lex(args) -> int:
     from .lexicon import Lexicon
 
@@ -923,6 +1002,9 @@ def _cmd_lex(args) -> int:
 
     if args.action == "edit":
         return _editor_open(base if args.base else series, _LEX_HEADER)
+
+    if args.action == "promote":
+        return _lex_promote(args, base, series)
 
     if args.action == "ignore":
         # A row with a blank `respell` is already a no-op substitution that
@@ -1886,6 +1968,16 @@ def _build_parser():
     la.add_argument("--note")
     la.add_argument("--base", action="store_true", help="write to _base.csv instead")
     _cfg(la)
+    lp = lx_sub.add_parser(
+        "promote", help="move a rule from a series lexicon into the always-on base")
+    lp.add_argument("slug")
+    lp.add_argument("surface")
+    lp.add_argument("--pos", default="",
+                    help="disambiguate when the surface has more than one rule "
+                         "(NOUN VERB ADJ, a Penn tag, or TAG+lemma)")
+    lp.add_argument("--force", action="store_true",
+                    help="add anyway if the base file already has this rule")
+    _cfg(lp)
     li = lx_sub.add_parser("ignore", help="mark words as 'reads fine' so `check` stops listing them")
     li.add_argument("slug")
     li.add_argument("words", nargs="+")
