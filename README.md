@@ -145,7 +145,7 @@ them first.
 | `check <target> [range]` | cast / heteronyms / unknown names report. **Never writes** |
 | `render <target> [range]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only. Reports how many segments came from cache |
 | `sync [series] [--limit N]` | refresh + render everything outstanding; shows a size estimate and confirms first (`-y` to skip) |
-| `tagger status` \| `install` \| `test` | the spaCy POS tagger the rules resolve against. **Required to render**, so `--extra kokoro` installs it and the small model; `install --model en_core_web_md` upgrades |
+| `tagger status` \| `install` \| `test` | the spaCy POS tagger the rules resolve against. **Required to render**, so `--extra kokoro` installs it and the small model; `install --model en_core_web_md` (or `_lg`) upgrades |
 | `progress [series] [--watch]` | what a running sync is doing, from the live state DB. **Read-only**, safe mid-render |
 
 **Series** (porcelain):

@@ -2179,7 +2179,8 @@ def _build_parser():
     tg = sub.add_parser("tagger", help="optional spaCy POS tagger for heteronyms")
     tg_sub = tg.add_subparsers(dest="action")
     ti = tg_sub.add_parser("install", help="install the model and switch it on")
-    ti.add_argument("--model", default="", help="sm | md (default: sm)")
+    ti.add_argument("--model", default="",
+                    help="en_core_web_sm | _md | _lg (default: sm)")
     ti.add_argument("-y", "--yes", action="store_true", help="skip the confirmation")
     _cfg_json(ti)
     tr = tg_sub.add_parser("remove", help="uninstall the model and switch it off")

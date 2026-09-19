@@ -45,3 +45,18 @@ def test_parser_and_ner_are_excluded():
     assert "parser" not in nlp.pipe_names
     assert "ner" not in nlp.pipe_names
     assert "tagger" in nlp.pipe_names
+
+
+def test_known_models_are_installable_and_ordered_smallest_first():
+    """Every listed model must be one `tagger install` can actually fetch —
+    the wheel URL is built by pattern, so a name that does not follow it
+    would only fail at download time, after the user waited."""
+    from webnovel_audio import tagger
+    from webnovel_audio.cli import _model_wheel
+
+    assert tagger.KNOWN_MODELS == ("en_core_web_sm", "en_core_web_md",
+                                   "en_core_web_lg")
+    for model in tagger.KNOWN_MODELS:
+        url = _model_wheel(model)
+        assert url.startswith("https://github.com/explosion/spacy-models/")
+        assert f"/{model}-" in url and url.endswith("-py3-none-any.whl")

@@ -15,8 +15,11 @@ from __future__ import annotations
 
 #: Models we know how to install, smallest first. `sm` measured 96.2% and `md`
 #: 97.0% on the same corpus — 0.8 points for 3.7x the disk — so `sm` is the
-#: default and `md` is there for anyone who wants to pay for it.
-KNOWN_MODELS = ("en_core_web_sm", "en_core_web_md")
+#: default and `md` is there for anyone who wants to pay for it. `lg` is the
+#: same pipeline as `md` with larger vectors (13 / 33 / 401 MB); it is listed
+#: for completeness rather than because the tagging is expected to differ,
+#: since vectors are not what a POS tag comes from.
+KNOWN_MODELS = ("en_core_web_sm", "en_core_web_md", "en_core_web_lg")
 DEFAULT_MODEL = "en_core_web_sm"
 
 
