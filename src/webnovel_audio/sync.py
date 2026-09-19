@@ -633,7 +633,7 @@ def _do_parse(cfg, db, prov, bdir, c, raw_path, *, force=False) -> str:
         if doc is not None:
             os.makedirs(os.path.dirname(md_path), exist_ok=True)
             with open(md_path, "w", encoding="utf-8") as fh:
-                fh.write(render_markdown(doc, front_matter_extra={
+                fh.write(render_markdown(doc, stage="parse", front_matter_extra={
                     "chapter": c["ord"] + 1, "published": c["published_at"] or ""}))
     db.mark_stage(c["id"], "parsed",
                   text_path=md_path if os.path.exists(md_path) else None)

@@ -205,7 +205,7 @@ def _write_md(source: str, cfg: Config) -> int:
         return 0
     out = os.path.splitext(os.path.basename(source))[0] + ".md"
     with open(out, "w", encoding="utf-8") as fh:
-        fh.write(render_markdown(doc))
+        fh.write(render_markdown(doc, stage="parse"))
     print(f"wrote {out}")
     return 0
 

@@ -190,7 +190,7 @@ def render(
     if doc is not None:
         from .textout import render_markdown
         with open(stem + ".md", "w", encoding="utf-8") as fh:
-            fh.write(render_markdown(doc, front_matter_extra=md_meta))
+            fh.write(render_markdown(doc, front_matter_extra=md_meta, stage="render"))
         log(f"text:   {stem}.md")
 
     speech = [s for s in segs if s.kind == "speech" and s.text.strip()]
