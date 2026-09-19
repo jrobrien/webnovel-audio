@@ -510,36 +510,106 @@ def _cmd_voices(args) -> int:
     return 0
 
 
+#: Reports the Tk build an interpreter would give the UI: its patchlevel and
+#: how many font families it can see. The family count is the tell. A Tk
+#: compiled without Xft/fontconfig — which is what python-build-standalone
+#: ships, and therefore what uv-managed interpreters have — falls back to the
+#: X11 core font `fixed` and reports exactly one family. `fixed` has no curly
+#: quotes, em dash or ellipsis, so chapter prose renders with the apostrophes
+#: punched out of it. Nothing can be configured to fix that; the only cure is
+#: a different interpreter, which is what _pick_tk_host goes looking for.
+_TK_PROBE = (
+    "import tkinter;r=tkinter.Tk();r.withdraw();"
+    "print(r.tk.eval('info patchlevel'),"
+    "len(r.tk.splitlist(r.tk.eval('font families'))))"
+)
+
+
+def _tk_probe(python: str):
+    """(tk_version, font_families) for `python`, or None if it has no usable Tk."""
+    import subprocess
+    try:
+        p = subprocess.run([python, "-c", _TK_PROBE], capture_output=True,
+                           text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode != 0:
+        return None
+    parts = p.stdout.split()
+    if len(parts) != 2 or not parts[1].isdigit():
+        return None
+    return parts[0], int(parts[1])
+
+
+def _pick_tk_host(forced: str = ""):
+    """(interpreter, warning) for hosting the UI.
+
+    Prefers this interpreter and probes no further when its Tk is healthy, so
+    the common case costs one subprocess. Only a crippled Tk sends us looking
+    at the system Python, which on a distro build links Xft and renders
+    properly.
+    """
+    import shutil
+    import sys
+
+    if forced:
+        return forced, ""
+
+    cands = [sys.executable]
+    for c in (shutil.which("python3"), "/usr/bin/python3"):
+        if c and c not in cands:
+            cands.append(c)
+
+    first = None
+    for py in cands:
+        got = _tk_probe(py)
+        if got is None:
+            continue
+        version, families = got
+        if first is None:
+            first = (py, version, families)
+        if families > 1:
+            warn = ""
+            if py != sys.executable:
+                warn = (f"note: hosting the UI on {py} (Tk {version}); "
+                        f"{sys.executable} has a Tk with no Xft, which renders "
+                        f"text without quotes or dashes.")
+            return py, warn
+    if first is None:
+        return None, ""
+    py, version, families = first
+    return py, (f"warning: Tk {version} here sees {families} font family and "
+                f"will render text in the X11 'fixed' bitmap font — apostrophes, "
+                f"quotes and dashes will be missing. Install a Python with an "
+                f"Xft-enabled Tk (Arch: pacman -S tk python) for readable text.")
+
+
 def _cmd_ui(args) -> int:
     import shutil
     import sys
 
     project = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     tcl = os.path.join(project, "ui", "control.tcl")
-    if not os.path.exists(tcl):
-        print(f"UI script not found: {tcl}", file=sys.stderr)
-        return 1
+    host = os.path.join(project, "ui", "host.py")
+    for path in (tcl, host):
+        if not os.path.exists(path):
+            print(f"UI script not found: {path}", file=sys.stderr)
+            return 1
 
     env = dict(os.environ)
     exe = shutil.which("webnovel-audio") or os.path.realpath(sys.argv[0])
     if os.path.basename(exe).startswith("webnovel-audio") and os.access(exe, os.X_OK):
         env.setdefault("WEBNOVEL_AUDIO", exe)
 
-    wish = None if args.python else shutil.which("wish")
-    if wish:
-        os.execve(wish, [wish, tcl], env)     # replace this process with the UI
-
-    try:
-        import tkinter
-    except Exception:
-        print("need `wish` (Arch: pacman -S tk) or Python tkinter to run the UI",
-              file=sys.stderr)
+    python, warn = _pick_tk_host(getattr(args, "interpreter", "") or "")
+    if python is None:
+        print("no interpreter here has a working tkinter — install one "
+              "(Arch: pacman -S tk python)", file=sys.stderr)
         return 1
-    os.environ.update(env)
-    root = tkinter.Tk()
-    root.tk.call("source", tcl)               # `source` (not eval) so it finds json.tcl
-    root.mainloop()
-    return 0
+    if warn:
+        print(warn, file=sys.stderr)
+    # replace this process with the UI: the host needs none of our imports
+    os.execve(python, [python, host, tcl], env)
 
 
 def _cmd_retag(args) -> int:
@@ -2121,8 +2191,9 @@ def _build_parser():
     lg.set_defaults(func=_cmd_login)
 
     ui = sub.add_parser("ui", help="launch the Tcl/Tk control UI")
-    ui.add_argument("--python", action="store_true",
-                    help="use Python's bundled Tcl/Tk instead of `wish`")
+    ui.add_argument("--interpreter", default="",
+                    help="Python to host the UI (default: the first one found "
+                         "whose Tk can render real fonts)")
     ui.set_defaults(func=_cmd_ui)
 
     return ap
