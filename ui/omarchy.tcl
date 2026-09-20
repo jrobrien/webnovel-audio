@@ -25,10 +25,26 @@
 # pick it up too.
 namespace eval omarchy {}
 
-;# Where a generated theme might be, most authoritative first. The real path
-;# honours XDG_STATE_HOME per docs/consuming.md in the theme project —
-;# Omarchy's own contract, not ours to hardcode around.
-proc omarchy::candidates {} {
+;# Captured now, at this file's own top-level, NOT inside a proc. `info
+;# script` is dynamically scoped to the innermost `source` frame currently on
+;# the call stack -- correct here, because this line runs while THIS file is
+;# what is actively being sourced, but wrong inside a proc body, where it
+;# reflects whatever triggered that call (a button click from the event
+;# loop, running with no `source` frame active at all, reports ""). Bit this
+;# exact way once: catppuccin_path called `[info script]` directly and
+;# resolved to a random other script, or to the working directory, depending
+;# on how it was invoked -- worked from the initial startup call (still
+;# inside control.tcl's own source frame) and broke the moment a user
+;# actually clicked the theme menu.
+set omarchy::SELF_DIR [file dirname [file normalize [info script]]]
+
+;# Where a LIVE generated theme might be, most authoritative first. The real
+;# path honours XDG_STATE_HOME per docs/consuming.md in the theme project —
+;# Omarchy's own contract, not ours to hardcode around. Distinct from the
+;# vendored files below: this is the one candidate list that can be empty on
+;# a perfectly healthy machine, because that machine just isn't running
+;# Omarchy — see catppuccin_path for what "isn't running Omarchy" then means.
+proc omarchy::live_candidates {} {
     set out {}
     if {[info exists ::env(WEBNOVEL_AUDIO_TK_THEME)]} {
         lappend out $::env(WEBNOVEL_AUDIO_TK_THEME)
@@ -42,23 +58,39 @@ proc omarchy::candidates {} {
 ;# A quick existence check for theme_resolve, which only picks a name and
 ;# must not have side effects — the actual `source` (which does) happens once
 ;# apply_theme has committed to the "omarchy" branch.
-proc omarchy::available {} {
-    foreach f [candidates] { if {[file readable $f]} { return 1 } }
+proc omarchy::live_available {} {
+    foreach f [live_candidates] { if {[file readable $f]} { return 1 } }
     return 0
 }
 
-;# Source the first candidate that exists. Returns 1 on success. The sourced
-;# file leaves ttk theme "omarchy" selected and every classic widget it knows
-;# about repainted; the caller (apply_theme) still needs to run our own
-;# repaint_theme for the widgets and tags that are ours, not theirs.
+;# The vendored fallback for `which` in {dark light} — see ui/theme/README.md
+;# for provenance and how to regenerate. Checked in, not generated: this file
+;# has to keep working on a machine with no Omarchy and no sibling project on
+;# disk, which is the whole point of vendoring rather than rendering on demand.
+proc omarchy::catppuccin_path {which} {
+    return [file join $::omarchy::SELF_DIR theme catppuccin-$which.tcl]
+}
+
+;# Source one theme file — live or vendored, the caller already decided which.
+;# Returns 1 on success. The sourced file leaves ttk theme "omarchy" selected
+;# (both vendored files use that same in-file name; see ui/theme/README.md —
+;# only one of the three is ever sourced at a time, so it is not a collision)
+;# and every classic widget it knows about repainted; the caller (apply_theme)
+;# still needs to run our own repaint_theme for the widgets and tags that are
+;# ours, not theirs.
+proc omarchy::load_file {path} {
+    if {![file readable $path]} { return 0 }
+    if {[catch {uplevel #0 [list source -encoding utf-8 $path]} e]} {
+        log "! theme $path: $e"
+        return 0
+    }
+    return 1
+}
+
+;# Source the first live candidate that exists.
 proc omarchy::load {} {
-    foreach f [candidates] {
-        if {![file readable $f]} continue
-        if {[catch {uplevel #0 [list source -encoding utf-8 $f]} e]} {
-            log "! omarchy theme $f: $e"
-            continue
-        }
-        return 1
+    foreach f [live_candidates] {
+        if {[load_file $f]} { return 1 }
     }
     return 0
 }

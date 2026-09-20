@@ -341,13 +341,20 @@ interpreter has such a Tk, so `ui` prefers its own and quietly reroutes to the
 system Python when its own cannot render. It says so when it does.
 
 On an Omarchy system, the UI follows the live desktop theme — same colours as
-the terminal it was launched from, including the five chapter-stage colours,
+the terminal it was launched from, including the four chapter-stage colours,
 picked at runtime to stay visually distinct rather than trusted by name (some
 Omarchy themes collapse `blue` onto their own accent colour). **Theme** in the
-toolbar also offers **Reload from Omarchy** to pick up a `omarchy theme set`
-made after the UI started, without restarting it. Off Omarchy — or with no
-theme generated yet — it falls back to a plain dark/light pair that follows
-the desktop's light/dark preference the same way.
+toolbar also offers **Reload theme** to pick up a `omarchy theme set` made
+after the UI started, without restarting it.
+
+Off Omarchy, or before switching away from it, **Catppuccin** (Mocha/Latte) is
+vendored (`ui/theme`) as the fallback rather than an unstyled Tk grey box —
+picked by `webnovel-audio ui` automatically to match the desktop's light/dark
+preference, or chosen explicitly from the same **Theme** menu. It is the same
+theme engine either way (`tk-omarchy-theme`), just reading a checked-in file
+instead of a live one, so it gets the identical treatment: distinct,
+contrast-checked status colours and legible disabled widgets, not a second,
+lesser theme to maintain.
 
 Beyond running a stage over the selection, the right-click menu marks chapters
 skipped/new and clears errors; shift/ctrl select ranges and scattered picks.

@@ -77,9 +77,15 @@ def test_ui_handles_every_event_shape(tmp_path):
 @needs_display
 @pytest.mark.parametrize("tk_version", sorted(_tk_interpreters()) or [""])
 def test_theme_loads_and_is_not_the_clam_fallback(tmp_path, tk_version):
-    """The theme machinery must work under every Tk here, and must degrade to
-    a legible dark/light fallback on a machine with no Omarchy theme at all —
-    which is most machines this test suite runs on, including CI.
+    """The theme machinery must work under every Tk here.
+
+    Split three ways: the vendored Catppuccin themes (ui/theme) must work
+    unconditionally, on any machine, Omarchy or not -- vendoring them was the
+    whole point, so this is the assertion carrying that promise. The live
+    Omarchy theme is conditional on this specific machine. The plain
+    dark/light pair is the true last resort, reached only if even a vendored
+    file fails to source, and is exercised directly since nothing on a
+    working machine reaches it through apply_theme's normal path.
     """
     interps = _tk_interpreters()
     if not tk_version:
@@ -91,35 +97,52 @@ def test_theme_loads_and_is_not_the_clam_fallback(tmp_path, tk_version):
     assert r.returncode == 0, f"{r.stderr}\n{log}"
     assert "DONE" in log, log
 
-    # the fallback: both explicit choices actually select clam and repaint
-    assert "use dark -> ttk=clam active=dark" in log, log
-    assert "use light -> ttk=clam active=light" in log, log
-    assert "md.t.bg #313131" in log and "md.t.fg #eeeeee" in log, log   # dark
-    assert "md.t.bg #ffffff" in log and "md.t.fg #313131" in log, log   # light
-    assert "tag.rendered #5ec27f" in log, log                           # dark
-    assert "tag.rendered #2a7d4f" in log, log                           # light
-    # disabled buttons must be legible against clam's own background, on
-    # both fallback themes -- not the invisible-on-dark bug Forest had
-    assert "dark.disabled.fg" in log and "distinct 1" in log, log
-
-    if "omarchy.available 1" in log:
-        assert "use omarchy -> ttk=omarchy active=omarchy" in log, log
+    def assert_engine_theme(want, bg_hex=None):
+        assert f"use {want} -> ttk=omarchy active={want}" in log, log
         # `ttk::style theme use` does not update ::ttk::currentTheme, only
         # `ttk::setTheme` does -- and that variable is exactly what a Python
         # tkinter host's Style().theme_use() reads. Regress this and the UI
         # still looks right under `wish` while a Python host reports
         # "default" and every ttk widget stays unthemed underneath it.
         assert "ttk::currentTheme omarchy" in log, log
-        # five chapter-stage rows must be five actually-distinct colours: a
-        # theme's red/green/yellow/blue/magenta are terminal palette slots,
-        # not a categorical scale, and some Omarchy themes collapse them
-        # (measured: osaka-jade's `blue` is literally its `accent`).
-        assert "distinct.count 5" in log, log
+        if bg_hex is not None:
+            assert f"md.t.bg {bg_hex}" in log, log
+        # four chapter-stage rows must be four actually-distinct colours: a
+        # theme's red/green/yellow/blue are terminal palette slots, not a
+        # categorical scale, and some Omarchy themes collapse them (measured
+        # elsewhere: osaka-jade's `blue` is literally its `accent`)
+        assert "distinct.count 4" in log, log
+        # disabled buttons must be legible -- the theme's job, not a local
+        # patch (unlike the vendored Forest theme this replaced)
+        assert "distinct 1" in log, log
+
+    # vendored: must work on every machine this suite runs on. Exact hex
+    # asserted deliberately -- these are checked-in static files we own, so
+    # a changed value means either a real edit or accidental corruption,
+    # both worth failing loudly on rather than asserting loosely.
+    assert_engine_theme("catppuccin-dark", "#29293a")
+    assert_engine_theme("catppuccin-light", "#e5e7ed")
+    # both vendored themes' four status colours must clear the "tellable
+    # apart" threshold -- the first two `spread` lines in the log belong to
+    # them, in the order probe_theme.tcl emits it
+    spreads = [float(v) for v in re.findall(r"spread ([\d.]+)", log)]
+    assert len(spreads) >= 2 and all(s > 25 for s in spreads[:2]), log
+
+    if "omarchy.live_available 1" in log:
+        assert_engine_theme("omarchy", None)
     else:
         assert "use omarchy -> SKIPPED" in log, log
 
+    # the true last resort, reached only if a vendored file fails to source
+    assert "use dark -> ttk=clam active=dark" in log, log
+    assert "use light -> ttk=clam active=light" in log, log
+    assert "md.t.bg #313131" in log and "md.t.fg #eeeeee" in log, log   # dark
+    assert "md.t.bg #ffffff" in log and "md.t.fg #313131" in log, log   # light
+
     # auto must land on something real -- never a silent unstyled fallback
-    assert re.search(r"auto -> ttk=(omarchy|clam) active=(omarchy|dark|light)", log), log
+    assert re.search(
+        r"auto -> ttk=(omarchy|clam) active=(omarchy|catppuccin-dark|catppuccin-light|dark|light)",
+        log), log
 
 
 @needs_display

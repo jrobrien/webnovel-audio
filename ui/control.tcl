@@ -42,24 +42,33 @@ array set ::MD {}            ;# chapter row id -> text_path / status, from refre
 array set ::HLAFTER {}       ;# tab -> pending re-highlight, coalesced
 
 # ---------------------------------------------------------------- theme -------
-;# Three theme states: "omarchy" (github.com jro/tk-omarchy-theme, generated
-;# from the live desktop theme — see ui/omarchy.tcl), and a "dark"/"light"
-;# fallback of our own for a machine without it. "auto" picks omarchy when
-;# available, else follows the desktop's light/dark preference.
+;# Theme states: "omarchy" (github.com jro/tk-omarchy-theme, generated from
+;# the live desktop theme — see ui/omarchy.tcl); "catppuccin-dark" and
+;# "catppuccin-light", the same engine but sourced from a checked-in file
+;# instead of a live one (ui/theme — vendored so this UI still looks good
+;# with no Omarchy on the machine at all, today or after switching away from
+;# it later); and a last-resort "dark"/"light" pair of our own, reached only
+;# if even a vendored file somehow fails to source. "auto" picks omarchy
+;# when a live one exists, else catppuccin, matched to light/dark preference.
 ;#
-;# The fallback is drawn from colours (`clam`, configured below), not blitted
-;# from sprites the way the old vendored Forest theme was — Forest is dropped
-;# entirely, since the reason to keep a second theme around (Tk sprites cannot
-;# be recoloured) no longer applies to anything we ship.
+;# The last-resort pair is drawn from colours (`clam`, configured below), not
+;# blitted from sprites the way the old vendored Forest theme was — Forest is
+;# dropped entirely, since the reason to keep a second theme around (Tk
+;# sprites cannot be recoloured) no longer applies to anything we ship.
 source [file join [file dirname [file normalize [info script]]] omarchy.tcl]
 
-set ::THEME auto                ;# auto | omarchy | dark | light; persisted in ui.conf
+;# Every ::THEME value whose colours come through omarchy::palette rather
+;# than ::PALETTE — anything sourced via the tk-omarchy-theme engine,
+;# live or vendored.
+set ::OMARCHY_ENGINE_THEMES {omarchy catppuccin-dark catppuccin-light}
+
+set ::THEME auto                ;# see ::OMARCHY_ENGINE_THEMES, or dark|light; persisted in ui.conf
 set ::ACTIVE_THEME ""           ;# what apply_theme actually landed on, for `pal`
 set ::OMARCHY_PAL ""            ;# cached dict from omarchy::palette, while active
 
-;# Colours ttk cannot tell us for the *fallback* theme: our classic widgets,
-;# the syntax tags, and the treeview row tags. Under "omarchy" these come from
-;# omarchy::palette instead — see `pal`.
+;# Colours ttk cannot tell us for the *last-resort* fallback: our classic
+;# widgets, the syntax tags, and the treeview row tags. Every other theme's
+;# colours come from omarchy::palette instead — see `pal`.
 array set ::PALETTE {
     dark {
         bg #313131  fg #eeeeee  field #313131  sel #217346  selfg #ffffff  dim #9aa0a6
@@ -85,9 +94,9 @@ proc theme_is_dark {} {
 }
 
 ;# Every colour repaint_theme paints with comes from here, regardless of
-;# whether the live theme is omarchy or our own dark/light fallback.
+;# which theme is actually active.
 proc pal {key} {
-    if {$::ACTIVE_THEME eq "omarchy" && $::OMARCHY_PAL ne ""} {
+    if {$::ACTIVE_THEME in $::OMARCHY_ENGINE_THEMES && $::OMARCHY_PAL ne ""} {
         return [dict get $::OMARCHY_PAL $key]
     }
     set t [expr {$::ACTIVE_THEME in {dark light} ? $::ACTIVE_THEME
@@ -118,8 +127,8 @@ proc detect_dark {} {
 
 proc theme_resolve {name} {
     if {$name ne "auto"} { return $name }
-    if {[omarchy::available]} { return "omarchy" }
-    return [expr {[detect_dark] ? "dark" : "light"}]
+    if {[omarchy::live_available]} { return "omarchy" }
+    return [expr {[detect_dark] ? "catppuccin-dark" : "catppuccin-light"}]
 }
 
 ;# Paint `clam` (drawn from colours, so it can follow an arbitrary palette —
@@ -175,16 +184,19 @@ proc clam_style {which} {
 proc apply_theme {{name ""}} {
     if {$name ne ""} { set ::THEME $name }
     set want [theme_resolve $::THEME]
-    if {$want eq "omarchy"} {
-        if {[omarchy::load]} {
-            set ::ACTIVE_THEME omarchy
+    if {$want in $::OMARCHY_ENGINE_THEMES} {
+        set ok [expr {$want eq "omarchy" ? [omarchy::load]
+                     : [omarchy::load_file [omarchy::catppuccin_path \
+                            [lindex [split $want -] end]]]}]
+        if {$ok} {
+            set ::ACTIVE_THEME $want
             set ::OMARCHY_PAL [omarchy::palette]
         } else {
-            log "! omarchy theme unavailable — falling back"
+            log "! theme $want unavailable — falling back"
             set want [expr {[theme_is_dark] ? "dark" : "light"}]
         }
     }
-    if {$want ne "omarchy"} {
+    if {$want ni $::OMARCHY_ENGINE_THEMES} {
         clam_style $want
         set ::ACTIVE_THEME $want
     }
@@ -1059,15 +1071,18 @@ ttk::button .tool.srv     -text "Start server" -command server_toggle
 ttk::menubutton .tool.theme -text "Theme" -direction below -menu .tool.theme.m
 menu .tool.theme.m -tearoff 0
 foreach {lbl val} {"Follow desktop" auto  "Omarchy" omarchy
-                   "Dark" dark  "Light" light} {
+                   "Catppuccin Dark" catppuccin-dark
+                   "Catppuccin Light" catppuccin-light} {
     .tool.theme.m add radiobutton -label $lbl -value $val -variable ::THEME \
         -command [list set_theme $val]
 }
 .tool.theme.m add separator
 ;# `omarchy theme set` does not push a live-update signal to a running app;
-;# this re-sources the generated file (apply_theme's omarchy branch always
-;# does, unconditionally) to pick up whatever the desktop theme is now.
-.tool.theme.m add command -label "Reload from Omarchy" \
+;# this re-sources whichever file apply_theme currently uses (always, not
+;# just when THEME changes) to pick up a desktop theme switch made since
+;# launch. Harmless no-op on the vendored catppuccin themes -- re-sourcing
+;# them just re-applies the same file -- so one label covers all three.
+.tool.theme.m add command -label "Reload theme" \
     -command {apply_theme ; log "theme reloaded ($::ACTIVE_THEME)"}
 pack .tool.theme -side right -padx 2
 pack .tool.add .tool.refresh -side left -padx 2
