@@ -1,39 +1,34 @@
-# Vendored fallback themes
+# Light and dark overrides
 
-Two static, self-contained ttk themes — [Catppuccin](https://catppuccin.com)
-Mocha (dark) and Latte (light) — used when no live Omarchy theme is available
-(see `ui/omarchy.tcl`). Rendered once, from a sibling project on this
-machine, and checked in: nothing here calls out to Omarchy, or to anything
-else, at runtime.
+Two X resource fragments — [Catppuccin](https://catppuccin.com) Mocha (`dark`)
+and Latte (`light`) — in exactly the resource names Omarchy publishes to the X
+root window. They are not themes and there is no theme engine here: the whole
+mechanism is `option readfile` at `interactive` priority, which outranks the
+root window's database, so "light" and "dark" are literally "pretend the
+desktop said this instead". See `ui/xres.tcl`.
 
-```sh
-cd ~/Projects/tk-omarchy-theme
-./bin/tk-omarchy-render themed/ttk.tcl.tpl catppuccin       > catppuccin-dark.tcl
-./bin/tk-omarchy-render themed/ttk.tcl.tpl catppuccin-latte > catppuccin-light.tcl
-```
+The key set is the contract in `tk-omarchy-theme/docs/consuming.md`:
 
-`tk-omarchy-render` reads an Omarchy theme's `colors.toml` (here, Omarchy's
-own bundled `catppuccin` / `catppuccin-latte`, which already carry the real
-Catppuccin Mocha/Latte hex values — `#1e1e2e` / `#eff1f5` and the rest) and
-substitutes them into `themed/ttk.tcl.tpl`, the same template a live Omarchy
-theme switch renders. The output is the whole point of vendoring: a plain
-`.tcl` file that creates ttk theme `omarchy` (parent `clam`), runs
-`tk_setPalette` for the classic widgets, and exposes `color` / `is_dark` /
-`repaint` / `distinct_hues` / `spread` / `contrast` — identical API to a live
-theme, because it is the identical template. `ui/omarchy.tcl`'s adapter does
-not know or care whether the file it sourced came from `~/.local/state/…` or
-from here.
+- the standard names Tk and Xt look up on their own (`*background`,
+  `*foreground`, `*selectBackground`, `*troughColor`, `*Text.background`, …),
+  which Tk 9's ttk `default` theme and every version's classic widgets read
+  with no application code at all;
+- `*windowColor`, which only Tk 9 reads, for ttk field backgrounds;
+- the `*omarchy*` extension — `*omarchyMode` plus the named hues — which
+  carries the light/dark answer and the categorical colours that no standard
+  X resource name has.
 
-**Both vendored files register ttk theme name `omarchy`.** That is
-deliberate, not a naming collision to fix: only one of {live Omarchy,
-catppuccin-dark, catppuccin-light} is ever sourced at a time, selected by
-`apply_theme`, and re-sourcing a different one is the documented reload path
-(`theme settings` is re-appliable) — the exact mechanism a live `omarchy
-theme set` reload already relies on. Do not rename the theme inside these
-files; nothing here depends on the filename, but plenty depends on the
-in-file name staying `omarchy`.
+Because the names match, `system`, `light` and `dark` are one code path that
+differs only in who filled the database.
 
-**Regenerating:** re-run the two commands above and overwrite. There is
-deliberately no build step and no dependency on `tk-omarchy-theme` at
-webnovel-audio's runtime — only at vendoring time, on whichever machine
-happens to have both repos checked out.
+**Values.** Catppuccin Mocha and Latte, the same hexes that were previously
+vendored as generated ttk theme files. They are checked in rather than
+rendered, so this UI still looks right on a machine with no Omarchy at all —
+today, or after switching away from it later. `ui/xres.tcl`'s `SCHEMA` carries
+the Mocha values a second time, as the fallback for a resource the database
+does not answer at all; keep the two in step.
+
+**Editing.** Plain Xresources syntax, no build step. One caveat, inherited from
+the same bug upstream: **the file must end in a newline.** Tk silently discards
+a final entry that is not newline-terminated, and which entry sorts last is an
+accident of ordering.

@@ -335,26 +335,48 @@ The UI is hosted by `ui/host.py`, which imports `tkinter` and nothing else —
 it talks to the CLI over `--json` for everything it shows. That is why it can
 run under a *different* interpreter than the one this package is installed
 in, and why it goes looking for one: a Tk compiled without Xft sees a single
-font family and draws chapter text in the X11 `fixed` bitmap font, which has
-no apostrophes, curly quotes, em dashes or ellipses. Every uv-managed
-interpreter has such a Tk, so `ui` prefers its own and quietly reroutes to the
-system Python when its own cannot render. It says so when it does.
+font family and draws chapter text in the X11 `fixed` bitmap font. Curly
+quotes, em dashes and ellipses then render at zero width — absent from the
+line with nothing marking the gap — and every size and weight request
+collapses to one face, so there is no bold and no headings either. Every
+uv-managed interpreter has such a Tk, so `ui` prefers its own and quietly
+reroutes to the system Python when its own cannot render. It says so when it
+does.
 
-On an Omarchy system, the UI follows the live desktop theme — same colours as
-the terminal it was launched from, including the four chapter-stage colours,
-picked at runtime to stay visually distinct rather than trusted by name (some
-Omarchy themes collapse `blue` onto their own accent colour). **Theme** in the
-toolbar also offers **Reload theme** to pick up a `omarchy theme set` made
-after the UI started, without restarting it.
+`--interpreter` forces a specific one. That is the way to run the UI on
+Tk 9, whose ttk reads the X resource database natively — worth trying, not
+worth adopting while the only Tk 9 here is the Xft-less one:
 
-Off Omarchy, or before switching away from it, **Catppuccin** (Mocha/Latte) is
-vendored (`ui/theme`) as the fallback rather than an unstyled Tk grey box —
-picked by `webnovel-audio ui` automatically to match the desktop's light/dark
-preference, or chosen explicitly from the same **Theme** menu. It is the same
-theme engine either way (`tk-omarchy-theme`), just reading a checked-in file
-instead of a live one, so it gets the identical treatment: distinct,
-contrast-checked status colours and legible disabled widgets, not a second,
-lesser theme to maintain.
+```sh
+webnovel-audio ui --interpreter ~/.local/share/uv/python/cpython-3.14.7-linux-x86_64-gnu/bin/python3.14
+```
+
+The UI has no themes. It reads the X resource database, which Tk loads from
+the root window at startup on its own — even under Wayland, via XWayland — and
+which Omarchy fills with the live desktop palette on every `omarchy theme set`.
+So on a Tk 9 interpreter the window is already the same colours as the terminal
+it was launched from before any of this project's code runs. **Theme** in the
+toolbar offers **System**, **Light** and **Dark**: the latter two load a
+checked-in resource fragment (`ui/theme`, Catppuccin Mocha/Latte) at a priority
+that outranks the root window, so they override the desktop rather than
+replacing a theme. **Reload colours** re-reads whichever fragment is current,
+which is how an `omarchy theme set` made after the UI started gets picked up —
+X resources are read once at startup and there is no change signal.
+
+Off Omarchy the same path still works: the standard resource names are Tk's
+own, so anything that populates them (a plain `.Xresources` and `xrdb`) themes
+the UI, and where nothing answers, the Mocha fallbacks in `ui/xres.tcl` keep it
+from coming up an unstyled grey box. The four chapter-stage colours come from
+the `*omarchy*` hue extension; a theme is free to collapse two of them onto one
+colour, which is why the Stage column's text, not its colour, is what carries
+the meaning.
+
+**View** in the toolbar also carries the text size: `Ctrl +` and `Ctrl -` step
+it, `Ctrl 0` goes back to the desktop's own sizes, and the level is remembered
+in `ui.conf` across restarts. It moves the whole window — panes, trees, menus
+and headings together — because every font here is one of Tk's named fonts,
+and a step refuses rather than clamps once anything would land below 6pt or
+above 42pt.
 
 Beyond running a stage over the selection, the right-click menu marks chapters
 skipped/new and clears errors; shift/ctrl select ranges and scattered picks.
@@ -573,36 +595,49 @@ uv run pytest -q            # ~240 tests, fully offline
 uv run python -m compileall -q src/
 ```
 
-Regenerating `docs/img/ui.png` (Hyprland): let the window **map at its final
-size** and capture it without touching the geometry afterwards. Put the
-geometry in `ui.conf` — `control.tcl` applies it late, so a `wm geometry`
-set before sourcing is overwritten:
+Regenerating `docs/img/ui.png` (Hyprland): put the geometry in `ui.conf` —
+`control.tcl` applies it late, so a `wm geometry` set before sourcing is
+overwritten — then let the compositor hand the window that size by floating
+it, and capture without touching the geometry afterwards:
 
 ```sh
 cp ~/.config/webnovel-audio/ui.conf{,.bak}
-printf 'main 1600x950+24+60\ntopheight 150\nbotwidth 690\nlimit 10\ntheme omarchy\n' \
+printf 'main 1600x950+24+60\ntopheight 150\nbotwidth 690\nlimit 10\ntheme system\nfontzoom 0\n' \
     > ~/.config/webnovel-audio/ui.conf
-python ui/host.py ui/control.tcl &            # WEBNOVEL_AUDIO must be set
+WEBNOVEL_AUDIO=$PWD/.venv/bin/webnovel-audio python ui/host.py ui/control.tcl &
+PID=$!
 sleep 8
-ADDR=$(hyprctl clients -j | jq -r '.[]|select(.title=="webnovel-audio")|.address')
-hyprctl setprop "address:$ADDR" opaque true   # else the desktop bleeds through
-read X Y W H < <(hyprctl clients -j | jq -r --arg a "$ADDR" '.[]|select(.address==$a)|"\(.at[0]) \(.at[1]) \(.size[0]) \(.size[1])"')
+A=$(hyprctl clients -j | jq -r --argjson p "$PID" '.[]|select(.pid==$p)|.address')
+hyprctl repl "local w = hl.get_window('address:$A')
+  hl.dispatch(hl.dsp.window.float(w))
+  hl.dispatch(hl.dsp.window.set_prop(w, 'opaque', true))"
+sleep 2
+read X Y W H < <(hyprctl clients -j | jq -r --arg a "$A" '.[]|select(.address==$a)|"\(.at[0]) \(.at[1]) \(.size[0]) \(.size[1])"')
 grim -g "$X,$Y ${W}x${H}" docs/img/ui.png
+kill -9 $PID                                  # -9, so it cannot save_conf over the backup
 mv ~/.config/webnovel-audio/ui.conf{.bak,}
 ```
 
-Three traps, all of which have bitten:
+Four traps, all of which have bitten:
 
-- Resizing *after* the window maps (floating it, `centerwindow`, …) leaves
-  stale framebuffer where Tk doesn't repaint, so other windows bleed through
-  the empty parts of a pane. Match on `.title`, not `.class`: tkinter reports
-  class `Tk`, and the old `Control.tcl` was wish's.
+- **`hyprctl dispatch`/`keyword` no longer take a string.** Hyprland 0.56.2
+  parses the argument as Lua, so the old `hyprctl dispatch setfloating
+  address:0x…` fails with *"')' expected near 'address'"*. Everything goes
+  through `hyprctl repl` and the `hl.*` API now: `hl.get_window(selector)`
+  for the handle, `hl.dispatch(hl.dsp.window.<verb>(w, …))` for the action.
+  `hyprctl repl 'return table.concat(...)'` over `pairs(hl.dsp.window)` is
+  how to find the verbs; there is no per-function help.
+- **Float rather than resize.** Under a tiling layout the window maps at its
+  tile size, not the one `ui.conf` asked for. Floating it makes Hyprland give
+  it back its *requested* size, so the geometry arrives without an explicit
+  resize — which matters because resizing after the map leaves stale
+  framebuffer where Tk doesn't repaint, and other windows bleed through the
+  empty parts of a pane. Match on `.pid`, not `.title`: another copy of the
+  UI may already be running, and both answer to `webnovel-audio`.
 - Omarchy's default opacity rule makes the dark panes translucent, which
-  `grim` captures faithfully. `setprop … opaque true` is the fix; `hyprctl
-  keyword` does not work on a non-legacy-parser Hyprland.
-- Give the window an offset clear of the top bar, and let the event loop run
-  while waiting. A blocking Tcl `after` stops redraws, and `grim` then
-  captures a half-painted frame.
+  `grim` captures faithfully. `set_prop(w, 'opaque', true)` is the fix.
+- Let the event loop run while waiting. A blocking Tcl `after` stops redraws,
+  and `grim` then captures a half-painted frame.
 
 To float it at an exact size without a compositor rule, set the X11 window
 type before it maps: `wm attributes . -type dialog`.

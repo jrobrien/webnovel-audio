@@ -518,10 +518,28 @@ def _cmd_voices(args) -> int:
 #: how many font families it can see. The family count is the tell. A Tk
 #: compiled without Xft/fontconfig — which is what python-build-standalone
 #: ships, and therefore what uv-managed interpreters have — falls back to the
-#: X11 core font `fixed` and reports exactly one family. `fixed` has no curly
-#: quotes, em dash or ellipsis, so chapter prose renders with the apostrophes
-#: punched out of it. Nothing can be configured to fix that; the only cure is
-#: a different interpreter, which is what _pick_tk_host goes looking for.
+#: X11 core font `fixed` and reports exactly one family. Nothing can be
+#: configured to fix that; the only cure is a different interpreter, which is
+#: what _pick_tk_host goes looking for.
+#:
+#: Measured on uv's cpython-3.14.7 (Tk 9.0.4), because "one font family"
+#: reads as milder than it is:
+#:
+#:   - `font create big -family Helvetica -size 24 -weight bold` resolves to
+#:     `-family fixed -size 10 -weight normal`. Size and weight requests are
+#:     not approximated, they are discarded — no bold and no headings
+#:     anywhere in the UI, not just in prose.
+#:   - Missing glyphs render at ZERO width rather than as a box: "em—dash"
+#:     (7 chars) measures 6 glyphs wide, "curly’quote" (11) measures 10,
+#:     "ellipsis…" (9) measures 8. The character is silently absent from the
+#:     line, which is worse than a visible tofu because nothing marks the gap.
+#:
+#: The preference survives even though Tk 9 would otherwise be worth having:
+#: its ttk `default` theme reads the X resource database natively, which is
+#: exactly what this project's colour handling wants (see ui/xres.tcl). It is
+#: not worth unreadable prose, and there is no third option here — Arch ships
+#: tk 8.6.16 and has no tk9 package, so on this machine Tk 9 and Xft are
+#: mutually exclusive. To see it: `ui --interpreter <a uv python>`.
 _TK_PROBE = (
     "import tkinter;r=tkinter.Tk();r.withdraw();"
     "print(r.tk.eval('info patchlevel'),"
@@ -2236,7 +2254,10 @@ def _build_parser():
     ui = sub.add_parser("ui", help="launch the Tcl/Tk control UI")
     ui.add_argument("--interpreter", default="",
                     help="Python to host the UI (default: the first one found "
-                         "whose Tk can render real fonts)")
+                         "whose Tk can render real fonts). Forces a Tk the "
+                         "default search rejects — e.g. a uv-managed "
+                         "interpreter, for Tk 9, at the cost of bold, font "
+                         "sizes and typeset punctuation")
     ui.set_defaults(func=_cmd_ui)
 
     return ap

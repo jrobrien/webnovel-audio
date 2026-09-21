@@ -1,0 +1,54 @@
+! Catppuccin Mocha, as an X resource fragment.
+!
+! The same resource names Omarchy's own tk.Xresources publishes, so "dark"
+! and "system" differ only in where the values came from -- see ui/xres.tcl.
+! Loaded with `option readfile` at `interactive` priority, which outranks the
+! root window's RESOURCE_MANAGER; that is the whole of "light/dark overrides
+! system".
+!
+! Everything below the first block is an extension this UI needs and the
+! stock Omarchy fragment does not publish yet (*mode and the named hues).
+! Written in the shape it is being asked for upstream, so that when it does
+! publish them, `system` picks them up through the identical code path and
+! nothing here has to change.
+
+! -- read by Tk 9's ttk `default` theme AND by classic widgets -------------
+*background:                    #1e1e2e
+*foreground:                    #cdd6f4
+*activeBackground:              #3a3b4e
+*disabledForeground:            #767a91
+*selectBackground:              #45475a
+*selectForeground:              #cdd6f4
+*troughColor:                   #333446
+*windowColor:                   #29293a
+
+! -- classic widgets only (ttk never reads these) --------------------------
+*activeForeground:              #cdd6f4
+*highlightBackground:           #1e1e2e
+*highlightColor:                #89b4fa
+*insertBackground:              #cdd6f4
+*selectColor:                   #89b4fa
+
+*Text.background:               #29293a
+*Entry.background:              #29293a
+*Listbox.background:            #29293a
+*Spinbox.background:            #29293a
+
+*Menu.activeBackground:         #45475a
+*Menu.activeForeground:         #cdd6f4
+*Menu.borderWidth:              1
+
+! -- the omarchy* extension contract (tk-omarchy-theme/docs/consuming.md) --
+! Prefixed, not bare `*red`: these are not names Tk or Xt look up, and an
+! unqualified one would be handed to every X client that has a resource of
+! that name. Looked up under class Foreground.
+*omarchyMode:                   dark
+*omarchyAccent:                 #89b4fa
+*omarchyMuted:                  #585b70
+*omarchyRed:                    #f38ba8
+*omarchyGreen:                  #a6e3a1
+*omarchyYellow:                 #f9e2af
+*omarchyBlue:                   #89b4fa
+*omarchyMagenta:                #f5c2e7
+*omarchyCyan:                   #94e2d5
+*omarchyOrange:                 #f6b6ab

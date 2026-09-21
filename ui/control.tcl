@@ -23,8 +23,22 @@ if {![info exists ::env(HOME)] || $::env(HOME) eq ""} {
     puts stderr "webnovel-audio ui: \$HOME is not set"
     exit 1
 }
-set ::CFGDIR [file join $::env(HOME) .config webnovel-audio]
-set ::UICONF [file join $::CFGDIR ui.conf]
+;# Where the window geometry, theme and font size are remembered.
+;#
+;# The env override is for tests: everything below load_conf runs at *source*
+;# time, so a probe that sources control.tcl has already read the real
+;# ~/.config/webnovel-audio/ui.conf before it gets a chance to redirect the
+;# path -- and then asserts against whatever the developer happened to leave
+;# in it. Cost a green suite once, when a saved `fontzoom 2` made the font
+;# probe boot at a zoom it did not expect.
+if {[info exists ::env(WEBNOVEL_AUDIO_UI_CONF)]
+    && $::env(WEBNOVEL_AUDIO_UI_CONF) ne ""} {
+    set ::UICONF $::env(WEBNOVEL_AUDIO_UI_CONF)
+    set ::CFGDIR [file dirname $::UICONF]
+} else {
+    set ::CFGDIR [file join $::env(HOME) .config webnovel-audio]
+    set ::UICONF [file join $::CFGDIR ui.conf]
+}
 
 ;# platform context button — gitk does the same dance for macOS
 set ::CTXBUT <Button-3>
@@ -42,164 +56,44 @@ array set ::MD {}            ;# chapter row id -> text_path / status, from refre
 array set ::HLAFTER {}       ;# tab -> pending re-highlight, coalesced
 
 # ---------------------------------------------------------------- theme -------
-;# Theme states: "omarchy" (github.com jro/tk-omarchy-theme, generated from
-;# the live desktop theme — see ui/omarchy.tcl); "catppuccin-dark" and
-;# "catppuccin-light", the same engine but sourced from a checked-in file
-;# instead of a live one (ui/theme — vendored so this UI still looks good
-;# with no Omarchy on the machine at all, today or after switching away from
-;# it later); and a last-resort "dark"/"light" pair of our own, reached only
-;# if even a vendored file somehow fails to source. "auto" picks omarchy
-;# when a live one exists, else catppuccin, matched to light/dark preference.
+;# This UI has no themes. It has an X resource database, which the desktop
+;# fills in (Omarchy publishes the live palette to the root window on every
+;# `omarchy theme set`) and which Tk reads at startup on its own -- so on
+;# Tk 9 the app is already the right colour before any of this runs.
 ;#
-;# The last-resort pair is drawn from colours (`clam`, configured below), not
-;# blitted from sprites the way the old vendored Forest theme was — Forest is
-;# dropped entirely, since the reason to keep a second theme around (Tk
-;# sprites cannot be recoloured) no longer applies to anything we ship.
-source [file join [file dirname [file normalize [info script]]] omarchy.tcl]
+;#   system  whatever the resource database says, untouched
+;#   dark    ui/theme/dark.Xresources  overriding it  (Catppuccin Mocha)
+;#   light   ui/theme/light.Xresources overriding it  (Catppuccin Latte)
+;#
+;# light and dark are not themes in any sense this file has to know about:
+;# they are the same resource names loaded at a priority that outranks the
+;# root window. One code path resolves all three -- read the database, push
+;# what ttk cannot read for itself into ttk::style, repaint our own widgets.
+;# See ui/xres.tcl.
+source [file join [file dirname [file normalize [info script]]] xres.tcl]
 
-;# Every ::THEME value whose colours come through omarchy::palette rather
-;# than ::PALETTE — anything sourced via the tk-omarchy-theme engine,
-;# live or vendored.
-set ::OMARCHY_ENGINE_THEMES {omarchy catppuccin-dark catppuccin-light}
+set ::THEME system               ;# system|light|dark; persisted in ui.conf
+set ::PAL ""                     ;# resolved colours, from xres::palette
 
-set ::THEME auto                ;# see ::OMARCHY_ENGINE_THEMES, or dark|light; persisted in ui.conf
-set ::ACTIVE_THEME ""           ;# what apply_theme actually landed on, for `pal`
-set ::OMARCHY_PAL ""            ;# cached dict from omarchy::palette, while active
+;# The system answer has to be captured before anything can override it: Tk
+;# has no `option delete`, so once a light/dark fragment is in the database
+;# at interactive priority it is there for the life of the process, and
+;# switching back to "system" can only be served from a snapshot. Taken here,
+;# at source time, which is before the first apply_theme.
+set ::xres::SYSTEM [xres::snapshot]
 
-;# Colours ttk cannot tell us for the *last-resort* fallback: our classic
-;# widgets, the syntax tags, and the treeview row tags. Every other theme's
-;# colours come from omarchy::palette instead — see `pal`.
-array set ::PALETTE {
-    dark {
-        bg #313131  fg #eeeeee  field #313131  sel #217346  selfg #ffffff  dim #9aa0a6
-        rendered #5ec27f  error #ff7b72  skipped #8b949e
-        fetched  #79b8ff  parsed #c3a6ff  off     #8b949e
-        com #8b949e  key #ffa657  str #7ee787  head #79b8ff  em #eeeeee
-    }
-    light {
-        bg #ffffff  fg #313131  field #ffffff  sel #217346  selfg #ffffff  dim #57606a
-        rendered #2a7d4f  error #b03030  skipped #6e7781
-        fetched  #4a6fa5  parsed #6a5fa5  off     #6e7781
-        com #6e7781  key #953800  str #0a7d33  head #0550ae  em #313131
-    }
-}
-
-;# Luminance of the live theme's background, for the "auto" fallback when
-;# omarchy is unavailable — there is no desktop-preference query this cheap
-;# that also works before any theme has been applied yet.
-proc theme_is_dark {} {
-    if {[catch {winfo rgb . [ttk::style lookup . -background]} rgb]} { return 1 }
-    lassign $rgb r g b
-    return [expr {(0.299*$r + 0.587*$g + 0.114*$b) / 65535.0 < 0.5}]
-}
-
-;# Every colour repaint_theme paints with comes from here, regardless of
-;# which theme is actually active.
-proc pal {key} {
-    if {$::ACTIVE_THEME in $::OMARCHY_ENGINE_THEMES && $::OMARCHY_PAL ne ""} {
-        return [dict get $::OMARCHY_PAL $key]
-    }
-    set t [expr {$::ACTIVE_THEME in {dark light} ? $::ACTIVE_THEME
-               : ([theme_is_dark] ? "dark" : "light")}]
-    return [dict get $::PALETTE($t) $key]
-}
-
-;# The desktop's light/dark preference, for the dark/light fallback only.
-;# The freedesktop appearance portal is the cross-desktop answer and the one
-;# Hyprland/GNOME/KDE all publish; gsettings is the fallback for a session
-;# without the portal running. 1 = prefer dark, 2 = prefer light, 0 = none.
-proc detect_dark {} {
-    set call [list exec busctl --user --timeout=2 call \
-        org.freedesktop.portal.Desktop /org/freedesktop/portal/desktop \
-        org.freedesktop.portal.Settings Read ss \
-        org.freedesktop.appearance color-scheme]
-    if {![catch $call out] && [regexp {u\s+(\d+)} $out -> v]} {
-        if {$v == 1} { return 1 }
-        if {$v == 2} { return 0 }
-    }
-    foreach k {color-scheme gtk-theme} {
-        if {[catch {exec gsettings get org.gnome.desktop.interface $k} out]} continue
-        if {[string match -nocase *dark*  $out]} { return 1 }
-        if {$k eq "color-scheme" && [string match -nocase *light* $out]} { return 0 }
-    }
-    return 1                    ;# documented default when nothing answers
-}
-
-proc theme_resolve {name} {
-    if {$name ne "auto"} { return $name }
-    if {[omarchy::live_available]} { return "omarchy" }
-    return [expr {[detect_dark] ? "catppuccin-dark" : "catppuccin-light"}]
-}
-
-;# Paint `clam` (drawn from colours, so it can follow an arbitrary palette —
-;# unlike Forest's sprites) from ::PALETTE(dark|light). Only used for the
-;# fallback; the omarchy theme styles itself entirely on `source`.
-proc clam_style {which} {
-    set p $::PALETTE($which)
-    set bg [dict get $p bg] ; set fg [dict get $p fg]
-    set sel [dict get $p sel] ; set selfg [dict get $p selfg]
-    set dim [dict get $p dim]
-    ;# ttk::setTheme, not `ttk::style theme use`: only setTheme updates
-    ;# ::ttk::currentTheme, which is what a Python host's Style().theme_use()
-    ;# actually reads. Tk's own ttk.tcl says so in so many words -- the
-    ;# omarchy theme hit the identical bug and this is the same fix.
-    ttk::setTheme clam
-    ;# clam's own -darkcolor/-lightcolor default to near-white (#bab5ab /
-    ;# #eeebe7 — clamTheme.tcl's -darker/-lighter) because clam assumes a
-    ;# light Motif-style background. Every raised/pressed bevel edge (button
-    ;# borders, treeview headings, notebook tabs) draws with those unless
-    ;# told otherwise — which is the whole reason the fallback looked like a
-    ;# grey window full of chunky white-bordered boxes rather than a themed
-    ;# dark app: -background/-foreground alone leaves clam's bevel behind.
-    ;# Matching both to $bg goes flat instead of guessing a derived shade.
-    ttk::style configure . -background $bg -foreground $fg \
-        -fieldbackground $bg -troughcolor $bg -bordercolor $dim \
-        -darkcolor $bg -lightcolor $bg \
-        -focuscolor $sel -selectbackground $sel -selectforeground $selfg \
-        -insertcolor $fg
-    ttk::style map . -foreground [list disabled $dim] -background [list disabled $bg]
-    foreach w {Treeview TNotebook.Tab TButton TMenubutton TEntry TSpinbox TLabel} {
-        ttk::style configure $w -background $bg -foreground $fg
-    }
-    ttk::style configure Treeview -fieldbackground $bg
-    ttk::style map Treeview -background [list selected $sel] \
-                            -foreground [list selected $selfg]
-    ;# clam's Heading is `-relief raised` by default, which is exactly the
-    ;# chunky-bevel look even once the colours match -- flatten it too.
-    ttk::style configure Treeview.Heading -background $bg -foreground $fg \
-        -relief flat -borderwidth 1
-    ttk::style configure TNotebook -background $bg
-    ttk::style map TNotebook.Tab -background [list selected $bg] \
-                                 -foreground [list selected $fg]
-    ttk::style map TButton -background [list active $sel disabled $bg] \
-                           -foreground [list disabled $dim]
-    ttk::style configure TEntry -fieldbackground $bg
-    ttk::style configure TSpinbox -fieldbackground $bg
-    ttk::style configure TFrame -background $bg
-    ttk::style configure TScrollbar -background $bg -troughcolor $bg \
-        -bordercolor $bg -arrowcolor $fg
-    ttk::style map TScrollbar -background [list active $sel]
-}
+proc pal {key} { return [dict get $::PAL $key] }
 
 proc apply_theme {{name ""}} {
     if {$name ne ""} { set ::THEME $name }
-    set want [theme_resolve $::THEME]
-    if {$want in $::OMARCHY_ENGINE_THEMES} {
-        set ok [expr {$want eq "omarchy" ? [omarchy::load]
-                     : [omarchy::load_file [omarchy::catppuccin_path \
-                            [lindex [split $want -] end]]]}]
-        if {$ok} {
-            set ::ACTIVE_THEME $want
-            set ::OMARCHY_PAL [omarchy::palette]
-        } else {
-            log "! theme $want unavailable — falling back"
-            set want [expr {[theme_is_dark] ? "dark" : "light"}]
-        }
+    set vals [xres::apply $::THEME]
+    if {$vals eq ""} {
+        log "! no $::THEME.Xresources -- staying on the system palette"
+        set ::THEME system
+        set vals $::xres::SYSTEM
     }
-    if {$want ni $::OMARCHY_ENGINE_THEMES} {
-        clam_style $want
-        set ::ACTIVE_THEME $want
-    }
+    xres::style_ttk $vals
+    set ::PAL [xres::palette $vals]
     repaint_theme
 }
 
@@ -241,7 +135,75 @@ proc retag_rows {} {
 
 proc set_theme {name} {
     apply_theme $name
-    log "theme: $name ($::ACTIVE_THEME)"
+    log "theme: $::THEME"
+}
+
+
+# ------------------------------------------------------------ font size ------
+;# One zoom level for the whole window, applied to Tk's named fonts.
+;#
+;# Every font in this UI is a named font -- the text panes ask for TkFixedFont
+;# and everything else inherits TkDefaultFont/TkHeadingFont through ttk -- so
+;# reconfiguring the named fonts moves the entire window and nothing has to be
+;# hunted down widget by widget. Tk relays out on its own when a named font
+;# changes.
+;#
+;# A single additive step rather than a scale factor: the bases differ
+;# (TkCaptionFont 12, TkSmallCaptionFont 9) and an additive step keeps them in
+;# the same order without rounding two of them onto the same size, which is
+;# what a multiplier does at small sizes.
+set ::FONTZOOM 0                ;# steps from the desktop's own sizes
+array set ::FONTBASE {}         ;# font -> its size before we touched anything
+
+;# The bases have to be read before any zoom is applied, or a saved zoom
+;# would compound on every launch. Called once, at startup.
+proc font_capture {} {
+    foreach f [font names] {
+        ;# Only Tk's own named fonts. Anything else belongs to whoever
+        ;# created it and is not ours to resize.
+        if {[string match Tk* $f]} { set ::FONTBASE($f) [font configure $f -size] }
+    }
+}
+
+;# The size $f would have at zoom $z. Tk reads a POSITIVE -size as points and
+;# a NEGATIVE one as pixels, so "bigger" is away from zero in both directions
+;# -- get this wrong and the zoom runs backwards on a pixel-sized desktop.
+proc font_size_at {f z} {
+    set base $::FONTBASE($f)
+    return [expr {$base < 0 ? $base - $z : $base + $z}]
+}
+
+proc font_apply {} {
+    foreach f [array names ::FONTBASE] {
+        font configure $f -size [font_size_at $f $::FONTZOOM]
+    }
+    ;# Treeview rows do NOT follow their font: -rowheight is a style setting
+    ;# ttk computes once, from the font as it was when the theme was set up.
+    ;# Leave it alone and zooming in clips every row of both trees.
+    ttk::style configure Treeview \
+        -rowheight [expr {[font metrics TkDefaultFont -linespace] + 4}]
+}
+
+;# Step the zoom, refusing to go somewhere illegible rather than clamping
+;# silently -- a clamp at the bottom makes ctrl-minus look broken, a refusal
+;# with a bell reads as "that is as far as it goes".
+proc font_zoom {step} {
+    set want [expr {$::FONTZOOM + $step}]
+    foreach f [array names ::FONTBASE] {
+        if {abs([font_size_at $f $want]) < 6 || abs([font_size_at $f $want]) > 42} {
+            bell
+            return
+        }
+    }
+    set ::FONTZOOM $want
+    font_apply
+    log "font size: [expr {$want >= 0 ? "+$want" : $want}]"
+}
+
+proc font_reset {} {
+    set ::FONTZOOM 0
+    font_apply
+    log "font size: reset"
 }
 
 # ---------------------------------------------------------------- highlight ---
@@ -1023,6 +985,7 @@ proc save_conf {} {
     foreach k {main topheight botwidth} { puts $fh "$k $::geom($k)" }
     puts $fh "limit $::LIMIT"
     puts $fh "theme $::THEME"
+    puts $fh "fontzoom $::FONTZOOM"
     close $fh
 }
 proc load_conf {} {
@@ -1033,7 +996,24 @@ proc load_conf {} {
         set k [lindex $line 0] ; set v [lrange $line 1 end]
         if {$k in {main topheight botwidth}} { set ::geom($k) $v }
         if {$k eq "limit"} { set ::LIMIT $v }
-        if {$k eq "theme"} { set ::THEME $v }
+        ;# Guarded: ui.conf is a plain text file a user may well edit, and a
+        ;# junk zoom would otherwise make every font call error out at
+        ;# startup, before the log pane exists to say why.
+        if {$k eq "fontzoom" && [string is integer -strict $v]} {
+            set ::FONTZOOM $v
+        }
+        ;# Accept the names this UI used before it had only three: a
+        ;# saved ui.conf outlives the code that wrote it, and a stale value
+        ;# reaching apply_theme would look for a $want.Xresources that is
+        ;# not there and log a failure on every launch.
+        if {$k eq "theme"} {
+            set ::THEME [switch -- $v {
+                auto - omarchy {format system}
+                catppuccin-dark {format dark}
+                catppuccin-light {format light}
+                default {expr {$v in {system light dark} ? $v : "system"}}
+            }]
+        }
     }
     close $fh
 }
@@ -1051,10 +1031,14 @@ proc quit {} {
 }
 
 # ================================================================ build UI ====
+;# Before load_conf, which may carry a saved zoom: the bases must be the
+;# desktop's own sizes, or a saved zoom would compound on every launch.
+font_capture
 load_conf
-;# Before any widget is built: the theme file's own tk_setPalette then gives
-;# the classic widgets (text panes, menus) the right defaults at creation.
+;# Both before any widget is built, so widgets are created at the right
+;# colours and the right size rather than being corrected afterwards.
 apply_theme
+font_apply
 wm title . "webnovel-audio"
 wm minsize . 900 560
 wm protocol . WM_DELETE_WINDOW quit
@@ -1068,22 +1052,33 @@ ttk::button .tool.sync    -text "Sync…"       -command dlg_sync
 ttk::button .tool.stop    -text "Stop"        -command stop_cmd
 ttk::separator .tool.s2 -orient vertical
 ttk::button .tool.srv     -text "Start server" -command server_toggle
-ttk::menubutton .tool.theme -text "Theme" -direction below -menu .tool.theme.m
+;# Labelled "View" rather than "Theme": it carries both appearance settings
+;# now, and the widget path stays .tool.theme so repaint_theme keeps finding
+;# the menu.
+ttk::menubutton .tool.theme -text "View" -direction below -menu .tool.theme.m
 menu .tool.theme.m -tearoff 0
-foreach {lbl val} {"Follow desktop" auto  "Omarchy" omarchy
-                   "Catppuccin Dark" catppuccin-dark
-                   "Catppuccin Light" catppuccin-light} {
+foreach {lbl val} {"System" system  "Light" light  "Dark" dark} {
     .tool.theme.m add radiobutton -label $lbl -value $val -variable ::THEME \
         -command [list set_theme $val]
 }
 .tool.theme.m add separator
-;# `omarchy theme set` does not push a live-update signal to a running app;
-;# this re-sources whichever file apply_theme currently uses (always, not
-;# just when THEME changes) to pick up a desktop theme switch made since
-;# launch. Harmless no-op on the vendored catppuccin themes -- re-sourcing
-;# them just re-applies the same file -- so one label covers all three.
-.tool.theme.m add command -label "Reload theme" \
-    -command {apply_theme ; log "theme reloaded ($::ACTIVE_THEME)"}
+;# Tk reads the root window's resource database once, at startup, and
+;# `omarchy theme set` pushes no live-update signal to a running app -- so a
+;# desktop theme switch made since launch is invisible until something goes
+;# and looks. This re-reads the fragment behind whichever mode is current
+;# (for "system", the live one the desktop wrote), so one label covers all
+;# three.
+.tool.theme.m add command -label "Reload colours" \
+    -command {apply_theme ; log "colours reloaded ($::THEME)"}
+.tool.theme.m add separator
+;# The accelerator labels are the point of putting these in the menu at all
+;# -- the keys are how anyone will actually use it.
+.tool.theme.m add command -label "Larger text"  -accelerator "Ctrl +" \
+    -command {font_zoom 1}
+.tool.theme.m add command -label "Smaller text" -accelerator "Ctrl -" \
+    -command {font_zoom -1}
+.tool.theme.m add command -label "Reset text size" -accelerator "Ctrl 0" \
+    -command font_reset
 pack .tool.theme -side right -padx 2
 pack .tool.add .tool.refresh -side left -padx 2
 pack .tool.s1 -side left -fill y -padx 6
@@ -1222,6 +1217,29 @@ grid .status -row 2 -column 0 -sticky ew
 
 # sashpos before the window is mapped silently does nothing (gitk:2748) — set it
 # from a one-shot Map binding that removes itself.
+;# Font size. Bound on the toplevel, which is in every descendant's bindtags,
+;# so the keys work wherever focus happens to be -- including inside the
+;# editable text panes. Bound on Text as well, with `break`: the toplevel tag
+;# runs AFTER the class tag, so a toplevel binding alone cannot stop Text's
+;# own <Control-Key> handling, and ctrl-minus would zoom AND type into the
+;# cast/lexicon editors.
+;#
+;# Both spellings of each key: on a US layout ctrl-plus arrives as
+;# <Control-plus> only when shift is held, and as <Control-equal> when it is
+;# not -- "ctrl +" is what people call it either way. The keypad pair is
+;# there because a numpad sends different keysyms entirely.
+foreach {seq cmd} {<Control-equal>      {font_zoom 1}
+                   <Control-plus>       {font_zoom 1}
+                   <Control-KP_Add>     {font_zoom 1}
+                   <Control-minus>      {font_zoom -1}
+                   <Control-underscore> {font_zoom -1}
+                   <Control-KP_Subtract> {font_zoom -1}
+                   <Control-Key-0>      font_reset
+                   <Control-KP_0>       font_reset} {
+    bind . $seq $cmd
+    bind Text $seq "$cmd ; break"
+}
+
 bind .ctop <Map> { bind %W <Map> {} ; after idle [list %W sashpos 0 $::geom(topheight)] }
 bind .bot  <Map> { bind %W <Map> {} ; after idle [list %W sashpos 0 $::geom(botwidth)] }
 catch {wm geometry . $::geom(main)}
