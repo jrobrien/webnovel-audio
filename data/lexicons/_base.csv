@@ -68,4 +68,46 @@ subject,VERB,sub-jekt,"verb stresses the second syllable. Partial: espeak will n
 contrast,VERB,cun-trast,"verb reduces the first vowel to schwa. Partial, as above, but the vowel is right"
 diviner,NOUN,dee-vine-er,fortune teller sense
 inky,ADJ,ink-ee,
+agate,,ag-it,gemstone; prevents standard "uh-gate" misreading
+amethyst,,am-uh-thist,purple gemstone
+aquamarine,,ak-wuh-muh-reen,blue gemstone
+azurite,,azh-uh-ryt,blue mineral; "azh" sounds like the 's' in treasure
+beryl,,bair-uhl,mineral family; rhymes with barrel
+bloodstone,,blud-stohn,dark green jasper
+calcite,,kal-syt,common carbonate mineral
+carnelian,,kar-neel-yuhn,red-orange chalcedony variety
+chalcedony,,kal-sed-uh-nee,quartz variety; hard for g2p engines
+chrysoberyl,,kris-oh-bair-uhl,yellow-green gemstone
+chrysoprase,,kris-uh-prayz,apple-green chalcedony variety
+citrine,,sit-reen,yellow quartz variety; ensures it ends in "reen"
+fluorite,,flohr-yt,halide mineral
+garnet,,gar-nit,red silicate mineral; helps audio hit "nit" instead of "net"
+hematite,,hee-muh-tyt,iron oxide mineral
+jadeite,,jayd-yt,one of the two minerals called jade
+jasper,,jas-per,opaque quartz variety
+kunzite,,koonts-yt,pink spodumene variety; German origin "ts" sound
+labradorite,,lab-ruh-dor-yt,feldspar mineral with flash
 lapis,,lap-iss,the stone/colour; g2p says lap-EEZ with a /z/
+lazuli,,laz-yoo-lee,as in lapis lazuli; prevents "luh-zoo-lee"
+malachite,,mal-uh-kyt,green copper mineral; ensures hard "k" sound (rhymes with kite)
+moonstone,,moon-stohn,feldspar gemstone
+nephrite,,nef-ryt,one of the two minerals called jade
+obsidian,,uhb-sid-ee-uhn,volcanic glass
+onyx,,on-iks,banded chalcedony
+opal,,oh-puhl,hydrated silica gemstone
+peridot,,pair-ih-dot,gemstone; standard US pronunciation (UK often uses pair-ih-doh)
+pyrite,,py-ryt,fool's gold
+quartz,,kworts,silicon dioxide mineral
+rhodochrosite,,roh-duh-kroh-syt,pink manganese mineral
+ruby,,roo-bee,red corundum gemstone
+sapphire,,saf-ayr,corundum gemstone; prevents generic "saf-ire" flat vowel
+selenite,,sel-uh-nyt,gypsum mineral variety
+serpentine,,ser-puhn-teen,green magnesium silicate; ensures "teen" instead of "tyne"
+sodalite,,soh-duh-lyt,blue royal mineral
+spinel,,spuh-nel,oxide gemstone; ensures emphasis is on second syllable
+topaz,,toh-paz,silicate mineral
+tourmaline,,toor-muh-leen,borosilicate mineral; ensures it ends in "leen"
+turquoise,,ter-kwoyz,blue-green mineral; fixes common "tur-koyze" g2p errors
+zircon,,zer-kon,zirconium silicate mineral
+
+
