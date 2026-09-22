@@ -363,10 +363,17 @@ replacing a theme. **Reload colours** re-reads whichever fragment is current,
 which is how an `omarchy theme set` made after the UI started gets picked up —
 X resources are read once at startup and there is no change signal.
 
+The ttk side is `clamx` (`ui/vendor`, vendored from `tk-omarchy-theme`): clam's
+geometry with its palette read from those same resources. It is what makes the
+three modes work at all — ttk reads the database once at startup on *every* Tk
+version, so an override loaded later is invisible to it until
+`ttk::theme::clamx::refresh` asks again.
+
 Off Omarchy the same path still works: the standard resource names are Tk's
 own, so anything that populates them (a plain `.Xresources` and `xrdb`) themes
-the UI, and where nothing answers, the Mocha fallbacks in `ui/xres.tcl` keep it
-from coming up an unstyled grey box. The four chapter-stage colours come from
+the UI, and on a machine that publishes nothing at all the dark fragment is
+installed as a floor — below the root window's own entries, so it only decides
+what nobody else has an opinion about. The four chapter-stage colours come from
 the `*omarchy*` hue extension; a theme is free to collapse two of them onto one
 colour, which is why the Stage column's text, not its colour, is what carries
 the meaning.
@@ -618,7 +625,7 @@ kill -9 $PID                                  # -9, so it cannot save_conf over 
 mv ~/.config/webnovel-audio/ui.conf{.bak,}
 ```
 
-Four traps, all of which have bitten:
+Five traps, all of which have bitten:
 
 - **`hyprctl dispatch`/`keyword` no longer take a string.** Hyprland 0.56.2
   parses the argument as Lua, so the old `hyprctl dispatch setfloating
@@ -636,6 +643,13 @@ Four traps, all of which have bitten:
   UI may already be running, and both answer to `webnovel-audio`.
 - Omarchy's default opacity rule makes the dark panes translucent, which
   `grim` captures faithfully. `set_prop(w, 'opaque', true)` is the fix.
+- **`grim -g` captures a screen region, not a window.** A window on a
+  workspace that is not currently displayed has coordinates in `hyprctl
+  clients`, and cropping to them silently captures whatever *is* on screen
+  there — a terminal, in the case that caught this. Check
+  `.workspace.id` against `hyprctl activeworkspace` before trusting the
+  crop, and look at the PNG afterwards. Capturing an already-open window is
+  otherwise fine, and avoids the launch dance entirely.
 - Let the event loop run while waiting. A blocking Tcl `after` stops redraws,
   and `grim` then captures a half-painted frame.
 

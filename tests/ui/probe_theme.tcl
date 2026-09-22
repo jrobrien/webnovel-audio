@@ -84,6 +84,32 @@ proc report {} {
     puts $::LOG "tk [info patchlevel]"
     puts $::LOG "families [llength [font families]]"
     puts $::LOG "live_fragment [file readable [xres::live_fragment]]"
+    puts $::LOG "clamx.version $ttk::theme::clamx::version wanted $::xres::CLAMX_VERSION"
+
+    ;# Geometry parity with clam, measured on a real widget.
+    ;#
+    ;# clamx is `-parent clam`, which carries clam's layouts and elements but
+    ;# NOT its style settings -- so a child theme silently loses -relief,
+    ;# -padding, -width, -font and the rest, and every button renders as flat
+    ;# text two pixels wider than a label. clamx restates them; this is the
+    ;# assertion that a re-vendored copy still does.
+    ;#
+    ;# `winfo reqwidth` on a real button, NOT `ttk::style lookup`: lookup does
+    ;# not traverse theme parents, so it cannot tell an unset option from an
+    ;# inherited one, and it reported the same emptiness for both while clam
+    ;# itself rendered correctly. The widget is the only honest witness.
+    ;#
+    ;# Deliberately separate from the zero-grey sweep: nothing about this
+    ;# class of breakage is visible in colour terms, so the sweep passed
+    ;# straight through it.
+    ttk::button .geomprobe -text "Refresh"
+    foreach t {clam clamx} {
+        ttk::setTheme $t
+        update idletasks
+        puts $::LOG "geometry.$t [winfo reqwidth .geomprobe]x[winfo reqheight .geomprobe]"
+    }
+    puts $::LOG "geometry.relief '[ttk::style lookup TButton -relief]'"
+    destroy .geomprobe
 
     ;# What Tk read from the root window on its own, before anything of ours
     ;# ran. On a desktop publishing a palette these are the desktop's; on a
@@ -91,6 +117,28 @@ proc report {} {
     puts $::LOG "boot.background [dict get $::xres::SYSTEM background]"
     puts $::LOG "boot.omarchyMode '[dict get $::xres::SYSTEM omarchyMode]'"
     puts $::LOG "boot.is_dark [xres::is_dark $::xres::SYSTEM]"
+    puts $::LOG "floored $::FLOORED"
+
+    ;# The floor's whole safety rests on its PRIORITY, which is invisible
+    ;# until it is wrong: at startupFile (40) the root window's own entries
+    ;# must still outrank it, while a light/dark override at interactive (80)
+    ;# outranks both. Proven here rather than asserted in a comment, because
+    ;# getting it backwards would silently pin every machine to Mocha.
+    ;# Skipped where the root window publishes nothing -- there is then no
+    ;# desktop value for the floor to lose to, which is the point of it.
+    set desktop_bg [option get . background Background]
+    if {$desktop_bg ne "" && !$::FLOORED} {
+        option readfile [xres::fragment dark] startupFile
+        puts $::LOG "floor.loses_to_desktop [expr {
+            [option get . background Background] eq $desktop_bg}]"
+        option readfile [xres::fragment light] interactive
+        puts $::LOG "override.beats_floor [expr {
+            [option get . background Background] ne $desktop_bg}]"
+        ;# put the desktop's own answer back before the modes are probed
+        if {[file readable [xres::live_fragment]]} {
+            option readfile [xres::live_fragment] interactive
+        }
+    }
 
     ;# The overrides: checked in, so exact values are asserted. They must
     ;# also survive being applied in either order -- an override cannot be

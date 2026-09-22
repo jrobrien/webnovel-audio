@@ -200,12 +200,16 @@ def test_colours_come_from_the_resource_database(tmp_path, tk_version):
         # classic widgets, which honour the database directly on every Tk
         assert b["md.t.bg"] == field, log
         assert b["md.t.fg"] == fg, log
-        # `ttk::style theme use` does not update ::ttk::currentTheme, only
-        # `ttk::setTheme` does -- and that variable is exactly what a Python
-        # tkinter host's Style().theme_use() reads. Regress this and the UI
-        # looks right under wish while a Python host reports the wrong theme
-        # and every ttk widget stays unthemed underneath it.
-        assert b["ttk::currentTheme"] == "default", log
+        # The vendored clamx theme (ui/vendor) must actually be selected --
+        # on Tk 9 it is easy to miss its absence, since the stock `default`
+        # theme reads the same resources and looks nearly right.
+        #
+        # Asserted on ::ttk::currentTheme rather than `ttk::style theme use`
+        # because only `ttk::setTheme` updates that variable, and it is
+        # exactly what a Python tkinter host's Style().theme_use() reads.
+        # Select with `theme use` instead and the UI looks right under wish
+        # while the host reports the wrong theme.
+        assert b["ttk::currentTheme"] == "clamx", log
         # four chapter-stage rows must be four actually-distinct colours.
         # The picker that used to guarantee this went away with the theme
         # package, so this now rests on the fragments' own hues -- which is
@@ -233,13 +237,53 @@ def test_colours_come_from_the_resource_database(tmp_path, tk_version):
     sysb = block("system")
     assert re.fullmatch(r"#[0-9a-fA-F]{6}", sysb["ttk.bg"]), log
     assert sysb["distinct.count"] == "4", log
-    # "system" must not be left wearing the override that ran before it
-    assert sysb["ttk.bg"] != "#1e1e2e", log
+    # "system" must not be left wearing the override that ran before it: after
+    # dark/light/dark it has to come back to what the desktop itself says.
+    #
+    # Compared against the boot snapshot rather than asserted to differ from
+    # a hardcoded hex -- the earlier spelling here was `!= "#1e1e2e"`, which
+    # turned into a false failure the day the desktop theme was switched to
+    # catppuccin and the live palette legitimately became Mocha. The
+    # invariant is "system equals the desktop", and on a machine themed to
+    # match a fragment those are the same colour.
+    boot_bg = re.search(r"boot\.background (#[0-9a-fA-F]{6})\n", log)
+    assert boot_bg, log
+    assert sysb["ttk.bg"] == boot_bg.group(1), log
 
     # the light/dark signal: the explicit *omarchyMode resource where the
     # desktop publishes one, luminance of the background where it does not.
     # Must always answer, including on a machine with a bare root window.
     assert re.search(r"boot\.is_dark [01]\n", log), log
+
+    # The floor under a bare root window is safe only because of its
+    # priority. Where this machine has a desktop palette, the floor must lose
+    # to it and a light/dark override must beat the floor -- get that
+    # backwards and every machine silently pins to Mocha.
+    if "floor.loses_to_desktop" in log:
+        assert "floor.loses_to_desktop 1" in log, log
+        assert "override.beats_floor 1" in log, log
+
+    # clamx must still match clam's geometry. It is `-parent clam`, which
+    # carries layouts and elements but NOT style settings, so a child theme
+    # silently loses -relief, -padding, -width and -font: buttons then render
+    # as flat text barely wider than a label (measured: 52x22 against clam's
+    # 93x32). clamx restates them, and this asserts a re-vendored copy still
+    # does -- independently of upstream's own suite.
+    #
+    # Measured on a real widget rather than read from `ttk::style lookup`,
+    # which does not traverse theme parents and so cannot distinguish an
+    # unset option from an inherited one. And kept separate from the
+    # zero-grey sweep, which is blind to this entire class: nothing about it
+    # shows up in colour.
+    geom = dict(re.findall(r"geometry\.(\w+) (\d+x\d+)\n", log))
+    assert geom.get("clam") == geom.get("clamx"), log
+    assert "geometry.relief 'raised'" in log, log
+
+    # The vendored copy must be the version xres.tcl was written against.
+    # Upstream bumps it on every change that alters what the file produces,
+    # so an unequal version is the signal to re-read its notes rather than
+    # let a vendored copy drift quietly out of step.
+    assert re.search(r"clamx\.version (\S+) wanted \1\n", log), log
 
 
 @needs_display

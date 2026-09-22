@@ -1,25 +1,28 @@
 # Colour, from the X resource database and nothing else.
 #
-# There is no ttk theme here, and no theme file to source. Tk already reads
-# the root window's RESOURCE_MANAGER at startup -- even under Wayland, via
-# XWayland -- and Omarchy publishes the live desktop palette into it on every
-# `omarchy theme set` (tk-omarchy-xresources, in github.com jro/tk-omarchy-theme).
-# So on Tk 9 a stock `default`-themed application is already the right colour
-# before a single line of ours runs. Measured on this machine, uv's Tcl 9.0.4:
-# ttk style `.` comes up -background #060B1E -foreground #ffcead
-# -selectbackground #252e56, straight from the desktop theme, zero code.
+# Tk already reads the root window's RESOURCE_MANAGER at startup -- even under
+# Wayland, via XWayland -- and Omarchy publishes the live desktop palette into
+# it on every `omarchy theme set` (tk-omarchy-xresources, in
+# github.com jro/tk-omarchy-theme). The desktop's palette is therefore already
+# in this process before a single line of ours runs; the work is getting it
+# onto the widgets.
 #
-# What this file adds is the three things that are not free:
+# Three things are not free:
 #
-#   1. Tk 8.6's ttk ignores the resource database entirely -- tk9.0's
+#   1. ttk. On Tk 8.6 it ignores the resource database entirely -- tk9.0's
 #      ttk/defaults.tcl grew the block that reads it and 8.6's never had it,
 #      so 8.6 comes up compiled-in grey (#d9d9d9) no matter what is on the
-#      root window. Its *classic* widgets do honour resources. `style_ttk`
-#      pushes the resolved values into ttk::style so both versions match.
+#      root window. On BOTH versions it reads the database once, at startup,
+#      so an override loaded later is invisible to it. `style_ttk` answers
+#      both with the vendored `clamx` theme (ui/vendor) and its `refresh`.
+#      Classic widgets need none of this: they honour resources directly, at
+#      creation, on every version.
 #   2. light/dark, which are the same resource names loaded from a checked-in
 #      fragment at a priority that outranks the root window (see `apply`).
 #   3. the categorical colours -- chapter-stage rows, syntax highlighting --
-#      which no standard X resource name carries (see `palette`).
+#      which no standard X resource name carries (see `palette`). clamx reads
+#      the eight structural resources and deliberately stops there: those
+#      describe surfaces, and no theme can guess which chapter stage is "red".
 namespace eval xres {}
 
 ;# Captured at this file's own top level, NOT inside a proc: `info script` is
@@ -29,6 +32,22 @@ namespace eval xres {}
 ;# exact way once, when the fragment path resolved differently depending on
 ;# whether the theme was applied at startup or from the Theme menu.
 set xres::SELF_DIR [file dirname [file normalize [info script]]]
+
+;# The ttk theme. Sourced by a path relative to THIS script rather than the
+;# working directory, which is wherever the user happened to launch from.
+;# Vendored on purpose -- see ui/vendor/README.md -- so this UI still comes up
+;# themed on a machine with no Omarchy and nothing installed.
+source [file join $xres::SELF_DIR vendor clamx.tcl]
+
+;# What ui/vendor/clamx.tcl was vendored at. Upstream bumps this on every
+;# change that alters what the file produces, so an unequal version is the
+;# signal to re-read its notes -- a silently drifting vendored copy being the
+;# failure mode worth designing against.
+set xres::CLAMX_VERSION 1.2
+if {$ttk::theme::clamx::version ne $::xres::CLAMX_VERSION} {
+    puts stderr "note: vendored clamx is $ttk::theme::clamx::version,\
+                 this UI was written for $::xres::CLAMX_VERSION"
+}
 
 ;# Every resource this UI reads, with the fallback to use when the database
 ;# has nothing -- a bare Tk with no Omarchy, no xrdb, no DISPLAY-side setup
@@ -102,6 +121,33 @@ proc xres::fragment {mode} {
 ;# fragment was ever added. SYSTEM is that snapshot, taken at startup.
 set xres::SYSTEM {}
 
+;# A floor under the whole palette, for a machine that publishes no X
+;# resources at all -- no Omarchy, no xrdb, nothing on the root window.
+;#
+;# Needed because two different fallback sets now meet: clamx falls back to
+;# clam's own light greys, while SCHEMA falls back to Mocha. On a themed
+;# machine neither is ever reached and they cannot disagree. On a bare one
+;# both are, and the window comes up light-grey ttk wrapped around dark text
+;# panes. Loading the dark fragment gives both the same answer instead.
+;#
+;# At `startupFile` priority (40), which is BELOW the root window's own
+;# entries and far below the light/dark overrides at `interactive` (80). So
+;# this is a floor and not a preference: anything the desktop actually says
+;# outranks it, and it only decides what nobody else has an opinion about.
+;#
+;# Applied only when the database is entirely bare, never to fill gaps in a
+;# partial one. A third-party tool that set `*background` dark and nothing
+;# else would otherwise get our light Mocha foreground on it -- or, just as
+;# easily, a light background with the same foreground, which is unreadable.
+;# All-or-nothing is the case a fallback can actually get right.
+proc xres::install_floor {} {
+    if {[option get . background Background] ne ""} { return 0 }
+    set f [fragment dark]
+    if {![file readable $f]} { return 0 }
+    if {[catch {option readfile $f startupFile}]} { return 0 }
+    return 1
+}
+
 proc xres::snapshot {} {
     set out {}
     foreach {res class fallback} $::xres::SCHEMA { dict set out $res [get $res] }
@@ -159,84 +205,35 @@ proc xres::is_dark {vals} {
     return [expr {(0.299*$r + 0.587*$g + 0.114*$b) / 65535.0 < 0.5}]
 }
 
-;# Push the resolved values into ttk::style.
+;# Select clamx and point it at whatever the database now says.
 ;#
-;# On Tk 9 with mode=system this is very nearly a no-op -- ttk's `default`
-;# theme already read the same resources -- and it is run anyway rather than
-;# version-sniffed, because the one case that must work is the one where the
-;# two disagree: an override fragment loaded after startup, which ttk does
-;# NOT pick up (`option add` does not retint an existing style; measured).
-;# Running it unconditionally means light/dark and Tk 8.6 take the identical
-;# path, so there is no branch that only one machine ever exercises.
+;# clamx (ui/vendor, from tk-omarchy-theme) is clam's geometry with its
+;# palette read from the same eight structural resources this file reads. It
+;# replaces a hand-written styling pass that had to restate clam's greys one
+;# state map at a time -- and kept missing some, because clam bakes its own
+;# colours into `map` at theme-definition time where `configure` cannot reach
+;# them. The check and radio indicators are hardcoded twice over; the arrows
+;# fall back to a compiled-in black that is invisible on a dark window.
+;#
+;# Run on every apply, not just when the mode changes, and on both Tk
+;# versions:
+;#
+;#   - Tk 8.6's ttk reads no resources at all, so nothing else would colour it.
+;#   - On BOTH versions ttk reads the database once, at startup. An override
+;#     loaded later is invisible to it until something asks -- which is what
+;#     `refresh` is for, and is the hook the whole light/dark switch hangs on.
+;#
+;# `ttk::setTheme`, not `ttk::style theme use`: only setTheme updates
+;# ::ttk::currentTheme, and that variable is exactly what a Python tkinter
+;# host's Style().theme_use() reads back. `theme use` leaves it stale, so the
+;# UI looks right under wish while the host reports the wrong theme.
 proc xres::style_ttk {vals} {
-    set bg    [dict get $vals background]
-    set fg    [dict get $vals foreground]
-    set field [dict get $vals windowColor]
-    set sel   [dict get $vals selectBackground]
-    set selfg [dict get $vals selectForeground]
-    set dim   [dict get $vals disabledForeground]
-    set act   [dict get $vals activeBackground]
-    set trough [dict get $vals troughColor]
-
-    ;# ttk::setTheme, not `ttk::style theme use`: only setTheme updates
-    ;# ::ttk::currentTheme, and that variable is exactly what a Python
-    ;# tkinter host's Style().theme_use() reads. Regress it and the UI looks
-    ;# right under wish while a Python host reports the wrong theme.
-    ;#
-    ;# `default` rather than clam: on Tk 9 it is the only built-in theme that
-    ;# reads the resource database at all (clam, alt and classic keep
-    ;# hardcoded colours), so leaving it selected is what makes a machine
-    ;# with a live desktop palette correct before we touch anything.
-    catch {ttk::setTheme default}
-
-    ttk::style configure . -background $bg -foreground $fg \
-        -fieldbackground $field -troughcolor $trough -bordercolor $dim \
-        -darkcolor $bg -lightcolor $bg \
-        -focuscolor [dict get $vals highlightColor] \
-        -selectbackground $sel -selectforeground $selfg \
-        -insertcolor $fg
-    ttk::style map . -foreground [list disabled $dim] \
-                     -background [list disabled $bg active $act]
-
-    foreach w {TFrame TLabel TButton TMenubutton TNotebook TScrollbar
-               TPanedwindow TSeparator} {
-        ttk::style configure $w -background $bg
-    }
-    ;# The entry family. `-arrowcolor` matters as much as the field colour
-    ;# here: Tk's built-in default for a spinbox/combobox arrow is literally
-    ;# `black`, which disappears entirely on a dark background -- and it is a
-    ;# glyph, so unlike a wrong background it gives no hint that it is there.
-    ;# Disabled likewise falls back to a light grey field that flashes bright
-    ;# against a dark window.
-    foreach w {TEntry TSpinbox TCombobox} {
-        ttk::style configure $w -fieldbackground $field -foreground $fg \
-            -insertcolor $fg -arrowcolor $fg
-        ttk::style map $w -fieldbackground [list disabled $bg readonly $bg] \
-            -foreground [list disabled $dim] \
-            -arrowcolor [list disabled $dim]
-    }
-    ttk::style configure Treeview -background $field -fieldbackground $field \
-        -foreground $fg
-    ttk::style map Treeview -background [list selected $sel] \
-                            -foreground [list selected $selfg]
-    ;# `-relief raised` on the heading is the chunky-bevel look even once the
-    ;# colours match; flatten it rather than guess a derived shade for it.
-    ttk::style configure Treeview.Heading -background $bg -foreground $fg \
-        -relief flat -borderwidth 1
-    ;# Notebook tabs need the UNSELECTED state configured, not just the
-    ;# selected one mapped. `ttk::style configure TNotebook` paints the strip
-    ;# behind the tabs; the tabs themselves are a separate style with its own
-    ;# compiled-in colour, and on Tk 8.6 that colour is #c3c3c3 -- so the
-    ;# window came up correct except for a row of grey tabs. Recessed to the
-    ;# trough colour, with the selected tab rising to the page background,
-    ;# which is the shape the desktop's own palette is describing.
-    ttk::style configure TNotebook.Tab -background $trough -foreground $fg
-    ttk::style map TNotebook.Tab -background [list selected $bg active $act] \
-                                 -foreground [list selected $fg disabled $dim]
-    ttk::style map TButton -background [list active $act disabled $bg]
-    ttk::style configure TScrollbar -troughcolor $trough -arrowcolor $fg
-    ttk::style map TScrollbar -background [list active $sel] \
-        -arrowcolor [list disabled $dim]
+    ;# $vals is deliberately unused: clamx reads the option database itself,
+    ;# and giving it a second path to the same values is how the two drift.
+    ;# The argument stays because every caller already has the dict and a
+    ;# future non-ttk fixup here will want it.
+    catch {ttk::setTheme clamx}
+    ttk::theme::clamx::refresh
 }
 
 ;# The resolved values, translated into the keys repaint_theme paints our own

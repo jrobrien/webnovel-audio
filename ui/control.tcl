@@ -80,6 +80,10 @@ set ::PAL ""                     ;# resolved colours, from xres::palette
 ;# at interactive priority it is there for the life of the process, and
 ;# switching back to "system" can only be served from a snapshot. Taken here,
 ;# at source time, which is before the first apply_theme.
+;# Before the snapshot, so a machine with nothing on its root window gets a
+;# coherent palette rather than clamx's clam greys wrapped around our own
+;# Mocha fallbacks. A no-op on any machine that publishes resources.
+if {[xres::install_floor]} { set ::FLOORED 1 } else { set ::FLOORED 0 }
 set ::xres::SYSTEM [xres::snapshot]
 
 proc pal {key} { return [dict get $::PAL $key] }
