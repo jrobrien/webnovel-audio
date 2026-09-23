@@ -235,3 +235,81 @@ def test_pos_rules_resolve_against_the_shipped_file():
         if r.pos and not r.is_phrase:
             assert r.surface.lower() in lex.tokens
             assert r.specificity >= 1
+
+
+def test_base_lexicon_loads_from_any_working_directory(tmp_path, monkeypatch):
+    """The base lexicon must not depend on where the command was run from.
+
+    `general.base_lexicon` defaults to the repo-relative "data/lexicons/
+    _base.csv", and `data/` is not packaged into the wheel, so it names a file
+    in the checkout. Resolved against the *working directory* instead, it
+    silently vanished for any command run from elsewhere -- and "no lexicon"
+    was indistinguishable from "lexicon with nothing to say". A sync run from
+    another directory published 23 chapters of one series pronouncing every
+    `qi` as "ky", and the only trace was an empty `base_lexicon_sha256` in the
+    manifest.
+    """
+    cfg = Config.load(None)
+    monkeypatch.chdir(tmp_path)
+    lex = pipeline._load_lexicon(cfg)
+    assert lex is not None and lex.rules, \
+        "the base lexicon did not load from an unrelated working directory"
+    assert any(r.surface.lower() == "qi" for r in lex.rules)
+
+
+def test_a_configured_but_missing_base_lexicon_is_fatal(tmp_path):
+    """Missing must not be silently treated as disabled.
+
+    An empty setting means "render without a base lexicon" and is fine. A
+    setting that points at nothing is a broken install or a typo, and
+    skipping it produces audio that is wrong in a way no test and no listener
+    catches until someone knows the word. Raising is the only outcome that
+    gets noticed.
+    """
+    cfg = Config.load(None)
+    cfg.general.base_lexicon = str(tmp_path / "does-not-exist.csv")
+    with pytest.raises(SystemExit, match="base lexicon not found"):
+        pipeline._load_lexicon(cfg)
+
+    cfg.general.base_lexicon = ""          # explicitly disabled: still allowed
+    cfg.general.lexicon = ""
+    assert pipeline._load_lexicon(cfg) is None
+
+
+@spacy_only
+def test_punctuation_glued_to_a_token_does_not_defeat_a_rule():
+    """A trailing dash must not hide the word in front of it.
+
+    spaCy keeps a trailing hyphen attached when it is used as a dash, so
+    "use his qi- a gold shield" tokenises as [..., "qi-", "a", ...] and a
+    lookup for the surface "qi" missed entirely. The effect was that one
+    sentence said "ky" while the next said "chee" correctly, which reads as
+    the lexicon being flaky rather than as a tokenisation bug.
+
+    The dash itself must survive -- only the lookup is trimmed, not the text.
+    """
+    lex = Lexicon([Rule(surface="qi", respell="chee")])
+    nlp = tagger.load(tagger.DEFAULT_MODEL)
+    assert lex.apply("use his qi- a gold shield", nlp) == "use his chee- a gold shield"
+    assert lex.apply("his qi.", nlp) == "his chee."
+    assert lex.apply("(qi)", nlp) == "(chee)"
+    # already split by the tagger, and must stay that way
+    assert lex.apply("the qi-dense air", nlp) == "the chee-dense air"
+
+
+def test_trimming_only_touches_the_edges():
+    """Internal punctuation is part of the word; the offset moves with the trim.
+
+    Unit-level on purpose. The obvious end-to-end spelling of this -- assert
+    a rule for "don't" fires -- tests something else entirely: spaCy splits
+    contractions into "do" + "n't", so that surface never reaches the token
+    path with or without trimming, and the assertion would have been about
+    the tagger rather than about this function.
+    """
+    from webnovel_audio.lexicon import _trim_edges
+
+    assert _trim_edges("qi-", 8) == ("qi", 8)       # dash after the word
+    assert _trim_edges("(qi)", 4) == ("qi", 5)      # offset follows the trim
+    assert _trim_edges("qi", 0) == ("qi", 0)        # nothing to do
+    assert _trim_edges("n't", 2) == ("n't", 2)      # apostrophe is internal
+    assert _trim_edges("--", 0)[0] == ""            # punctuation only: dropped

@@ -8,7 +8,7 @@ os.environ.setdefault("OMP_NUM_THREADS", "6")
 import argparse  # noqa: E402
 
 from . import __version__  # noqa: E402
-from .config import Config  # noqa: E402
+from .config import Config, resolve_data_path  # noqa: E402
 
 from .dialogue import FEMALE_VOICE_POOL, MALE_VOICE_POOL  # noqa: E402
 from .dialogue import suggest_voices as _suggest_voices  # noqa: E402
@@ -1777,11 +1777,11 @@ def _cmd_config(args) -> int:
         "project_dir": project,
         "state_db": os.path.abspath(os.path.expanduser(cfg.royalroad.state_db)),
         "library_dir": os.path.abspath(os.path.expanduser(cfg.royalroad.library_dir)),
-        "lexicon_dir": os.path.abspath(os.path.expanduser(cfg.general.lexicon_dir or "data/lexicons")),
+        "lexicon_dir": resolve_data_path(cfg.general.lexicon_dir or "data/lexicons"),
         "base_lexicon": (os.path.abspath(os.path.expanduser(cfg.general.base_lexicon))
                          if cfg.general.base_lexicon else ""),
-        "series_config_dir": os.path.abspath(os.path.expanduser(
-            cfg.general.series_config_dir or "data/series")),
+        "series_config_dir": resolve_data_path(
+            cfg.general.series_config_dir or "data/series"),
         "models_dir": cfg.general.models_dir,
         "request_delay": cfg.royalroad.request_delay,
         "backend": cfg.synth.backend,

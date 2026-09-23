@@ -24,7 +24,7 @@ import time
 import tomllib
 import uuid as _uuid
 
-from .config import Config
+from .config import Config, resolve_data_path
 from .db import DB
 
 SCHEMA = 1
@@ -98,11 +98,16 @@ def legacy_paths(cfg: Config, slug: str) -> dict:
     so an un-migrated tree keeps working until `migrate bundles` runs."""
     lib = os.path.expanduser(cfg.royalroad.library_dir)
     return {
+        # Anchored to the checkout, not the working directory -- same reason
+        # as the base lexicon (see config.resolve_data_path). Harmless on a
+        # migrated tree, where `resolve` prefers the bundle anyway; on an
+        # un-migrated one it is the difference between finding the legacy
+        # file and silently deciding there isn't one.
         "config": os.path.join(
-            os.path.expanduser(cfg.general.series_config_dir or "data/series"),
+            resolve_data_path(cfg.general.series_config_dir or "data/series"),
             f"{slug}.toml"),
         "lexicon": os.path.join(
-            os.path.expanduser(cfg.general.lexicon_dir or "data/lexicons"),
+            resolve_data_path(cfg.general.lexicon_dir or "data/lexicons"),
             f"{slug}.csv"),
         "chapters": os.path.join(lib, slug),
         "covers": os.path.join(lib, slug),
@@ -193,7 +198,7 @@ def write_manifest(cfg: Config, series_row, *, fingerprints=None) -> str:
     base lexicon than the one now on disk."""
     d = bundle_dir(cfg, series_row)
     uid = _row_get(series_row, "uuid") or str(_uuid.uuid4())
-    base_lex = os.path.expanduser(cfg.general.base_lexicon or "")
+    base_lex = resolve_data_path(cfg.general.base_lexicon)
     lines = [
         "# manifest.toml — written by webnovel-audio; hand edits will be overwritten.",
         "# Identity and provenance only. Render settings live in config.toml.",

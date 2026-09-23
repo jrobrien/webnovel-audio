@@ -629,3 +629,36 @@ def test_reclaim_keeps_a_key_not_yet_in_every_owning_bundle(legacy, tmp_path):
     r = bundle.reclaim_cache(cfg, db)
     assert r["unlinked"] == 0 and r["kept"] == 1
     assert os.path.isfile(os.path.join(src, f"{digest}.wav"))
+
+
+def test_repo_relative_settings_do_not_depend_on_the_working_directory(
+        tmp_path, monkeypatch):
+    """`data/` paths name files in the checkout, not in whatever cwd we have.
+
+    `data/` is not packaged into the wheel, so every default in `General`
+    that points into it is a checkout path. Resolving those against the
+    working directory made them vanish for any command run from elsewhere --
+    which, for the base lexicon, meant 23 chapters were rendered with no
+    pronunciation rules at all and nothing said so. The siblings share the
+    shape, so they share the fix.
+    """
+    from webnovel_audio.config import Config, resolve_data_path
+
+    cfg = Config.load(None)
+    monkeypatch.chdir(tmp_path)
+    for setting in ("base_lexicon", "lexicon_dir", "series_config_dir"):
+        resolved = resolve_data_path(getattr(cfg.general, setting))
+        assert os.path.isabs(resolved), setting
+        assert not resolved.startswith(str(tmp_path)), \
+            f"{setting} resolved against the working directory: {resolved}"
+        assert os.path.exists(resolved), f"{setting} does not exist: {resolved}"
+
+
+def test_an_absolute_setting_is_left_alone(tmp_path):
+    """An absolute path means what it says; only relative ones get anchored."""
+    from webnovel_audio.config import resolve_data_path
+
+    target = tmp_path / "elsewhere.csv"
+    target.write_text("x")
+    assert resolve_data_path(str(target)) == str(target)
+    assert resolve_data_path("") == ""

@@ -115,6 +115,29 @@ def match_case(original: str, respell: str) -> str:
     return respell
 
 
+#: Punctuation glued to a token by the tagger, which must not defeat a rule.
+#:
+#: spaCy keeps a trailing hyphen attached when it is being used as a dash --
+#: "use his qi- a gold shield" tokenises as ["use", "his", "qi-", "a", ...] --
+#: so a lookup for the surface "qi" missed, and that sentence was read "ky"
+#: while "his qi." two lines later was read correctly. Only the *edges* are
+#: trimmed: "qi-dense" is already split into three tokens by the tagger and
+#: must stay that way, and an internal apostrophe is part of the word.
+_EDGE_PUNCT = re.compile(r"^\W+|\W+$", re.UNICODE)
+
+
+def _trim_edges(word: str, offset: int) -> tuple[str, int]:
+    """(word, offset) with leading and trailing punctuation removed.
+
+    The offset moves with the trim so the replacement still spans exactly the
+    letters, leaving the dash where the author put it.
+    """
+    stripped = _EDGE_PUNCT.sub("", word)
+    if stripped == word or not stripped:
+        return stripped, offset
+    return stripped, offset + word.index(stripped)
+
+
 class Lexicon:
     def __init__(self, rules: list[Rule]):
         self.rules = rules
@@ -216,7 +239,9 @@ class Lexicon:
         for tok in nlp(text):
             if tok.is_space or tok.is_punct:
                 continue
-            yield tok.text, tok.idx, tok.pos_, tok.tag_, (tok.lemma_ or "")
+            word, off = _trim_edges(tok.text, tok.idx)
+            if word:
+                yield word, off, tok.pos_, tok.tag_, (tok.lemma_ or "")
 
     # -- loading ------------------------------------------------------------
 

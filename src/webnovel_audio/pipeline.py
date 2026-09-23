@@ -11,6 +11,7 @@ import soundfile as sf
 
 from .audio import apply_chain, assemble, write_opus
 from .config import Config
+from .config import resolve_data_path
 from .lexicon import Lexicon
 from .normalize import Block, load_blocks_from_text
 from .segment import Segment, build_segments, segments_to_json
@@ -129,9 +130,25 @@ def _dsp_spec(seg: Segment, cfg: Config) -> dict:
 
 
 def _load_lexicon(cfg: Config) -> Lexicon | None:
+    """The rules to read the text with: the always-on base, then the series'.
+
+    A configured-but-missing base lexicon raises rather than being skipped.
+    It used to be skipped, and the failure was invisible in every direction
+    that matters -- the render succeeded, the audio sounded fine unless you
+    knew the word, and the only trace was an empty `base_lexicon_sha256` in
+    the manifest. 23 chapters were published saying "ky" for every `qi`
+    before anyone heard it. An exception is not a worse outcome than that; it
+    is the only one that gets noticed.
+    """
     paths: list[str] = []
-    base = getattr(cfg.general, "base_lexicon", "")
-    if base and os.path.exists(base):
+    base = resolve_data_path(getattr(cfg.general, "base_lexicon", ""))
+    if base:
+        if not os.path.exists(base):
+            raise SystemExit(
+                f"base lexicon not found: {base}\n"
+                f"  (from general.base_lexicon = "
+                f"{getattr(cfg.general, 'base_lexicon', '')!r})\n"
+                f"  set it to an absolute path, or to \"\" to render without one.")
         paths.append(base)
     path = cfg.general.lexicon
     if path and os.path.exists(path) and path not in paths:

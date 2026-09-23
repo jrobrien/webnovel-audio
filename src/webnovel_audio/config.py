@@ -5,6 +5,40 @@ import os
 import tomllib
 from dataclasses import dataclass, field, fields
 
+#: The repo checkout this package was installed from, used to anchor the
+#: relative paths in `General` below. `data/` is not packaged into the wheel
+#: (pyproject ships only `src/webnovel_audio`), so those paths name files in
+#: the checkout, and resolving them against the *working directory* means the
+#: lexicon silently disappears whenever a command runs from somewhere else.
+#:
+#: That is not hypothetical: a sync run from another directory rendered 23
+#: chapters of one series with no base lexicon at all, saying "ky" for every
+#: `qi`, and the only trace was an empty `base_lexicon_sha256` in the
+#: manifest. See `resolve_data_path`.
+_CHECKOUT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def resolve_data_path(path: str) -> str:
+    """Absolute location of one of the repo-relative paths in `General`.
+
+    Tries the working directory first, so an explicit relative path still
+    means what the caller typed, then falls back to the checkout. Returns ""
+    for an empty setting -- that means "disabled", which is different from
+    "configured but missing" and must not be conflated with it.
+
+    The path is returned whether or not it exists: existence is the caller's
+    business, and a caller that treats "missing" as "disabled" is exactly the
+    bug this function was written for.
+    """
+    path = os.path.expanduser(path or "")
+    if not path:
+        return ""
+    if os.path.isabs(path):
+        return path
+    if os.path.exists(path):
+        return os.path.abspath(path)
+    return os.path.join(_CHECKOUT_ROOT, path)
+
 
 @dataclass
 class General:
