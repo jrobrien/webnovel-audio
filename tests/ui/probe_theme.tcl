@@ -80,6 +80,25 @@ proc probe_mode {want} {
     puts $::LOG "  disabled.distinct [expr {$dfg ne $bg}]"
 }
 
+;# Run `cmd` once the UI is actually on screen.
+;#
+;# These probes used a fixed `after` delay, which is a bet that the UI builds
+;# in under N milliseconds. Under load -- a render using every core, which is
+;# exactly when the suite gets run -- that bet loses occasionally, the probe
+;# reports on a half-built window, and the failure looks like the feature is
+;# broken rather than like the probe was early. Wait for the widget instead,
+;# with the timeout only as a backstop so a genuine build failure still
+;# reports rather than hanging.
+proc when_ready {cmd {tries 100}} {
+    if {[winfo exists .br.cast.t] && [winfo ismapped .br.cast.t] && $tries > 0} {
+        update idletasks
+        after idle $cmd
+        return
+    }
+    if {$tries <= 0} { after idle $cmd ; return }
+    after 50 [list when_ready $cmd [expr {$tries - 1}]]
+}
+
 proc report {} {
     puts $::LOG "tk [info patchlevel]"
     puts $::LOG "families [llength [font families]]"
@@ -153,4 +172,4 @@ proc report {} {
     exit 0
 }
 
-after 900 report
+when_ready report

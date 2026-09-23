@@ -19,6 +19,58 @@ SCRIPT = os.path.join(ROOT, "tests", "ui", "feed_events.tcl")
 HOST = os.path.join(ROOT, "ui", "host.py")
 CONTROL = os.path.join(ROOT, "ui", "control.tcl")
 
+FAKE_DESKTOP = os.path.join(ROOT, "tests", "ui", "fake-desktop.Xresources")
+
+
+def _start_isolated_display():
+    """A private X display for the UI tests, or None if one can't be had.
+
+    These tests build real Tk windows. On the live desktop that means windows
+    appearing and stealing focus for as long as the suite runs, and under a
+    tiling compositor it is worse than untidy: Hyprland tiles each one as it
+    maps, moves the focus, and reflows whatever the developer was actually
+    doing. The machine is effectively unusable for the duration.
+
+    A nested X server is a complete isolation boundary -- it *is* the whole
+    display, so nothing outside can touch a window inside it and nothing
+    inside can touch the real desktop. It also makes the theme tests
+    deterministic for the first time: the root window gets a known palette
+    (FAKE_DESKTOP) instead of whatever the developer's desktop happens to be
+    set to this afternoon. That was not a hypothetical -- an assertion broke
+    when the real desktop theme was switched to catppuccin.
+
+    Set WEBNOVEL_AUDIO_TEST_DISPLAY to reuse a display you started yourself
+    (`xctl start -w` shows one in a window, which is how to watch these run).
+    """
+    import atexit
+    import shutil
+
+    if os.environ.get("WEBNOVEL_AUDIO_TEST_DISPLAY"):
+        return os.environ["WEBNOVEL_AUDIO_TEST_DISPLAY"]
+    if not shutil.which("xctl"):
+        return None
+    try:
+        disp = subprocess.run(["xctl", "start", "-x", FAKE_DESKTOP, "-g", "1400x900"],
+                              capture_output=True, text=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    disp = disp.stdout.strip()
+    if not re.fullmatch(r":\d+", disp or ""):
+        return None
+    atexit.register(lambda: subprocess.run(["xctl", "stop", disp],
+                                           capture_output=True))
+    return disp
+
+
+#: Claimed at import, not in a fixture: `_tk_interpreters()` runs inside a
+#: @parametrize decorator, which is evaluated at collection time, and it
+#: spawns Tk to probe each interpreter. A fixture would be too late to keep
+#: that off the real display.
+ISOLATED_DISPLAY = _start_isolated_display()
+if ISOLATED_DISPLAY:
+    os.environ["DISPLAY"] = ISOLATED_DISPLAY
+    os.environ.pop("WAYLAND_DISPLAY", None)
+
 has_display = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
 needs_display = pytest.mark.skipif(not has_display, reason="needs a display")
 
@@ -60,7 +112,15 @@ def _run(script, *args, python=None, timeout=90, ui_conf=None):
     so a probe cannot redirect the path itself, and without this it both
     asserts against and overwrites the developer's real ui.conf.
     """
-    env = dict(os.environ, WEBNOVEL_AUDIO_UI_CONF=str(ui_conf or ""))
+    # WEBNOVEL_AUDIO_XRESOURCES points "system" mode at the fake palette too.
+    # The isolated display covers what Tk read from the root window at
+    # startup, but `apply_theme system` deliberately RE-READS the desktop's
+    # own fragment by path -- that is what makes "Reload colours" work -- and
+    # without this it reaches straight past the isolation to the developer's
+    # live Omarchy theme.
+    env = dict(os.environ,
+               WEBNOVEL_AUDIO_UI_CONF=str(ui_conf or ""),
+               WEBNOVEL_AUDIO_XRESOURCES=FAKE_DESKTOP)
     return subprocess.run([python or _host_python(), HOST, script, *args],
                           cwd=ROOT, timeout=timeout, capture_output=True,
                           text=True, env=env)
@@ -81,6 +141,104 @@ def test_ui_handles_every_event_shape(tmp_path):
     # a dry run must not claim the work happened
     assert "#7 would rendered" in log, log
     assert "refused: another render/sync holds the lock" in log, log
+
+
+@needs_display
+def test_selecting_a_series_shows_the_first_unfinished_chapter(tmp_path):
+    """Selecting a series must land on the edge of the work, not on chapter 1.
+
+    A long-running series is hundreds of rendered rows followed by the few
+    that matter, so the list opened on ancient history and every visit began
+    with the same scroll to the bottom.
+    """
+    out = tmp_path / "scroll.log"
+    r = _run(os.path.join(ROOT, "tests", "ui", "probe_scroll.tcl"), str(out),
+             ui_conf=tmp_path / "ui.conf")
+    log = out.read_text() if out.exists() else ""
+    assert r.returncode == 0, f"{r.stderr}\n{log}"
+    assert "DONE" in log and "ERROR" not in log, log
+
+    def val(key):
+        m = re.search(rf"^{re.escape(key)} (.+)$", log, re.M)
+        assert m, f"no {key!r} in:\n{log}"
+        return m.group(1)
+
+    # the list really did start at the top, so the scroll is doing the work
+    assert val("long.before") == "1", log
+    assert val("long.target_visible") == "1", log
+
+    # On a realistic shape -- a large rendered body, a large unfinished tail
+    # -- the target lands near the TOP with a little context above it. The
+    # case above only proves it is on screen: with two rows after it the
+    # scroll clamps at the end of the range and cannot do better, which is
+    # why both shapes are here.
+    assert val("real.target_visible") == "1", log
+    assert int(val("real.target_offset")) <= 3, log
+
+    # `skipped` is a decision already made, not outstanding work: stopping
+    # there would pin the view to a chapter nobody is waiting on
+    assert val("skipped.target_visible") == "1", log
+    # nothing outstanding: leave the view alone rather than guess
+    assert val("done.unmoved") == "1", log
+    # degenerate shapes must not throw or overshoot
+    assert val("empty.ok") == "1", log
+    assert val("firstrow.visible") == "1", log
+
+    # The startup case, and the one this originally got wrong. At startup the
+    # scroll is queued from `after idle`, which fires BEFORE the toplevel is
+    # mapped: the tree is then 1px tall and reports `yview {0.0 1.0}`, so it
+    # believes the whole list is visible and `moveto` silently does nothing.
+    # The window maps a moment later still showing chapter 1 -- which is the
+    # exact case the feature is for. It must defer while unmapped, then land.
+    #
+    # Note `unmapped.height` stays large under `wm withdraw`, so the height
+    # check alone would not have caught it; `winfo ismapped` is the signal
+    # that fires here, and both are in the guard because real startup shows
+    # height 1 as well.
+    assert val("unmapped.deferred") == "1", log
+    assert val("remapped.landed") == "1", log
+
+
+@needs_display
+def test_open_in_editor_opens_a_window(tmp_path):
+    """"Open in $EDITOR" has to open a WINDOW, not inherit a terminal.
+
+    The UI has no controlling terminal, so exec'ing a TUI editor straight
+    from it either dies at once or silently does nothing -- which is what the
+    button did. Two cases, and the first is the live one on this desktop:
+    Omarchy sets EDITOR to `omarchy-launch-editor --inline`, where --inline
+    means "use the terminal you already have" and is exactly the wrong half
+    of that script for us. Dropping the flag is the whole fix; the same
+    command then opens a window itself, GUI editors included.
+    """
+    out = tmp_path / "editor.log"
+    r = _run(os.path.join(ROOT, "tests", "ui", "probe_editor.tcl"), str(out),
+             ui_conf=tmp_path / "ui.conf")
+    log = out.read_text() if out.exists() else ""
+    assert r.returncode == 0, f"{r.stderr}\n{log}"
+    assert "DONE" in log and "ERROR" not in log, log
+
+    def argv(raw):
+        m = re.search(rf"^argv '{re.escape(raw)}' -> (.*)$", log, re.M)
+        assert m, f"no argv line for {raw!r} in:\n{log}"
+        return m.group(1)
+
+    # --inline dropped, and nothing else added: the wrapper does the rest
+    assert argv("omarchy-launch-editor --inline") == \
+        "omarchy-launch-editor /tmp/x.md"
+    # a GUI editor is already a window; leave its own flags alone
+    assert argv("code -w") == "code -w /tmp/x.md"
+    assert argv("gvim") == "gvim /tmp/x.md"
+    # unset falls through to the desktop's handler rather than doing nothing
+    assert argv("") == "xdg-open /tmp/x.md"
+
+    # A bare TUI editor needs a terminal wrapped around it -- but only where
+    # there is one to wrap with, so this is conditional on the machine.
+    if "xdg-terminal-exec 1" in log:
+        for ed in ("nvim", "hx", "micro"):
+            assert argv(ed) == (
+                f"xdg-terminal-exec --app-id=webnovel-audio-editor -e {ed} "
+                f"/tmp/x.md"), log
 
 
 @needs_display

@@ -1,0 +1,46 @@
+! A pretend desktop palette, for the UI tests.
+!
+! The theme tests used to read whatever was on the developer's real root
+! window, which made them depend on the machine and on the moment: switching
+! the Omarchy theme to catppuccin turned the live palette into Mocha, an
+! assertion spelled "system must not look like the dark override" started
+! failing, and nothing was actually wrong.
+!
+! These values are deliberately unlike BOTH checked-in fragments, so "the
+! desktop said it" and "an override said it" can never be confused. They are
+! not a real theme and are not meant to be looked at.
+
+*background:                    #101c14
+*foreground:                    #d8e8c0
+*activeBackground:              #1e3324
+*disabledForeground:            #6f8a63
+*selectBackground:              #2c5238
+*selectForeground:              #eaf5dc
+*troughColor:                   #18291c
+*windowColor:                   #16241a
+
+*activeForeground:              #d8e8c0
+*highlightBackground:           #101c14
+*highlightColor:                #7fc08a
+*insertBackground:              #d8e8c0
+*selectColor:                   #7fc08a
+
+*Text.background:               #16241a
+*Entry.background:              #16241a
+*Listbox.background:            #16241a
+*Spinbox.background:            #16241a
+
+*Menu.activeBackground:         #2c5238
+*Menu.activeForeground:         #eaf5dc
+*Menu.borderWidth:              1
+
+*omarchyMode:                   dark
+*omarchyAccent:                 #7fc08a
+*omarchyMuted:                  #5d7a55
+*omarchyRed:                    #d96a5e
+*omarchyGreen:                  #8fd07a
+*omarchyYellow:                 #e0c56a
+*omarchyBlue:                   #6ba8d9
+*omarchyMagenta:                #c48ad0
+*omarchyCyan:                   #74c7c0
+*omarchyOrange:                 #dd9a5c

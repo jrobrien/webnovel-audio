@@ -354,11 +354,68 @@ proc selected_series {} {
     return [expr {[llength $s] ? [lindex $s 0] : ""}]
 }
 
+;# Scroll the chapter list to the first chapter still to be done.
+;#
+;# A long-running series is hundreds of rendered rows followed by the few
+;# that matter, so the list opens on ancient history and every visit starts
+;# with the same scroll to the bottom. This puts the interesting end on
+;# screen instead.
+;#
+;# "Still to be done" excludes `skipped` as well as `rendered`: a skipped
+;# chapter is deliberately not going to be rendered, and stopping at one
+;# would pin the view to a decision already made. Everything else -- new,
+;# fetched, parsed, error -- is unfinished work.
+;#
+;# Only called from on_series_select, NOT from refresh_chapters. Refresh runs
+;# on its own after a render finishes and from the Refresh button, and
+;# yanking the view out from under someone who has scrolled somewhere
+;# deliberately is worse than the problem being fixed.
+proc show_first_unfinished {{tries 60}} {
+    ;# Wait for the tree to be on screen before scrolling it.
+    ;#
+    ;# At startup this runs from `after idle`, which fires before the
+    ;# toplevel is mapped: the treeview is then 1 pixel tall and reports
+    ;# `yview {0.0 1.0}` -- it believes the whole list is already visible, so
+    ;# `moveto` has nothing to scroll and silently does nothing. The window
+    ;# maps a moment later at its real height, still showing chapter 1, which
+    ;# is exactly the case this feature exists for and the one it was missing.
+    ;# Measured: mapped=0 height=1 at idle, mapped=1 height=523 by 1500ms.
+    ;#
+    ;# Bounded, so a tree that never maps (a probe that exits early, a
+    ;# withdrawn window) stops rather than rescheduling itself forever.
+    if {![winfo ismapped .bl.tv] || [winfo height .bl.tv] <= 1} {
+        if {$tries > 0} { after 30 [list show_first_unfinished [incr tries -1]] }
+        return
+    }
+    set kids [.bl.tv children {}]
+    set total [llength $kids]
+    if {$total == 0} return
+    set target -1
+    for {set i 0} {$i < $total} {incr i} {
+        if {[.bl.tv set [lindex $kids $i] status] ni {rendered skipped}} {
+            set target $i
+            break
+        }
+    }
+    ;# Nothing outstanding: leave the view alone rather than guess.
+    if {$target < 0} return
+    ;# A couple of rendered rows above it, so it reads as "here is the edge"
+    ;# rather than as a list that happens to start there. moveto clamps at
+    ;# the end of the range on its own, so a target in the last screenful
+    ;# still lands visible.
+    set lead [expr {$target > 2 ? $target - 2 : 0}]
+    .bl.tv yview moveto [expr {double($lead) / $total}]
+}
+
 proc on_series_select {} {
     set slug [selected_series]
     if {$slug eq "" || $slug eq $::SERIES} return
     set ::SERIES $slug
     refresh_chapters
+    ;# after idle: the treeview has just been repopulated and does not know
+    ;# its own scroll range until it has laid out, so moveto before then
+    ;# scrolls against a stale total and lands in the wrong place.
+    after idle show_first_unfinished
     load_editor cast
     load_editor lex
 }
@@ -932,14 +989,52 @@ proc play_selected {} {
     if {[catch {exec {*}$cmd $path &} e]} { log "! $cmd: $e" }
 }
 
+;# Editors that need a terminal to be any use. A GUI editor launched from
+;# here is fine as-is; one of these, exec'd from a process with no
+;# controlling terminal, either dies immediately or appears to do nothing at
+;# all -- which is what "Open in $EDITOR" looked like before.
+set ::TUI_EDITORS {nvim vim vi nano micro hx helix emacs kak ed}
+
+;# Turn the value of $EDITOR into an argv that opens a WINDOW.
+;#
+;# Two cases, and the first is the one that actually bites on this desktop.
+;# Omarchy sets EDITOR to `omarchy-launch-editor --inline`, and `--inline`
+;# means "run in the terminal you already have" -- exec'ing the editor
+;# directly instead of handing it to omarchy-launch-tui. That is right for a
+;# shell and wrong for us, and dropping the flag is all it takes: without it
+;# the same command opens a new terminal window by itself, and already does
+;# the right thing for a GUI editor too.
+;#
+;# The second case is a bare `EDITOR=nvim`, where nothing is going to open a
+;# window unless we do. xdg-terminal-exec is the portable spelling of "the
+;# user's terminal" -- it is what omarchy-launch-tui itself calls -- and the
+;# app-id keeps the window identifiable to a window rule.
+proc editor_argv {raw path} {
+    set argv {}
+    foreach word $raw {
+        if {$word eq "--inline"} continue
+        lappend argv $word
+    }
+    if {[llength $argv] == 0} { return [list xdg-open $path] }
+    if {[file tail [lindex $argv 0]] in $::TUI_EDITORS
+        && [auto_execok xdg-terminal-exec] ne ""} {
+        return [list xdg-terminal-exec --app-id=webnovel-audio-editor \
+                     -e {*}$argv $path]
+    }
+    return [concat $argv [list $path]]
+}
+
 proc external_editor {which} {
     set path $::EDIT($which,path)
     if {$path eq ""} return
     foreach v {WEBNOVEL_AUDIO_EDITOR VISUAL EDITOR} {
-        if {[info exists ::env($v)] && [string trim $::env($v)] ne ""} {
-            if {[catch {exec {*}[string trim $::env($v)] $path &} e]} { log "! $e" }
-            return
-        }
+        if {![info exists ::env($v)]} continue
+        set raw [string trim $::env($v)]
+        if {$raw eq ""} continue
+        set argv [editor_argv $raw $path]
+        log "editor: [lrange $argv 0 end-1] …"
+        if {[catch {exec {*}$argv &} e]} { log "! $e" }
+        return
     }
     if {[catch {exec xdg-open $path &} e]} { log "! $e" }
 }

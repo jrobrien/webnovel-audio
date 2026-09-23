@@ -331,6 +331,9 @@ uv run webnovel-audio ui --interpreter /usr/bin/python3     # or name one
 
 A Tcl/Tk front end laid out like **gitk** ([screenshot](#from-the-control-ui)).
 
+`webnovel-audio ui` launches it; `~/.local/bin/wn-ui` is a one-word wrapper
+that works from any directory.
+
 The UI is hosted by `ui/host.py`, which imports `tkinter` and nothing else —
 it talks to the CLI over `--json` for everything it shows. That is why it can
 run under a *different* interpreter than the one this package is installed
@@ -385,6 +388,12 @@ and headings together — because every font here is one of Tk's named fonts,
 and a step refuses rather than clamps once anything would land below 6pt or
 above 42pt.
 
+Selecting a series scrolls the chapter list to the first chapter still to be
+done, a couple of rendered rows below the top — a long series is hundreds of
+finished rows followed by the few that matter, and the list otherwise opens on
+ancient history. `skipped` doesn't count as outstanding, and a series with
+nothing left to do is left where it is.
+
 Beyond running a stage over the selection, the right-click menu marks chapters
 skipped/new and clears errors; shift/ctrl select ranges and scattered picks.
 Playback uses `$WEBNOVEL_AUDIO_PLAYER` (e.g. `mpv --no-video`) if set, else
@@ -402,8 +411,15 @@ back on resume.
 edit the bundle's `config.toml` and `lexicon.csv` in place, with an
 mtime check so a file that `cast update` changed underneath is never silently
 clobbered; **Open in $EDITOR** hands off to `$WEBNOVEL_AUDIO_EDITOR` / `$VISUAL`
-/ `$EDITOR` when you want real editing. The feed **server** starts and stops
-from the toolbar, and window/sash geometry persists.
+/ `$EDITOR` when you want real editing, always in a **new window**. The UI has
+no controlling terminal, so a TUI editor exec'd straight from it silently does
+nothing: a bare `EDITOR=nvim` is wrapped in `xdg-terminal-exec`, and a leading
+`--inline` is dropped — that flag means "use the terminal you already have",
+which is how Omarchy's `omarchy-launch-editor` decides between running in
+place and opening a window. A GUI editor is launched as given.
+
+The feed **server** starts and stops from the toolbar, and window/sash
+geometry persists.
 
 The **Markdown** tab shows the selected chapter's `.md` — read-only, wrapped,
 and with the filename on the tab. It needs exactly one chapter selected, and
@@ -598,8 +614,28 @@ per-series casting (`seed_chapters` = `check`'s default sample window) · `[chat
 ## Development
 
 ```sh
-uv run pytest -q            # ~240 tests, fully offline
+uv run pytest -q            # ~250 tests, fully offline
 uv run python -m compileall -q src/
+```
+
+The UI tests build real Tk windows, so they run on a **private X display**
+(`xctl start`, headless Xvfb) rather than on the desktop — otherwise every
+probe's window maps on the real screen, and under a tiling compositor it
+tiles, takes focus and reflows whatever you were doing for as long as the
+suite runs. The display is claimed at import and torn down at exit; with no
+`xctl` on PATH they fall back to the real display.
+
+That display is also loaded with `tests/ui/fake-desktop.Xresources`, a
+palette deliberately unlike both checked-in fragments, and
+`WEBNOVEL_AUDIO_XRESOURCES` points "system" mode at the same file — so the
+theme tests assert against a known desktop instead of whatever the machine's
+Omarchy theme happens to be. To watch them run, start a visible session and
+point the suite at it:
+
+```sh
+disp=$(xctl start -w -x tests/ui/fake-desktop.Xresources)
+WEBNOVEL_AUDIO_TEST_DISPLAY=$disp uv run pytest tests/test_ui.py -q
+xctl stop "$disp"
 ```
 
 Regenerating `docs/img/ui.png` (Hyprland): put the geometry in `ui.conf` —
