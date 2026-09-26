@@ -37,7 +37,8 @@ def test_pron_command_shows_before_and_after(tmp_path, capsys):
     (tmp_path / "_base.csv").write_text("surface,respell,ipa,notes\nGraham,gram,,\n")
 
     rc = cli._cmd_pron(types.SimpleNamespace(
-        text=["Graham"], config=str(cfg), series=None, no_lexicon=False, check=False))
+        text=["Graham"], config=str(cfg), scope=None, no_lexicon=False,
+        check=False, json=False))
     out = capsys.readouterr().out
     assert rc == 0
     assert "phonemes" in out and "with lexicon : Gram" in out

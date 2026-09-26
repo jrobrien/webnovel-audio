@@ -62,6 +62,58 @@ def _no_series(key, json_mode: bool = False) -> int:
                  hint="webnovel-audio series list", json_mode=json_mode)
 
 
+#: Reserved scope values. Sigil-prefixed so they can never collide with a series
+#: slug, however a series comes to be named. `@base` is the shared lexicon;
+#: `@all` is "every enabled series", which several commands already mean by
+#: omitting the argument -- spelling it lets a caller say so on purpose.
+_SCOPE_BASE = "@base"
+_SCOPE_ALL = "@all"
+
+
+def _nonempty(s: str) -> str:
+    """An argparse `type` for a field where empty is meaningless.
+
+    A quoted empty argument is a *present* token, so it binds positionally and
+    passes every arity check -- which is how `lex add read "" red` used to file
+    a rule under the empty surface. Rejecting it at the field is the cheap fix,
+    and it stays correct now that the fields are named. Note this is deliberately
+    not applied to `--respell`, where empty is the documented "reads fine" no-op.
+    """
+    if not s.strip():
+        raise argparse.ArgumentTypeError("must not be empty")
+    return s
+
+
+def _series_or_all(cfg, key: str | None, want_json: bool):
+    """Validate an optional series identifier. Returns the resolved key, or an int.
+
+    The commands that take a *required* series all validated it; the four that
+    took an optional one -- `sync`, `progress`, `retag`, `series refresh` -- did
+    not, because "omitted, so act on all" and "given, but matching nothing" fell
+    into the same branch. Optionality is what hid the gap. The result was output
+    that read as reassuring: `sync <typo>` reported "nothing outstanding", which
+    is what a fully caught-up series looks like.
+
+    `None` and `@all` both mean every enabled series and pass through as None.
+    Anything else must name something.
+    """
+    from .db import DB
+
+    if not key or key == _SCOPE_ALL:
+        return None
+    db = DB(cfg.royalroad.state_db)
+    try:
+        row = db.get_series(key)
+    finally:
+        db.close()
+    if not row:
+        return _fail("no_such_series", f"no tracked series matching {key!r}",
+                     hint=f"webnovel-audio series list, or {_SCOPE_ALL} "
+                          "for every enabled series",
+                     json_mode=want_json, reserved=[_SCOPE_ALL])
+    return key
+
+
 def _parse_range(s):
     """A chapter selection -> a list of (lo, hi) spans; None means open-ended.
 
@@ -136,7 +188,6 @@ def _stage_cmd(stage: str):
                 res = sync.run_stage(
                     cfg, stage, args.target, spans=spans,
                     limit=getattr(args, "limit", None),
-                    backend=getattr(args, "backend", None),
                     dry_run=getattr(args, "dry_run", False),
                     log=(lambda *_: None) if want_json else print, emit=emit)
         except sync.SyncLocked as exc:
@@ -169,8 +220,6 @@ def _one_off(stage: str, args, cfg: Config) -> int:
     if stage == "rendered":
         out = getattr(args, "out", None) or (os.path.splitext(
             os.path.basename(args.target))[0] + ".opus")
-        if getattr(args, "backend", None):
-            cfg.synth.backend = args.backend
         rep = pipeline.render(args.target, out, cfg, backend=cfg.synth.backend,
                               dry_run=getattr(args, "dry_run", False))
         print(f"  audio       : {rep.out_path}" if rep.out_path else "  (dry run)")
@@ -395,19 +444,39 @@ def _cmd_pron(args) -> int:
     from .pipeline import _load_lexicon
 
     cfg = Config.load(args.config)
-    if args.series:
-        cfg = _sync._series_cfg(cfg, args.series, _bundle_dir_for(cfg, args.series))
+    want_json = getattr(args, "json", False)
+    scope = getattr(args, "scope", None)
+
+    # A scope that names nothing used to fall back to the base lexicon and still
+    # print "with lexicon", so a typo'd slug produced a confident preview missing
+    # exactly the rules you were checking. Validate it the way `lex` does.
+    if scope and scope != _SCOPE_BASE:
+        resolved = _resolve_scope(cfg, scope, want_json)
+        if isinstance(resolved, int):
+            return resolved
+        _, _, slug = resolved
+        cfg = _sync._series_cfg(cfg, slug, _bundle_dir_for(cfg, slug))
+
     lex = None if args.no_lexicon else _load_lexicon(cfg)
+
+    if args.check and args.text:
+        return _fail("text_ignored",
+                     "--check audits the lexicon and does not read text",
+                     hint="drop the text, or drop --check to sound it out",
+                     json_mode=want_json, text=" ".join(args.text))
 
     if args.check:
         from .lexicon import Lexicon
 
-        seen, rows = set(), []
+        seen, rows, audit = set(), [], []
         for path in (cfg.general.base_lexicon, cfg.general.lexicon):
             if path and os.path.exists(path):
                 rows += Lexicon.load(path).rules
         if not rows:
-            print("no lexicon entries to check.")
+            if want_json:
+                _jprint({"ok": True, "rules": []})
+            else:
+                print("no lexicon entries to check.")
             return 0
         for e in rows:
             key = (e.surface, e.pos)
@@ -417,32 +486,50 @@ def _cmd_pron(args) -> int:
             raw = _phonemes(e.surface)
             tag = f"/{e.pos}" if e.pos else ""
             if not e.respell or e.respell == e.surface:
-                print(f"  {e.surface + tag:20} {raw}   (no respell)")
+                audit.append({"surface": e.surface, "pos": e.pos, "phonemes": raw,
+                              "respell": None, "unchanged": None})
+                if not want_json:
+                    print(f"  {e.surface + tag:20} {raw}   (no respell)")
                 continue
             new = _phonemes(e.respell)
-            flag = "  = unchanged" if new == raw else ""
-            print(f"  {e.surface + tag:20} {raw}  ->  {new}   [{_gloss(new)}]{flag}")
+            audit.append({"surface": e.surface, "pos": e.pos, "phonemes": raw,
+                          "respell": e.respell, "respelled_phonemes": new,
+                          "say": _gloss(new), "unchanged": new == raw})
+            if not want_json:
+                flag = "  = unchanged" if new == raw else ""
+                print(f"  {e.surface + tag:20} {raw}  ->  {new}   [{_gloss(new)}]{flag}")
+        if want_json:
+            _jprint({"ok": True, "rules": audit})
         return 0
 
     text = " ".join(args.text).strip()
     if not text:
-        print("give some text:  webnovel-audio pron Montgomery")
-        return 1
+        return _fail("no_text", "no text to sound out",
+                     hint="webnovel-audio pron Montgomery",
+                     json_mode=want_json)
     raw = _phonemes(text)
-    print(f"text      : {text}")
-    print(f"phonemes  : {raw}")
-    print(f"≈ say     : {_gloss(raw)}")
+    out = {"ok": True, "text": text, "scope": scope,
+           "phonemes": raw, "say": _gloss(raw), "changed": False}
+    if not want_json:
+        print(f"text      : {text}")
+        print(f"phonemes  : {raw}")
+        print(f"≈ say     : {_gloss(raw)}")
     if lex is not None:
         from . import tagger as _tagger
         applied = lex.apply(text, _tagger.load(getattr(cfg.general, "tagger", "")
                                                or _tagger.DEFAULT_MODEL))
         if applied != text:
             new = _phonemes(applied)
-            print(f"\nwith lexicon : {applied}")
-            print(f"phonemes     : {new}")
-            print(f"≈ say        : {_gloss(new)}")
-        else:
+            out.update(changed=True, applied=applied,
+                       applied_phonemes=new, applied_say=_gloss(new))
+            if not want_json:
+                print(f"\nwith lexicon : {applied}")
+                print(f"phonemes     : {new}")
+                print(f"≈ say        : {_gloss(new)}")
+        elif not want_json:
             print("\n(no lexicon entry changes this text)")
+    if want_json:
+        _jprint(out)
     return 0
 
 
@@ -466,6 +553,12 @@ def _cmd_voices(args) -> int:
     voices = [v for v in voices if v]
 
     if getattr(args, "action", "list") != "demo":
+        if getattr(args, "json", False):
+            _jprint({"ok": True, "voices": voices,
+                     "groups": {_ACCENT[pre]: [v for v in voices
+                                               if v.startswith(pre + "_")]
+                                for pre in ("am", "af", "bm", "bf")}})
+            return 0
         for pre in ("am", "af", "bm", "bf"):
             row = [v for v in voices if v.startswith(pre + "_")]
             if row:
@@ -639,8 +732,12 @@ def _cmd_retag(args) -> int:
     from .retag import retag_series
 
     cfg = Config.load(args.config)
-    r = retag_series(cfg, args.key, dry_run=args.dry_run,
-                     log=(lambda *_: None) if getattr(args, "json", False) else print)
+    want_json = getattr(args, "json", False)
+    checked = _series_or_all(cfg, args.key, want_json)
+    if isinstance(checked, int):
+        return checked
+    r = retag_series(cfg, checked, dry_run=args.dry_run,
+                     log=(lambda *_: None) if want_json else print)
     if getattr(args, "json", False):
         _jprint({"ok": True, **r})
     else:
@@ -678,6 +775,16 @@ def _cmd_schema(args) -> int:
                 pos.append(item)
         node = {"path": path, "help": help_text or parser.description or "",
                 "positional": pos, "options": opts}
+        # Exclusivity is a constraint on a *set* of arguments, so it lives in
+        # `_mutually_exclusive_groups` rather than on any single action -- and a
+        # walker that only iterates `_actions` cannot see it. Without this an
+        # agent reads `--scope` and `--no-lexicon` as freely combinable, which is
+        # precisely the kind of thing a schema exists to rule out. A schema
+        # should describe what makes a call valid, not only what parses.
+        excl = [sorted(a.dest for a in g._group_actions)
+                for g in parser._mutually_exclusive_groups if g._group_actions]
+        if excl:
+            node["mutually_exclusive"] = excl
         out = [node] if path else []
         if sub:
             node["subcommands"] = sorted(sub.choices)
@@ -925,8 +1032,11 @@ def _cmd_progress(args) -> int:
 
     cfg = Config.load(args.config)
     want_json = getattr(args, "json", False)
+    checked = _series_or_all(cfg, args.key, want_json)
+    if isinstance(checked, int):
+        return checked
     try:
-        snap = progress.snapshot(cfg, args.key or None, recent=args.recent)
+        snap = progress.snapshot(cfg, checked, recent=args.recent)
     except FileNotFoundError as exc:
         return _fail("no_state_db", f"no state database at {exc}",
                      hint="track a series first: webnovel-audio series add <url>",
@@ -985,13 +1095,38 @@ def _bundle_dir_for(cfg: Config, slug: str) -> str:
         db.close()
 
 
-def _lex_paths(cfg: Config, slug: str | None = None) -> tuple[str, str]:
-    from . import bundle
+def _resolve_scope(cfg, scope: str | None, want_json: bool):
+    """A `--scope` value -> (base_path, target_path, slug) or an exit code.
+
+    An unknown slug used to be accepted silently: the old `_lex_paths` built a
+    path for it and the write landed in a bundle for a series that does not
+    exist, exit 0. An identifier that names nothing is an error, so it is checked
+    here against the tracked set -- the same rule the rest of the CLI already
+    applies via `_no_series`.
+    """
+    from .db import DB
+
     base = os.path.expanduser(cfg.general.base_lexicon or "data/lexicons/_base.csv")
-    if not slug:
-        return base, ""
-    bdir = _bundle_dir_for(cfg, slug)
-    return base, bundle.resolve(cfg, slug, bdir, "lexicon")
+    if scope is None or scope == _SCOPE_BASE:
+        return base, base, None
+
+    db = DB(cfg.royalroad.state_db)
+    try:
+        row = db.get_series(scope)
+    finally:
+        db.close()
+    if not row:
+        return _fail(
+            "no_such_scope",
+            f"no tracked series matching {scope!r}",
+            hint=f"webnovel-audio series list, or --scope {_SCOPE_BASE} "
+                 "for the shared lexicon",
+            json_mode=want_json, scope=scope, reserved=[_SCOPE_BASE])
+
+    from . import bundle, sync
+    slug = sync._dir_slug(row)
+    target = bundle.resolve(cfg, slug, _bundle_dir_for(cfg, slug), "lexicon")
+    return base, target, slug
 
 
 from .lexicon import HEADER as _LEX_HEADER
@@ -1020,7 +1155,7 @@ def _lex_promote(args, base: str, series: str) -> int:
     from .lexicon import Rule
 
     if not series or not os.path.exists(series):
-        print(f"no lexicon file for {args.slug}")
+        print(f"no lexicon file for {args.scope}")
         return 1
 
     with open(series, encoding="utf-8") as fh:
@@ -1053,8 +1188,8 @@ def _lex_promote(args, base: str, series: str) -> int:
     if len(matches) > 1:
         opts = ", ".join(r.pos or "(any)" for _, r in matches)
         print(f"{args.surface!r} has multiple rules in {series}: {opts}\n"
-              f"  disambiguate:  webnovel-audio lex promote {args.slug} "
-              f"{args.surface} --pos <POS>")
+              f"  disambiguate:  webnovel-audio lex promote "
+              f"--scope {args.scope} --surface {args.surface} --pos <POS>")
         return 1
     idx, rule = matches[0]
 
@@ -1090,13 +1225,25 @@ def _cmd_lex(args) -> int:
     from .lexicon import Lexicon
 
     cfg = Config.load(args.config)
-    base, series = _lex_paths(cfg, getattr(args, "slug", None))
+    want_json = getattr(args, "json", False)
+    scope = getattr(args, "scope", None)
+
+    resolved = _resolve_scope(cfg, scope, want_json)
+    if isinstance(resolved, int):          # validation failed; it already reported
+        return resolved
+    base, path, slug = resolved
+    is_base = slug is None
 
     if args.action == "edit":
-        return _editor_open(base if args.base else series, _LEX_HEADER)
+        return _editor_open(path, _LEX_HEADER)
 
     if args.action == "promote":
-        return _lex_promote(args, base, series)
+        if is_base:
+            return _fail("nothing_to_promote",
+                         f"--scope {_SCOPE_BASE} is already the base lexicon",
+                         hint="promote from a series: --scope <slug>",
+                         json_mode=want_json)
+        return _lex_promote(args, base, path)
 
     if args.action == "ignore":
         # A row with a blank `respell` is already a no-op substitution that
@@ -1104,39 +1251,47 @@ def _cmd_lex(args) -> int:
         # needs no new machinery, and shrinks the `check` report next time.
         # Same idea as codespell's ignore-list / cspell's custom dictionary.
         import csv
-        path = base if args.base else series
         exists = os.path.exists(path)
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         with open(path, "a", newline="", encoding="utf-8") as fh:
             if not exists:
-                fh.write(_lex_header_for(path, None if args.base else args.slug, cfg))
+                fh.write(_lex_header_for(path, slug, cfg))
             w = csv.writer(fh, lineterminator="\n")   # LF; csv defaults to CRLF
             for word in args.words:
                 w.writerow([word, "", "", "reads fine as-is"])
-        print(f"{path}: {len(args.words)} word(s) marked fine as-is")
+        if want_json:
+            _jprint({"ok": True, "file": path, "scope": scope,
+                     "ignored": list(args.words)})
+        else:
+            print(f"{path}: {len(args.words)} word(s) marked fine as-is")
         return 0
 
     if args.action == "add":
-        path = base if args.base else series
         import csv
         exists = os.path.exists(path)
         os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
         with open(path, "a", newline="", encoding="utf-8") as fh:
             if not exists:
-                fh.write(_lex_header_for(path, None if args.base else args.slug, cfg))
+                fh.write(_lex_header_for(path, slug, cfg))
             csv.writer(fh, lineterminator="\n").writerow(
                 [args.surface, args.pos or "", args.respell, args.note or ""])
-        pos = f" ({args.pos})" if args.pos else ""
-        print(f"{path}: {args.surface}{pos} -> {args.respell}")
+        if want_json:
+            _jprint({"ok": True, "file": path, "scope": scope,
+                     "surface": args.surface, "pos": args.pos or "",
+                     "respell": args.respell, "note": args.note or ""})
+        else:
+            pos = f" ({args.pos})" if args.pos else ""
+            print(f"{path}: {args.surface}{pos} -> {args.respell}")
         return 0
 
-    # list: the merged, effective view
-    paths = [p for p in (base, series) if p and os.path.exists(p)]
+    # list: the merged, effective view. `path == base` when no series scope was
+    # given, so dedupe rather than loading the base file twice.
+    paths = [p for p in dict.fromkeys((base, path)) if p and os.path.exists(p)]
     if not paths:
         print("no lexicon files yet")
         return 0
     lex = Lexicon.load_many(paths)
-    if getattr(args, "json", False):
+    if want_json:
         _jprint({"rules": [vars(r) for r in lex.rules], "files": paths})
         return 0
     for r in sorted(lex.rules, key=lambda r: (r.surface.lower(), r.pos)):
@@ -1551,6 +1706,8 @@ def _cmd_series_bundle(args, cfg, db, bundle, want_json: bool) -> int:
 
 
 def _cmd_series(args) -> int:
+    import sys
+
     from . import sync
     from .db import DB
 
@@ -1565,7 +1722,10 @@ def _cmd_series(args) -> int:
         return 0
 
     if args.action == "refresh":
-        results = sync.refresh(cfg, args.key,
+        checked = _series_or_all(cfg, args.key, want_json)
+        if isinstance(checked, int):
+            return checked
+        results = sync.refresh(cfg, checked,
                                log=(lambda *_: None) if want_json else print)
         if want_json:
             _jprint({"ok": True, "series": results or []})
@@ -1616,6 +1776,38 @@ def _cmd_series(args) -> int:
 
             if args.action == "forget":
                 from . import bundle
+
+                # --purge destroys the rendered audio, the chapter text and the
+                # hand-tuned lexicon, none of which the tool can regenerate.
+                # Preview and confirm before touching any of it; a caller with
+                # no tty gets a needs_confirmation error rather than a hang.
+                if args.purge:
+                    bdir = bundle.bundle_dir(cfg, s)
+                    st = bundle.status(cfg, s)
+                    if args.dry_run:
+                        info = {"ok": True, "dry_run": True, "slug": s["slug"],
+                                "would_remove": bdir, "bundle": st}
+                        if want_json:
+                            _jprint(info)
+                        else:
+                            print(f"would remove {bdir}")
+                            print(f"would forget {s['title']}")
+                        return 0
+                    if not args.yes:
+                        if want_json or not sys.stdin.isatty():
+                            return _fail(
+                                "needs_confirmation",
+                                f"--purge deletes {bdir}, including the series "
+                                "lexicon and every rendered chapter",
+                                hint=f"webnovel-audio series forget {args.key} "
+                                     "--purge --yes (or --dry-run first)",
+                                json_mode=want_json, path=bdir)
+                        print(f"deletes {bdir}")
+                        print("  chapters, rendered audio, cast config and lexicon")
+                        if input("proceed? [y/N] ").strip().lower() not in ("y", "yes"):
+                            print("aborted.")
+                            return 0
+
                 # one directory holds everything now — before the bundle
                 # layout this could not reach the segment cache at all
                 pg = bundle.purge(cfg, db, s) if args.purge else None
@@ -1693,6 +1885,14 @@ def _cmd_sync(args) -> int:
 
     cfg = Config.load(args.config)
     want_json = getattr(args, "json", False)
+    # Before anything else: a key that names nothing is an error, not an empty
+    # result. The pre-flight estimate below drops an unresolved row silently and
+    # reports "nothing outstanding", so the real guard inside run_stage was
+    # unreachable for the ordinary path.
+    checked = _series_or_all(cfg, args.key, want_json)
+    if isinstance(checked, int):
+        return checked
+    args.key = checked
     try:                    # long-running: never block-buffer into a pipe or log
         sys.stdout.reconfigure(line_buffering=True)
     except (AttributeError, ValueError):
@@ -1737,7 +1937,7 @@ def _cmd_sync(args) -> int:
     try:
         with sync.sync_lock(cfg):
             res = sync.run_sync(cfg, args.key, limit=args.limit, dry_run=args.dry_run,
-                                backend=args.backend or cfg.synth.backend,
+                                backend=cfg.synth.backend,
                                 refresh_first=not args.no_refresh,
                                 log=(lambda *_: None) if want_json else print, emit=emit)
     except sync.SyncLocked as exc:
@@ -1823,12 +2023,23 @@ def _cmd_login(args) -> int:
     from .royalroad import (SESSION_FILE, clear_session, load_session,
                             parse_cookie_header, parse_cookies_txt, save_session)
 
+    want_json = getattr(args, "json", False)
+
     if args.logout:
         clear_session()
-        print("session cleared.")
+        if want_json:
+            _jprint({"ok": True, "stored": False, "cleared": True})
+        else:
+            print("session cleared.")
         return 0
     if args.status:
         cookies = load_session()
+        if want_json:
+            _jprint({"ok": bool(cookies), "stored": bool(cookies),
+                     "cookies": len(cookies or []),
+                     "file": SESSION_FILE if cookies else None,
+                     "verified": False})
+            return 0 if cookies else 1
         if cookies:
             import time
             when = time.strftime("%Y-%m-%d %H:%M",
@@ -1847,10 +2058,15 @@ def _cmd_login(args) -> int:
         print("paste the Cookie header for royalroad.com (from your browser devtools):")
         cookies = parse_cookie_header(input().strip())
     if not cookies:
-        print("no cookies parsed.")
-        return 1
+        return _fail("no_cookies", "no cookies parsed from that input",
+                     hint="export cookies.txt, or copy the Cookie: header value",
+                     json_mode=want_json)
     save_session(cookies)
-    print(f"saved {len(cookies)} cookie(s) for royalroad.com -> {SESSION_FILE}")
+    if want_json:
+        _jprint({"ok": True, "stored": True, "cookies": len(cookies),
+                 "file": SESSION_FILE})
+    else:
+        print(f"saved {len(cookies)} cookie(s) for royalroad.com -> {SESSION_FILE}")
     return 0
 
 
@@ -1870,21 +2086,36 @@ def _cmd_serve(args) -> int:
 def _cmd_book(args) -> int:
     from . import sync
 
+    cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
     lo, hi = _span_bounds(_parse_range(getattr(args, "range", "")))
-    out = sync.make_book(Config.load(args.config), args.key,
-                         first=lo, last=hi, out=args.out)
-    print(f"wrote {out}  ({os.path.getsize(out) / 1e6:.1f} MB)")
+    out = sync.make_book(cfg, args.key, first=lo, last=hi, out=args.out)
+    size = os.path.getsize(out)
+    if want_json:
+        _jprint({"ok": True, "file": out, "bytes": size})
+    else:
+        print(f"wrote {out}  ({size / 1e6:.1f} MB)")
     return 0
 
 
 def _cmd_feed(args) -> int:
     from . import sync
 
-    paths = sync.write_feeds(Config.load(args.config), args.key,
-                             out_dir=args.out_dir, base_url=args.base_url or "")
+    cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
+    checked = _series_or_all(cfg, args.key, want_json)
+    if isinstance(checked, int):
+        return checked
+    paths = sync.write_feeds(cfg, checked, out_dir=args.out_dir,
+                             base_url=args.base_url or "")
     if not paths:
-        print("no tracked series.")
-        return 1
+        return _fail("no_series", "no tracked series to write a feed for",
+                     hint="webnovel-audio series add <url>", json_mode=want_json)
+    if want_json:
+        _jprint({"ok": True, "files": list(paths)})
+    else:
+        for pth in paths:
+            print(f"wrote {pth}")
     return 0
 
 
@@ -1908,14 +2139,53 @@ def _build_parser():
                "'do exactly these', no range means 'do what's outstanding'.",
     )
     ap.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    # The one concrete home for these two defaults; every other level uses
+    # SUPPRESS so it cannot clobber what an outer level parsed.
+    ap.set_defaults(config=_default_config(), json=False)
     sub = ap.add_subparsers(dest="cmd", required=True)
 
+    # Both of these are attached at more than one level of the subcommand tree
+    # (`lex` and `lex list` each carry them), and argparse parses a subparser
+    # into a *fresh* namespace, then copies every value it holds onto the
+    # parent's. A concrete default on the inner parser therefore overwrote a
+    # value the outer one had already parsed: `lex -c X list` accepted X and
+    # silently used the default instead, and `lex --json list` printed human
+    # text. SUPPRESS leaves the attribute unset when the flag is absent, so
+    # nothing is copied and the outer value survives; the root supplies the
+    # fallback via set_defaults below.
+    #: The series identifier, spelled the same way everywhere it appears. Still
+    #: positional (and still called `key`) because the Tcl UI passes it that way
+    #: at a dozen call sites; centralised here so the help cannot drift between
+    #: commands, and so changing the spelling later is one edit rather than 25.
+    def _series_pos(p, *, required=True, what="operate on"):
+        p.add_argument("key", **({} if required else {"nargs": "?"}),
+                       help=f"the series to {what}: slug, id, or a title substring"
+                            + ("" if required else
+                               f"; omit or {_SCOPE_ALL} for every enabled series"))
+
+    def _range_pos(p, *, default_means):
+        p.add_argument("range", nargs="?", default="",
+                       help=f"N | N-M | N- | -M | comma list (1-3,7). "
+                            f"Omit for {default_means}")
+
+    def _dry(p, *, what, short=True):
+        p.add_argument(*(("-n", "--dry-run") if short else ("--dry-run",)),
+                       action="store_true", help=f"report what would {what}, "
+                                                 "change nothing")
+
+    def _yes(p, *, what):
+        p.add_argument("-y", "--yes", action="store_true",
+                       help=f"skip the confirmation before {what}")
+
     def _cfg(p):
-        p.add_argument("-c", "--config", default=_default_config())
+        p.add_argument("-c", "--config", default=argparse.SUPPRESS, metavar="PATH",
+                       help="config.toml to read (default: ./config.toml, else "
+                            "the bundled config.example.toml)")
 
     def _cfg_json(p):
         _cfg(p)
-        p.add_argument("--json", action="store_true", help="machine-readable output")
+        p.add_argument("--json", default=argparse.SUPPRESS, action="store_true",
+                       help="machine-readable output")
 
     def _stage_parser(name, help_):
         p = sub.add_parser(name, help=help_)
@@ -1949,14 +2219,12 @@ def _build_parser():
 
     rd = _stage_parser("render", "synthesize -> mastered .opus")
     rd.add_argument("-o", "--out", help="output path (file/URL target only)")
-    rd.add_argument("--backend", choices=["kokoro", "null"])
     rd.add_argument("--dry-run", action="store_true", help="plan only, no audio")
     rd.set_defaults(func=_stage_cmd("rendered"))
 
     sy = sub.add_parser("sync", help="refresh + render everything outstanding")
-    sy.add_argument("key", nargs="?", help="one series, or all enabled if omitted")
+    _series_pos(sy, required=False, what="sync")
     sy.add_argument("--limit", type=int, help="max chapters per series this run")
-    sy.add_argument("--backend", choices=["kokoro", "null"])
     sy.add_argument("--dry-run", action="store_true", help="list what would render")
     sy.add_argument("--no-refresh", action="store_true", help="skip re-fetching chapter lists")
     sy.add_argument("--estimate", action="store_true",
@@ -1978,52 +2246,62 @@ def _build_parser():
     for name, helptext in (("list", "all tracked series"),):
         _cfg_json(se_sub.add_parser(name, help=helptext))
     sh = se_sub.add_parser("show", help="one series in detail")
-    sh.add_argument("key")
+    _series_pos(sh, what="describe")
     _cfg_json(sh)
     for name in ("enable", "disable"):
         q = se_sub.add_parser(name, help=f"{name} this series for `sync`")
-        q.add_argument("key")
+        _series_pos(q, what=f"{name} for `sync`")
         _cfg_json(q)
     pr_ = se_sub.add_parser(
         "priority", help="render order: higher goes first (default 100)")
-    pr_.add_argument("key")
+    _series_pos(pr_, what="reprioritise")
     pr_.add_argument("value", type=int,
                      help="any integer; leave gaps (100, 200, …) so you can "
                           "insert between later. Pausing is separate — a "
                           "paused series keeps its priority")
     _cfg_json(pr_)
     fg = se_sub.add_parser("forget", help="untrack a series")
-    fg.add_argument("key")
-    fg.add_argument("--purge", action="store_true", help="also delete its library files")
+    _series_pos(fg, what="untrack")
+    fg.add_argument("--purge", action="store_true",
+                    help="also delete its library files: chapters, rendered "
+                         "audio, cast config and the series lexicon")
+    # --purge is the most destructive operation in this CLI and was the only
+    # one with no guard at all, while `cache prune` -- which deletes segments
+    # that can simply be re-rendered -- had the full set. Guard strength should
+    # track what cannot be rebuilt.
+    fg.add_argument("-n", "--dry-run", action="store_true",
+                    help="report what --purge would delete, delete nothing")
+    fg.add_argument("-y", "--yes", action="store_true",
+                    help="skip the confirmation prompt")
     _cfg_json(fg)
     rf = se_sub.add_parser("refresh", help="re-fetch chapter lists")
-    rf.add_argument("key", nargs="?")
+    _series_pos(rf, required=False, what="re-fetch the chapter list of")
     _cfg_json(rf)
 
     # -- bundles: the offline half. No network, no renders.
     ex = se_sub.add_parser("export",
                            help="write manifest.toml + state.json into the bundle")
-    ex.add_argument("key", nargs="?", help="one series, or all if omitted")
+    _series_pos(ex, required=False, what="export")
     _cfg_json(ex)
     im = se_sub.add_parser("import", help="adopt a bundle directory into the state DB")
-    im.add_argument("path")
-    im.add_argument("-n", "--dry-run", action="store_true")
+    im.add_argument("path", help="bundle directory to adopt into the state DB")
+    _dry(im, what="be adopted")
     _cfg_json(im)
     sc = se_sub.add_parser("scan",
                            help="import every bundle under a root, and re-locate moved ones")
     sc.add_argument("root", nargs="?", help="defaults to the configured library dir")
-    sc.add_argument("-n", "--dry-run", action="store_true")
+    _dry(sc, what="be adopted")
     _cfg_json(sc)
     pa = se_sub.add_parser("path", help="print a series' bundle directory")
-    pa.add_argument("key")
+    _series_pos(pa, what="print the bundle directory of")
     _cfg_json(pa)
     mg = se_sub.add_parser(
         "migrate", help="move a series into the bundle layout (chapters/, covers/, …)")
-    mg.add_argument("key", nargs="?", help="one series, or all if omitted")
-    mg.add_argument("-n", "--dry-run", action="store_true")
+    _series_pos(mg, required=False, what="migrate")
+    _dry(mg, what="move")
     _cfg_json(mg)
     ar = se_sub.add_parser("archive", help="write a bundle to a tar archive")
-    ar.add_argument("key")
+    _series_pos(ar, what="archive")
     ar.add_argument("-o", "--out", help="output path (default <slug>.tar; "
                                         ".tar.zst/.gz/.bz2/.xz to compress)")
     ar.add_argument("--with-cache", action="store_true",
@@ -2031,7 +2309,7 @@ def _build_parser():
     _cfg_json(ar)
     rc = se_sub.add_parser(
         "reclaim", help="drop shared-cache links now duplicated inside bundles")
-    rc.add_argument("-n", "--dry-run", action="store_true")
+    _dry(rc, what="be reclaimed")
     _cfg_json(rc)
 
     _cfg_json(se)
@@ -2043,17 +2321,19 @@ def _build_parser():
     stt = sub.add_parser("state", help="the per-chapter stage machine, by hand")
     stt_sub = stt.add_subparsers(dest="action")
     ss = stt_sub.add_parser("show", help="per-chapter stage table")
-    ss.add_argument("key")
-    ss.add_argument("range", nargs="?", default="")
+    _series_pos(ss, what="list chapters for")
+    _range_pos(ss, default_means="every chapter")
     _cfg_json(ss)
     sx = stt_sub.add_parser("set", help="force a status")
-    sx.add_argument("key")
-    sx.add_argument("range")
-    sx.add_argument("status", help="new | fetched | parsed | rendered | skipped")
+    _series_pos(sx, what="change")
+    sx.add_argument("range",
+                    help="N | N-M | N- | -M | comma list (1-3,7). Required here: "
+                         "forcing a status is never implicit")
+    sx.add_argument("status", help="one of: new | fetched | parsed | rendered | skipped")
     _cfg_json(sx)
     sr = stt_sub.add_parser("reset", help="errored chapters -> new, to retry")
-    sr.add_argument("key")
-    sr.add_argument("range", nargs="?", default="")
+    _series_pos(sr, what="reset errored chapters in")
+    _range_pos(sr, default_means="every errored chapter")
     _cfg_json(sr)
     _cfg_json(stt)
     stt.set_defaults(func=_cmd_state, action="show", range="")
@@ -2061,64 +2341,84 @@ def _build_parser():
     cs = sub.add_parser("cast", help="this series' voice assignments")
     cs_sub = cs.add_subparsers(dest="action")
     ce = cs_sub.add_parser("edit", help="open the series config in $EDITOR")
-    ce.add_argument("key")
+    _series_pos(ce, what="edit the cast of")
     _cfg_json(ce)
     cu = cs_sub.add_parser("update", help="merge in speakers found in a chapter range")
-    cu.add_argument("key")
+    _series_pos(cu, what="update the cast of")
     cu.add_argument("range", nargs="?", default="",
                     help="N | N-M   (omit: the first [cast] seed_chapters)")
     cu.add_argument("--diff", action="store_true", help="show what it would add, write nothing")
     _cfg_json(cu)
     ck2 = cs_sub.add_parser("set", help="assign one speaker a voice (no editor)")
-    ck2.add_argument("key")
-    ck2.add_argument("speaker")
+    _series_pos(ck2, what="assign a voice in")
+    ck2.add_argument("speaker",
+                     help="the speaker name as `cast show` lists it")
     ck2.add_argument("voice", nargs="?", default="",
                      help='Kokoro voice id, or "" to list the speaker unassigned')
     _cfg_json(ck2)
     cw = cs_sub.add_parser("show", help="the effective cast, including unassigned")
-    cw.add_argument("key")
+    _series_pos(cw, what="show the cast of")
     _cfg_json(cw)
     _cfg_json(cs)
     cs.set_defaults(func=_cmd_cast, action="show", range="", diff=False)
 
     # -- lexicon / config / voices ------------------------------------------
+    # Every field is a named flag. `lex add` used to take `slug surface respell`
+    # positionally with a `--base` that made `slug` dead but still required, and
+    # the CSV it writes lists its columns in a different order than the command
+    # took them -- so a caller reconstructing the call from the file format bound
+    # each value one slot off, and nothing complained because the arity matched.
+    # Names cannot be transposed, and `--scope` is the single destination slot.
     lx = sub.add_parser("lex", help="pronunciation lexicons")
     lx_sub = lx.add_subparsers(dest="action")
+
+    def _scope(p, *, required=True, extra=""):
+        p.add_argument("--scope", required=required, metavar="SCOPE",
+                       help="which lexicon to act on: a tracked series slug, or "
+                            f"{_SCOPE_BASE} for the always-on base lexicon" + extra)
+
     le = lx_sub.add_parser("edit", help="open a lexicon CSV in $EDITOR")
-    le.add_argument("slug", nargs="?")
-    le.add_argument("--base", action="store_true", help="the always-on _base.csv")
+    _scope(le)
     _cfg(le)
+
     la = lx_sub.add_parser("add", help="append a row")
-    la.add_argument("--pos", default="",
+    _scope(la)
+    la.add_argument("--surface", required=True, type=_nonempty, metavar="WORD",
+                    help="word or phrase as it appears in the text")
+    la.add_argument("--respell", required=True, metavar="SPELLING",
+                    help="sound-it-out spelling, e.g. kay-lith. Empty means "
+                         "'reads fine as-is'")
+    la.add_argument("--pos", default="", metavar="POS",
                     help="only when tagged this way: NOUN VERB ADJ, a Penn tag "
                          "(VBD), or TAG+lemma. Omit to always apply")
-    la.add_argument("slug")
-    la.add_argument("surface", help="word or phrase as it appears in the text")
-    la.add_argument("respell", help="sound-it-out spelling, e.g. kay-lith")
-    la.add_argument("--note")
-    la.add_argument("--base", action="store_true", help="write to _base.csv instead")
-    _cfg(la)
+    la.add_argument("--note", default="", metavar="TEXT",
+                    help="why this row exists, for the next reader")
+    _cfg_json(la)
+
     lp = lx_sub.add_parser(
         "promote", help="move a rule from a series lexicon into the always-on base")
-    lp.add_argument("slug")
-    lp.add_argument("surface")
-    lp.add_argument("--pos", default="",
+    _scope(lp, extra=" (a series; promoting from the base is a no-op)")
+    lp.add_argument("--surface", required=True, type=_nonempty, metavar="WORD",
+                    help="the rule's surface, as it appears in the series file")
+    lp.add_argument("--pos", default="", metavar="POS",
                     help="disambiguate when the surface has more than one rule "
                          "(NOUN VERB ADJ, a Penn tag, or TAG+lemma)")
     lp.add_argument("--force", action="store_true",
                     help="add anyway if the base file already has this rule")
-    _cfg(lp)
+    _cfg_json(lp)
+
     li = lx_sub.add_parser("ignore", help="mark words as 'reads fine' so `check` stops listing them")
-    li.add_argument("slug")
-    li.add_argument("words", nargs="+")
-    li.add_argument("--base", action="store_true", help="write to _base.csv instead")
-    _cfg(li)
+    _scope(li)
+    li.add_argument("--words", required=True, nargs="+", type=_nonempty, metavar="WORD",
+                    help="one or more words to mark as reading correctly")
+    _cfg_json(li)
+
     ll = lx_sub.add_parser("list", help="effective entries (base + series)")
-    ll.add_argument("slug", nargs="?")
-    ll.add_argument("--base", action="store_true")
+    _scope(ll, required=False, extra=". Omit for the base lexicon alone")
     _cfg_json(ll)
+
     _cfg_json(lx)
-    lx.set_defaults(func=_cmd_lex, action="list", slug=None, base=False)
+    lx.set_defaults(func=_cmd_lex, action="list", scope=None)
 
     co = sub.add_parser("config", help="resolved paths / edit config.toml")
     co_sub = co.add_subparsers(dest="action")
@@ -2127,23 +2427,39 @@ def _build_parser():
     _cfg_json(co)
     co.set_defaults(func=_cmd_config, action="show")
 
+    # `pron` is the command an agent leans on hardest -- it is the only way to
+    # ask what the TTS will actually say -- so a wrong answer here is worse than
+    # a wrong answer anywhere else. It used to take `--series` (a fourth name for
+    # the same concept, unvalidated: a typo'd slug silently fell back to the base
+    # lexicon and still printed "with lexicon", so you got a confident preview
+    # missing the series' own rules) and it could not emit JSON at all.
     pr = sub.add_parser("pron", help="how the TTS will pronounce text")
-    pr.add_argument("text", nargs="*")
-    pr.add_argument("--series", help="also apply that series' lexicon + overlay")
-    pr.add_argument("--no-lexicon", action="store_true", help="raw g2p only")
-    pr.add_argument("--check", action="store_true", help="audit every lexicon row")
-    _cfg(pr)
+    pr.add_argument("text", nargs="*",
+                    help="the words to sound out; quoting is optional")
+    # --no-lexicon means 'no rules at all', which makes a scope meaningless.
+    # Declared here rather than in prose so `schema` can see the relationship.
+    src = pr.add_mutually_exclusive_group()
+    src.add_argument("--scope", metavar="SCOPE",
+                     help=f"also apply this series' lexicon and overlay, or "
+                          f"{_SCOPE_BASE} for the base alone (the default)")
+    src.add_argument("--no-lexicon", action="store_true",
+                     help="raw g2p only, applying no lexicon")
+    pr.add_argument("--check", action="store_true",
+                    help="audit every lexicon row instead of reading text")
+    _cfg_json(pr)
     pr.set_defaults(func=_cmd_pron)
 
     vc = sub.add_parser("voices", help="list voices / render an audition file")
     vc_sub = vc.add_subparsers(dest="action")
-    _cfg(vc_sub.add_parser("list", help="the 28 English voice ids"))
+    _cfg_json(vc_sub.add_parser("list", help="the 28 English voice ids"))
     vd = vc_sub.add_parser("demo", help="one chaptered .opus, each voice in turn")
-    vd.add_argument("-o", "--out", default="voice-audition.opus")
+    vd.add_argument("-o", "--out", default="voice-audition.opus", metavar="PATH",
+                    help="output .opus (default: voice-audition.opus)")
     vd.add_argument("--text", help="custom sample paragraph")
     vd.add_argument("--only", help="comma-separated subset of voice ids")
     vd.add_argument("--pause", type=int, default=1200, help="ms between voices")
-    vd.add_argument("--announcer", default="am_michael")
+    vd.add_argument("--announcer", default="am_michael", metavar="VOICE",
+                    help="voice that reads each voice's name (default: am_michael)")
     _cfg(vd)
     _cfg(vc)
     vc.set_defaults(func=_cmd_voices, action="list", out="voice-audition.opus",
@@ -2151,49 +2467,54 @@ def _build_parser():
 
     # -- delivery + misc ----------------------------------------------------
     sv = sub.add_parser("serve", help="LAN podcast feeds + audio")
-    sv.add_argument("--host")
-    sv.add_argument("--port", type=int)
+    sv.add_argument("--host", metavar="ADDR",
+                    help="interface to bind (default: from config)")
+    sv.add_argument("--port", type=int, metavar="N",
+                    help="port to listen on (default: from config)")
     _cfg(sv)
     sv.set_defaults(func=_cmd_serve)
 
     bk = sub.add_parser("book", help="stitch rendered chapters into a .m4b")
-    bk.add_argument("key")
-    bk.add_argument("range", nargs="?", default="", help="N-M (default: all rendered)")
-    bk.add_argument("-o", "--out")
-    _cfg(bk)
+    _series_pos(bk, what="stitch")
+    _range_pos(bk, default_means="every rendered chapter")
+    bk.add_argument("-o", "--out", metavar="PATH",
+                    help="output .m4b (default: <slug>.m4b beside the bundle)")
+    _cfg_json(bk)
     bk.set_defaults(func=_cmd_book)
 
     fd = sub.add_parser("feed", help="write static RSS file(s)")
-    fd.add_argument("key", nargs="?")
-    fd.add_argument("--base-url", default="")
-    fd.add_argument("--out-dir")
-    _cfg(fd)
+    _series_pos(fd, required=False, what="write a feed for")
+    fd.add_argument("--base-url", default="", metavar="URL",
+                    help="public URL the feed's enclosure links are built from")
+    fd.add_argument("--out-dir", metavar="DIR",
+                    help="where to write the .xml (default: the configured feed dir)")
+    _cfg_json(fd)
     fd.set_defaults(func=_cmd_feed)
 
     # -- cache -------------------------------------------------------------
     ca = sub.add_parser("cache", help="segment-cache status and maintenance")
     ca_sub = ca.add_subparsers(dest="action")
     cs = ca_sub.add_parser("status", help="what the cache holds (read-only)")
-    cs.add_argument("key", nargs="?", help="one series, or all if omitted")
+    _series_pos(cs, required=False, what="report on")
     _cfg_json(cs)
     cc = ca_sub.add_parser(
         "compact", help="re-encode float32 wav to FLAC under the current generation")
-    cc.add_argument("key", nargs="?")
-    cc.add_argument("-n", "--dry-run", action="store_true")
+    _series_pos(cc, required=False, what="compact the cache of")
+    _dry(cc, what="be re-encoded")
     _cfg_json(cc)
     cp = ca_sub.add_parser("prune", help="delete cache entries nothing references")
-    cp.add_argument("key", nargs="?")
+    _series_pos(cp, required=False, what="prune the cache of")
     cp.add_argument("--stale", action="store_true",
                     help="drop non-current synth generations instead")
-    cp.add_argument("-n", "--dry-run", action="store_true")
-    cp.add_argument("-y", "--yes", action="store_true", help="skip the confirmation")
+    _dry(cp, what="be deleted")
+    _yes(cp, what="deleting unreferenced segments")
     cp.add_argument("--force", action="store_true",
                     help="override the reachable-set safety check")
     _cfg_json(cp)
     cl = ca_sub.add_parser("clear", help="delete every cached segment, reachable or not")
-    cl.add_argument("key", nargs="?")
-    cl.add_argument("-n", "--dry-run", action="store_true")
-    cl.add_argument("-y", "--yes", action="store_true")
+    _series_pos(cl, required=False, what="clear the cache of")
+    _dry(cl, what="be deleted")
+    _yes(cl, what="deleting every cached segment")
     _cfg_json(cl)
     _cfg_json(ca)
     ca.set_defaults(func=_cmd_cache, action=None, key=None, dry_run=False,
@@ -2203,13 +2524,15 @@ def _build_parser():
     sc.set_defaults(func=_cmd_schema)
 
     rt = sub.add_parser("retag", help="refresh Opus tags on rendered chapters (no re-encode)")
-    rt.add_argument("key", nargs="?", help="one series, or all if omitted")
-    rt.add_argument("--dry-run", action="store_true")
+    _series_pos(rt, required=False, what="retag")
+    _dry(rt, what="be retagged", short=False)
     _cfg_json(rt)
     rt.set_defaults(func=_cmd_retag)
 
     pg = sub.add_parser("progress", help="what a running sync is doing (read-only)")
-    pg.add_argument("key", nargs="?", default="", help="one series (default: all enabled)")
+    pg.add_argument("key", nargs="?", default="",
+                    help="the series to report on: slug, id, or a title substring; "
+                         f"omit or {_SCOPE_ALL} for every enabled series")
     pg.add_argument("--watch", type=float, nargs="?", const=5.0, default=0,
                     help="redraw every N seconds (default 5)")
     pg.add_argument("--recent", type=int, default=8, help="how many finished chapters to list")
@@ -2229,7 +2552,7 @@ def _build_parser():
     ts = tg_sub.add_parser("status", help="what is installed, configured and active")
     _cfg_json(ts)
     tt = tg_sub.add_parser("test", help="show before/after for one sentence")
-    tt.add_argument("text")
+    tt.add_argument("text", help="a sentence to tag and sound out")
     _cfg_json(tt)
     _cfg_json(tg)
     tg.set_defaults(func=_cmd_tagger, action="status", model="", yes=False, text="")
@@ -2238,17 +2561,27 @@ def _build_parser():
     md_sub = md.add_subparsers(dest="action")
     for name, helptext in (("fetch", "download (~350 MB, once)"), ("path", "where they live")):
         m = md_sub.add_parser(name, help=helptext)
-        m.add_argument("--cache-dir")
+        m.add_argument("--cache-dir", metavar="DIR",
+                       help="where the ONNX model files live (default: from config)")
     md.set_defaults(func=_cmd_models, action="fetch", cache_dir=None)
 
     lg = sub.add_parser("login", help="store a royalroad.com session cookie")
-    lg.add_argument("--cookies-file", metavar="PATH",
-                    help="Netscape cookies.txt exported from your browser")
-    lg.add_argument("--cookie-header", dest="cookie", metavar="STR",
-                    help="the raw Cookie: header value (devtools -> copy)")
-    lg.add_argument("--status", action="store_true",
-                    help="report whether a session is stored (does not verify it)")
-    lg.add_argument("--logout", action="store_true")
+    # Four flags, one of which is really a choice of mode: the handler checked
+    # --logout first and unconditionally, so `login --status --logout` cleared the
+    # session and never reported anything. Whichever lost was silently discarded,
+    # and this is the one command in the surface where the discarded argument was
+    # the read-only one. Declared as a group so the combination cannot parse --
+    # and so `schema` shows callers that it cannot.
+    mode = lg.add_mutually_exclusive_group()
+    mode.add_argument("--cookies-file", metavar="PATH",
+                      help="Netscape cookies.txt exported from your browser")
+    mode.add_argument("--cookie-header", dest="cookie", metavar="STR",
+                      help="the raw Cookie: header value (devtools -> copy)")
+    mode.add_argument("--status", action="store_true",
+                      help="report whether a session is stored (does not verify it)")
+    mode.add_argument("--logout", action="store_true",
+                      help="delete the stored session")
+    _cfg_json(lg)
     lg.set_defaults(func=_cmd_login)
 
     ui = sub.add_parser("ui", help="launch the Tcl/Tk control UI")
