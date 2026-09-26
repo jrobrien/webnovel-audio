@@ -733,7 +733,7 @@ def _cmd_retag(args) -> int:
 
     cfg = Config.load(args.config)
     want_json = getattr(args, "json", False)
-    checked = _series_or_all(cfg, args.key, want_json)
+    checked = _series_or_all(cfg, args.scope, want_json)
     if isinstance(checked, int):
         return checked
     r = retag_series(cfg, checked, dry_run=args.dry_run,
@@ -1032,7 +1032,7 @@ def _cmd_progress(args) -> int:
 
     cfg = Config.load(args.config)
     want_json = getattr(args, "json", False)
-    checked = _series_or_all(cfg, args.key, want_json)
+    checked = _series_or_all(cfg, args.scope, want_json)
     if isinstance(checked, int):
         return checked
     try:
@@ -1057,7 +1057,7 @@ def _cmd_progress(args) -> int:
             print(f"\n(refreshing every {args.watch}s — ctrl-c to stop)")
             sys.stdout.flush()
             time.sleep(args.watch)
-            snap = progress.snapshot(cfg, args.key or None, recent=args.recent)
+            snap = progress.snapshot(cfg, args.scope or None, recent=args.recent)
     except KeyboardInterrupt:
         print()
         return 0
@@ -1316,9 +1316,9 @@ def _cmd_cast(args) -> int:
     want_json = getattr(args, "json", False)
     db = DB(cfg.royalroad.state_db)
     try:
-        s = db.get_series(args.key)
+        s = db.get_series(args.scope)
         if not s:
-            return _no_series(args.key, want_json)
+            return _no_series(args.scope, want_json)
         slug = sync._dir_slug(s)
     finally:
         db.close()
@@ -1364,7 +1364,7 @@ def _cmd_cast(args) -> int:
 
     # update: sample a range and merge in speakers we don't have yet
     spans = _parse_range(getattr(args, "range", ""))
-    report = sync.suggest_cast(cfg, args.key, spans=spans, apply_cast=not args.diff,
+    report = sync.suggest_cast(cfg, args.scope, spans=spans, apply_cast=not args.diff,
                                write_lexicon=False,
                                log=(lambda *_: None) if want_json else print)
     if want_json:
@@ -1394,9 +1394,9 @@ def _cmd_state(args) -> int:
     want_json = getattr(args, "json", False)
     db = DB(cfg.royalroad.state_db)
     try:
-        s = db.get_series(args.key)
+        s = db.get_series(args.scope)
         if not s:
-            return _no_series(args.key, want_json)
+            return _no_series(args.scope, want_json)
         spans = _parse_range(getattr(args, "range", ""))
 
         if args.action == "set":
@@ -1468,10 +1468,10 @@ def _cmd_cache_destructive(args, cfg, db, bundle, cache, want_json: bool) -> int
     def run(dry):
         quiet = want_json or dry
         if args.action == "prune":
-            return cache.prune(cfg, db, args.key, stale=args.stale, dry_run=dry,
+            return cache.prune(cfg, db, args.scope, stale=args.stale, dry_run=dry,
                                force=args.force,
                                log=(lambda *_: None) if quiet else print)
-        return cache.clear(cfg, db, args.key, dry_run=dry,
+        return cache.clear(cfg, db, args.scope, dry_run=dry,
                            log=(lambda *_: None) if quiet else print)
 
     try:
@@ -1547,7 +1547,7 @@ def _cmd_cache(args) -> int:
             if not want_json:
                 print(("would compact" if args.dry_run else "compacting")
                       + f" into generation {cache.current_fingerprint(cfg)}:")
-            r = cache.compact(cfg, db, args.key, dry_run=args.dry_run,
+            r = cache.compact(cfg, db, args.scope, dry_run=args.dry_run,
                               log=(lambda *_: None) if want_json else print)
             if want_json:
                 _jprint({"ok": True, **r})
@@ -1565,7 +1565,7 @@ def _cmd_cache(args) -> int:
             return 0
 
         # status
-        st = cache.status(cfg, db, args.key)
+        st = cache.status(cfg, db, args.scope)
         if want_json:
             _jprint(st)
             return 0
@@ -1613,9 +1613,9 @@ def _cmd_cache(args) -> int:
 def _cmd_series_bundle(args, cfg, db, bundle, want_json: bool) -> int:
     """The offline half of `series`: write, adopt, locate. No network."""
     if args.action == "export":
-        rows = [db.get_series(args.key)] if args.key else db.list_series()
-        if args.key and not rows[0]:
-            return _no_series(args.key, want_json)
+        rows = [db.get_series(args.scope)] if args.scope else db.list_series()
+        if args.scope and not rows[0]:
+            return _no_series(args.scope, want_json)
         out = []
         for s in filter(None, rows):
             res = bundle.sync_bundle(cfg, db, s)
@@ -1628,13 +1628,13 @@ def _cmd_series_bundle(args, cfg, db, bundle, want_json: bool) -> int:
         return 0
 
     if args.action == "migrate":
-        rows = [db.get_series(args.key)] if args.key else db.list_series()
-        if args.key and not rows[0]:
-            return _no_series(args.key, want_json)
+        rows = [db.get_series(args.scope)] if args.scope else db.list_series()
+        if args.scope and not rows[0]:
+            return _no_series(args.scope, want_json)
         if not want_json:
             print(("would migrate" if args.dry_run else "migrating")
                   + " into the bundle layout:")
-        out = bundle.migrate(cfg, db, args.key, dry_run=args.dry_run,
+        out = bundle.migrate(cfg, db, args.scope, dry_run=args.dry_run,
                              log=(lambda *_: None) if want_json else print)
         if want_json:
             _jprint({"ok": True, "dry_run": args.dry_run, "series": out})
@@ -1643,7 +1643,7 @@ def _cmd_series_bundle(args, cfg, db, bundle, want_json: bool) -> int:
         return 0
 
     if args.action == "archive":
-        res = bundle.archive(cfg, db, args.key, out=args.out,
+        res = bundle.archive(cfg, db, args.scope, out=args.out,
                              with_cache=args.with_cache,
                              log=(lambda *_: None) if want_json else print)
         if want_json:
@@ -1663,9 +1663,9 @@ def _cmd_series_bundle(args, cfg, db, bundle, want_json: bool) -> int:
         return 0
 
     if args.action == "path":
-        s = db.get_series(args.key)
+        s = db.get_series(args.scope)
         if not s:
-            return _no_series(args.key, want_json)
+            return _no_series(args.scope, want_json)
         d, state = bundle.bundle_dir(cfg, s), bundle.status(cfg, s)
         if want_json:
             _jprint({"ok": True, "slug": s["slug"], "path": d, "bundle": state,
@@ -1722,7 +1722,7 @@ def _cmd_series(args) -> int:
         return 0
 
     if args.action == "refresh":
-        checked = _series_or_all(cfg, args.key, want_json)
+        checked = _series_or_all(cfg, args.scope, want_json)
         if isinstance(checked, int):
             return checked
         results = sync.refresh(cfg, checked,
@@ -1745,11 +1745,11 @@ def _cmd_series(args) -> int:
     if args.action in ("enable", "disable", "priority", "forget", "show"):
         db = DB(cfg.royalroad.state_db)
         try:
-            s = db.get_series(args.key)
+            s = db.get_series(args.scope)
             if not s:
                 (_jprint if want_json else print)(
-                    {"ok": False, "error": f"no series matching {args.key!r}"}
-                    if want_json else f"no tracked series matching {args.key!r}")
+                    {"ok": False, "error": f"no series matching {args.scope!r}"}
+                    if want_json else f"no tracked series matching {args.scope!r}")
                 return 1
             slug = sync._dir_slug(s)
 
@@ -1799,7 +1799,7 @@ def _cmd_series(args) -> int:
                                 "needs_confirmation",
                                 f"--purge deletes {bdir}, including the series "
                                 "lexicon and every rendered chapter",
-                                hint=f"webnovel-audio series forget {args.key} "
+                                hint=f"webnovel-audio series forget {args.scope} "
                                      "--purge --yes (or --dry-run first)",
                                 json_mode=want_json, path=bdir)
                         print(f"deletes {bdir}")
@@ -1828,7 +1828,7 @@ def _cmd_series(args) -> int:
 
             # show
             from . import bundle
-            info = db.summary(args.key)[0]
+            info = db.summary(args.scope)[0]
             bdir = bundle.bundle_dir(cfg, s)
             info["bundle"] = bundle.status(cfg, s)
             info["paths"] = {"dir": bdir,
@@ -1889,10 +1889,10 @@ def _cmd_sync(args) -> int:
     # result. The pre-flight estimate below drops an unresolved row silently and
     # reports "nothing outstanding", so the real guard inside run_stage was
     # unreachable for the ordinary path.
-    checked = _series_or_all(cfg, args.key, want_json)
+    checked = _series_or_all(cfg, args.scope, want_json)
     if isinstance(checked, int):
         return checked
-    args.key = checked
+    args.scope = checked
     try:                    # long-running: never block-buffer into a pipe or log
         sys.stdout.reconfigure(line_buffering=True)
     except (AttributeError, ValueError):
@@ -1907,7 +1907,7 @@ def _cmd_sync(args) -> int:
     # short line, so say how big it is first. Never prompts when the answer
     # can't be read (--json, --yes, --dry-run, or a non-tty: cron/systemd).
     if getattr(args, "estimate", False):
-        est = sync.estimate_render(cfg, args.key, limit=args.limit)
+        est = sync.estimate_render(cfg, args.scope, limit=args.limit)
         if want_json:
             _jprint({"ok": True, **est,
                      "human": sync.human_duration(est["seconds"])})
@@ -1919,7 +1919,7 @@ def _cmd_sync(args) -> int:
         return 0
 
     if not (want_json or args.dry_run or args.yes):
-        est = sync.estimate_render(cfg, args.key, limit=args.limit)
+        est = sync.estimate_render(cfg, args.scope, limit=args.limit)
         if est["chapters"]:
             print(f"{est['chapters']} chapter(s) to render, "
                   f"~{sync.human_duration(est['seconds'])} of CPU:")
@@ -1936,7 +1936,7 @@ def _cmd_sync(args) -> int:
 
     try:
         with sync.sync_lock(cfg):
-            res = sync.run_sync(cfg, args.key, limit=args.limit, dry_run=args.dry_run,
+            res = sync.run_sync(cfg, args.scope, limit=args.limit, dry_run=args.dry_run,
                                 backend=cfg.synth.backend,
                                 refresh_first=not args.no_refresh,
                                 log=(lambda *_: None) if want_json else print, emit=emit)
@@ -2089,7 +2089,7 @@ def _cmd_book(args) -> int:
     cfg = Config.load(args.config)
     want_json = getattr(args, "json", False)
     lo, hi = _span_bounds(_parse_range(getattr(args, "range", "")))
-    out = sync.make_book(cfg, args.key, first=lo, last=hi, out=args.out)
+    out = sync.make_book(cfg, args.scope, first=lo, last=hi, out=args.out)
     size = os.path.getsize(out)
     if want_json:
         _jprint({"ok": True, "file": out, "bytes": size})
@@ -2103,7 +2103,7 @@ def _cmd_feed(args) -> int:
 
     cfg = Config.load(args.config)
     want_json = getattr(args, "json", False)
-    checked = _series_or_all(cfg, args.key, want_json)
+    checked = _series_or_all(cfg, args.scope, want_json)
     if isinstance(checked, int):
         return checked
     paths = sync.write_feeds(cfg, checked, out_dir=args.out_dir,
@@ -2158,15 +2158,23 @@ def _build_parser():
     #: at a dozen call sites; centralised here so the help cannot drift between
     #: commands, and so changing the spelling later is one edit rather than 25.
     def _series_pos(p, *, required=True, what="operate on"):
-        p.add_argument("key", **({} if required else {"nargs": "?"}),
+        p.add_argument("--scope", dest="scope", required=required, metavar="SERIES",
                        help=f"the series to {what}: slug, id, or a title substring"
                             + ("" if required else
                                f"; omit or {_SCOPE_ALL} for every enabled series"))
 
-    def _range_pos(p, *, default_means):
-        p.add_argument("range", nargs="?", default="",
+    def _range_pos(p, *, default_means, required=False):
+        p.add_argument("--range", default="", required=required, metavar="SPEC",
                        help=f"N | N-M | N- | -M | comma list (1-3,7). "
                             f"Omit for {default_means}")
+
+    def _target_pos(p):
+        # Deliberately *not* --scope: this one also accepts a path or URL for a
+        # one-off, so it is a wider domain than "which tracked series" and gets
+        # its own name rather than pretending to be the same argument.
+        p.add_argument("--target", required=True, metavar="TARGET",
+                       help="a tracked series (slug, id, or title substring), "
+                            "or a path / URL to process as a one-off")
 
     def _dry(p, *, what, short=True):
         p.add_argument(*(("-n", "--dry-run") if short else ("--dry-run",)),
@@ -2189,9 +2197,8 @@ def _build_parser():
 
     def _stage_parser(name, help_):
         p = sub.add_parser(name, help=help_)
-        p.add_argument("target", help="tracked series (slug/id/title), or a file / URL")
-        p.add_argument("range", nargs="?", default="",
-                       help="N | N-M | N- | -M   (omit: whatever is outstanding)")
+        _target_pos(p)
+        _range_pos(p, default_means="whatever is outstanding")
         p.add_argument("--limit", type=int, help="stop after N chapters")
         _cfg_json(p)
         return p
@@ -2207,9 +2214,8 @@ def _build_parser():
     p_.set_defaults(func=_stage_cmd("parsed"))
 
     ck = sub.add_parser("check", help="cast / heteronyms / unknown names for a range")
-    ck.add_argument("target", help="tracked series, or a file / URL")
-    ck.add_argument("range", nargs="?", default="",
-                    help="N | N-M   (omit: the first [cast] seed_chapters)")
+    _target_pos(ck)
+    _range_pos(ck, default_means="the first [cast] seed_chapters")
     ck.add_argument("--top", type=int, default=15,
                     help="how many unknown-name candidates to list (default 15)")
     ck.add_argument("--context", type=int, default=6,
@@ -2238,7 +2244,8 @@ def _build_parser():
     se = sub.add_parser("series", help="track and manage series")
     se_sub = se.add_subparsers(dest="action")
     a = se_sub.add_parser("add", help="start tracking (metadata only)")
-    a.add_argument("url", help="fiction page URL or id")
+    a.add_argument("--url", required=True, metavar="URL",
+                   help="fiction page URL or id")
     a.add_argument("--from", dest="frm", default="start",
                    help="mark chapters up to here as already-read and skip them: "
                         "start (default) | latest | <N> | <chapter-url>")
@@ -2255,7 +2262,7 @@ def _build_parser():
     pr_ = se_sub.add_parser(
         "priority", help="render order: higher goes first (default 100)")
     _series_pos(pr_, what="reprioritise")
-    pr_.add_argument("value", type=int,
+    pr_.add_argument("--priority", dest="value", required=True, type=int, metavar="N",
                      help="any integer; leave gaps (100, 200, …) so you can "
                           "insert between later. Pausing is separate — a "
                           "paused series keeps its priority")
@@ -2284,12 +2291,14 @@ def _build_parser():
     _series_pos(ex, required=False, what="export")
     _cfg_json(ex)
     im = se_sub.add_parser("import", help="adopt a bundle directory into the state DB")
-    im.add_argument("path", help="bundle directory to adopt into the state DB")
+    im.add_argument("--path", required=True, metavar="DIR",
+                    help="bundle directory to adopt into the state DB")
     _dry(im, what="be adopted")
     _cfg_json(im)
     sc = se_sub.add_parser("scan",
                            help="import every bundle under a root, and re-locate moved ones")
-    sc.add_argument("root", nargs="?", help="defaults to the configured library dir")
+    sc.add_argument("--root", metavar="DIR",
+                    help="directory to scan (default: the configured library dir)")
     _dry(sc, what="be adopted")
     _cfg_json(sc)
     pa = se_sub.add_parser("path", help="print a series' bundle directory")
@@ -2314,7 +2323,7 @@ def _build_parser():
 
     _cfg_json(se)
     se.set_defaults(func=_cmd_series, action=None, frm="start", purge=False,
-                    dry_run=False, root=None, path=None, key=None, out=None,
+                    dry_run=False, root=None, path=None, scope=None, out=None,
                     with_cache=False)
 
     # -- state (plumbing) ---------------------------------------------------
@@ -2326,10 +2335,11 @@ def _build_parser():
     _cfg_json(ss)
     sx = stt_sub.add_parser("set", help="force a status")
     _series_pos(sx, what="change")
-    sx.add_argument("range",
+    sx.add_argument("--range", required=True, metavar="SPEC",
                     help="N | N-M | N- | -M | comma list (1-3,7). Required here: "
                          "forcing a status is never implicit")
-    sx.add_argument("status", help="one of: new | fetched | parsed | rendered | skipped")
+    sx.add_argument("--status", required=True, metavar="STATE",
+                    help="one of: new | fetched | parsed | rendered | skipped")
     _cfg_json(sx)
     sr = stt_sub.add_parser("reset", help="errored chapters -> new, to retry")
     _series_pos(sr, what="reset errored chapters in")
@@ -2345,15 +2355,14 @@ def _build_parser():
     _cfg_json(ce)
     cu = cs_sub.add_parser("update", help="merge in speakers found in a chapter range")
     _series_pos(cu, what="update the cast of")
-    cu.add_argument("range", nargs="?", default="",
-                    help="N | N-M   (omit: the first [cast] seed_chapters)")
+    _range_pos(cu, default_means="the first [cast] seed_chapters")
     cu.add_argument("--diff", action="store_true", help="show what it would add, write nothing")
     _cfg_json(cu)
     ck2 = cs_sub.add_parser("set", help="assign one speaker a voice (no editor)")
     _series_pos(ck2, what="assign a voice in")
-    ck2.add_argument("speaker",
+    ck2.add_argument("--speaker", required=True, metavar="NAME",
                      help="the speaker name as `cast show` lists it")
-    ck2.add_argument("voice", nargs="?", default="",
+    ck2.add_argument("--voice", default="", metavar="VOICE",
                      help='Kokoro voice id, or "" to list the speaker unassigned')
     _cfg_json(ck2)
     cw = cs_sub.add_parser("show", help="the effective cast, including unassigned")
@@ -2517,7 +2526,7 @@ def _build_parser():
     _yes(cl, what="deleting every cached segment")
     _cfg_json(cl)
     _cfg_json(ca)
-    ca.set_defaults(func=_cmd_cache, action=None, key=None, dry_run=False,
+    ca.set_defaults(func=_cmd_cache, action=None, scope=None, dry_run=False,
                     stale=False, yes=False, force=False)
 
     sc = sub.add_parser("schema", help="emit the command surface as JSON (for agents)")
@@ -2530,7 +2539,7 @@ def _build_parser():
     rt.set_defaults(func=_cmd_retag)
 
     pg = sub.add_parser("progress", help="what a running sync is doing (read-only)")
-    pg.add_argument("key", nargs="?", default="",
+    pg.add_argument("--scope", dest="scope", default="", metavar="SERIES",
                     help="the series to report on: slug, id, or a title substring; "
                          f"omit or {_SCOPE_ALL} for every enabled series")
     pg.add_argument("--watch", type=float, nargs="?", const=5.0, default=0,

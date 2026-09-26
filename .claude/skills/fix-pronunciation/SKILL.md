@@ -36,9 +36,24 @@ webnovel-audio series list
 Get the series' bundle directory, then grep its chapter file. Chapter files
 are named `NNN-slug-title.md` inside `chapters/`, zero-padded to 3 digits.
 
+**`NNN` is the only number any command accepts, and it is usually not the
+number in the chapter's title.** A title reading "Chapter 23" can be file 355:
+the title text is the author's own numbering, per volume, and nothing indexes
+it. If the user names a chapter by title, or by a number that finds nothing,
+search the titles instead:
+
 ```
-webnovel-audio series path <slug>
-grep -n -i -C1 '\b<word>\b' "$(webnovel-audio series path <slug>)"/chapters/<NNN>-*.md
+webnovel-audio state show --scope <slug> | grep -i '<words from the title>'
+```
+
+That prints `#NNN status title`, which gives you the file number to grep for.
+Long titles are truncated in the text output; add `--json` when the full title
+matters.
+
+```
+webnovel-audio series path --scope <slug>
+grep -n -i -C1 '\b<word>\b' \
+  "$(webnovel-audio series path --scope <slug>)"/chapters/<NNN>-*.md
 ```
 
 Pick one representative sentence — that's the "use case." If the word
@@ -49,7 +64,7 @@ require a chapter, only the word.
 ## 2. Show the current (wrong) pronunciation
 
 ```
-webnovel-audio pron "<the sentence from step 1, or just the word>" --series <slug>
+webnovel-audio pron "<the sentence from step 1, or just the word>" --scope <slug>
 ```
 
 The `≈ say` line is the reading you're correcting. This is also how you
@@ -90,36 +105,42 @@ step sounds right.
 ## 5. Apply the fix
 
 ```
-webnovel-audio lex add <slug> "<surface>" [--pos POS] "<respell>" [--note "<why>"]
+webnovel-audio lex add --scope <slug> --surface "<word>" --respell "<respell>" \
+    [--pos POS] [--note "<why>"]
 ```
 
-- `<surface>` is the word/phrase exactly as it appears in the text
-  (case-insensitive match, but keep natural casing).
-- Quote multi-word phrases as one argument — phrases ignore `--pos` entirely
+- `--surface` is the word/phrase exactly as it appears in the text
+  (case-insensitive match, but keep natural casing). It may not be empty.
+- `--respell` may be empty (`--respell ""`), which means "I listened, it reads
+  fine" and stops `check` suggesting the word again. `lex ignore` is the
+  shorthand for that.
+- Quote a multi-word phrase as one argument — phrases ignore `--pos` entirely
   and match verbatim, so use a phrase instead of a POS tag when the reading
-  depends on meaning rather than grammar (e.g. `"a tear in"`).
+  depends on meaning rather than grammar (e.g. `--surface "a tear in"`).
 - Keep `--note` short: why, not what.
+- Every field is a named flag, so order never matters. An unknown `--scope`
+  exits non-zero rather than quietly writing somewhere unexpected.
 
 If the mispronunciation is a generic English word rather than something
 specific to this series (a heteronym like `diviner` or `inky`, not a
-character name like `Broadsky`), add it straight to the base lexicon
-instead with `--base`, so every series benefits:
+character name like `Broadsky`), write it to the base lexicon with
+`--scope @base`, so every series benefits:
 ```
-webnovel-audio lex add <slug> "<surface>" [--pos POS] "<respell>" --base
+webnovel-audio lex add --scope @base --surface "<word>" --respell "<respell>" [--pos POS]
 ```
 Only do this when you're confident the fix is series-agnostic — a fix
 already sitting in a series file can be moved later once that's confirmed:
 ```
-webnovel-audio lex promote <slug> "<surface>" [--pos POS]
+webnovel-audio lex promote --scope <slug> --surface "<word>" [--pos POS]
 ```
 (`--pos` only needed to disambiguate if that surface has more than one rule
 in the series file.)
 
 ## 6. Verify it stuck
 
-Re-run the same sentence from step 1 through `pron --series`:
+Re-run the same sentence from step 1 through `pron --scope`:
 ```
-webnovel-audio pron "<the sentence from step 1>" --series <slug>
+webnovel-audio pron "<the sentence from step 1>" --scope <slug>
 ```
 Confirm the `with lexicon` block now shows the corrected reading. Report
 the file and line changed; don't commit or push unless asked.

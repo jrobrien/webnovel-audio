@@ -168,13 +168,15 @@ def test_purge_refuses_without_consent_and_deletes_nothing(tmp_path, capsys, mon
 
     cfgp, bundle_dir = _tracked(tmp_path)
 
-    rc = cli.main(["series", "forget", "solo", "--purge", "--json", "--config", cfgp])
+    rc = cli.main(["series", "forget", "--scope", "solo", "--purge", "--json",
+                   "--config", cfgp])
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert rc == 1 and out["error"]["code"] == "needs_confirmation"
     assert bundle_dir.exists()
 
     monkeypatch.setattr(sys.stdin, "isatty", lambda: False)
-    rc = cli.main(["series", "forget", "solo", "--purge", "--config", cfgp])
+    rc = cli.main(["series", "forget", "--scope", "solo", "--purge",
+                   "--config", cfgp])
     assert rc == 1 and "needs_confirmation" in capsys.readouterr().err
     assert bundle_dir.exists()
 
@@ -185,14 +187,14 @@ def test_purge_dry_run_reports_without_deleting(tmp_path, capsys):
     from webnovel_audio import cli
 
     cfgp, bundle_dir = _tracked(tmp_path)
-    rc = cli.main(["series", "forget", "solo", "--purge", "-n", "--json",
+    rc = cli.main(["series", "forget", "--scope", "solo", "--purge", "-n", "--json",
                    "--config", cfgp])
     out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert rc == 0 and out["dry_run"] is True
     assert out["would_remove"] == str(bundle_dir)
     assert bundle_dir.exists()
     # still tracked: a dry run must not forget it either
-    rc = cli.main(["series", "show", "solo", "--json", "--config", cfgp])
+    rc = cli.main(["series", "show", "--scope", "solo", "--json", "--config", cfgp])
     assert rc == 0
 
 
@@ -360,28 +362,34 @@ def test_every_argument_has_help_text():
 
 
 def test_the_series_argument_reads_the_same_everywhere():
-    """25 commands take the same identifier. Describing it 25 times is how help
-    drifts, so they share one definition -- which is also what would make
-    renaming it a single edit instead of 25."""
+    """~25 commands take the same identifier, spelled `--scope` everywhere.
+
+    Describing it 25 times is how help drifts apart, so they share one
+    definition. Centralising it is also what made renaming it from a positional
+    `key` to `--scope` a single edit rather than 25.
+    """
     import argparse
 
     from webnovel_audio import cli
 
-    helps = set()
+    helps, positional = set(), []
 
-    def walk(p):
+    def walk(p, path=""):
         sub = next((a for a in p._actions
                     if isinstance(a, argparse._SubParsersAction)), None)
         if sub:
-            for child in sub.choices.values():
-                walk(child)
+            for name, child in sub.choices.items():
+                walk(child, f"{path} {name}".strip())
         for a in p._actions:
-            if a.dest == "key" and not a.option_strings:
+            if a.dest == "scope":
                 helps.add(a.help)
+                if not a.option_strings:
+                    positional.append(path)
 
     walk(cli._build_parser())
-    assert helps, "no `key` positionals found -- did the spelling change?"
-    # every one names the series and offers the same two ways to identify it
+    assert helps, "no --scope arguments found -- did the spelling change?"
+    assert not positional, f"scope must be a named flag, not positional: {positional}"
+    # the lexicon commands describe which *lexicon*; the rest describe which series
     for h in helps:
-        assert h.startswith("the series to"), h
-        assert "slug, id, or a title substring" in h, h
+        assert ("the series to" in h or "which lexicon to act on" in h
+                or "also apply this series" in h), h

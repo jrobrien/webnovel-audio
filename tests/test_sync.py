@@ -157,8 +157,8 @@ def test_cmd_sync_refuses_when_locked(tmp_path, capsys):
     cfg = Config.load(str(cfgp))
     with sync.sync_lock(cfg):
         rc = cli._cmd_sync(types.SimpleNamespace(
-            config=str(cfgp), key=None, limit=None, dry_run=False,
-            backend=None, no_refresh=False, json=True))
+            config=str(cfgp), scope=None, limit=None, dry_run=False,
+            no_refresh=False, json=True))
     out = json.loads(capsys.readouterr().out)
     assert rc == 2 and out["event"] == "locked"
 
@@ -445,7 +445,7 @@ def test_pinned_series_ignores_later_global_change(tmp_path):
 
 def _sync_args(**kw):
     import types
-    base = dict(key=None, limit=None, dry_run=False, backend="null", no_refresh=True,
+    base = dict(scope=None, limit=None, dry_run=False, no_refresh=True,
                 json=False, yes=False)
     base.update(kw)
     return types.SimpleNamespace(**base)
@@ -704,13 +704,13 @@ def test_cli_structured_errors(tmp_path, capsys):
     cfgp.write_text(f'[royalroad]\nstate_db = "{tmp_path / "s.db"}"\n')
 
     rc = cli._cmd_cast(types.SimpleNamespace(
-        action="set", key="nope", speaker="X", voice="am_michael",
+        action="set", scope="nope", speaker="X", voice="am_michael",
         config=str(cfgp), json=True))
     err = json.loads(capsys.readouterr().out)["error"]
     assert rc == 1 and err["code"] == "no_such_series" and err["hint"]
 
     rc = cli._cmd_state(types.SimpleNamespace(
-        action="set", key="nope", range="1", status="new",
+        action="set", scope="nope", range="1", status="new",
         config=str(cfgp), json=True))
     assert json.loads(capsys.readouterr().out)["error"]["code"] == "no_such_series"
 
@@ -733,7 +733,10 @@ def test_schema_covers_every_command(capsys):
     for k in ("target", "range", "json", "exit_codes", "errors"):
         assert k in d["conventions"]
     cast_set = next(n for n in d["detail"] if n["path"] == ["cast", "set"])
-    assert [p["name"] for p in cast_set["positional"]] == ["key", "speaker", "voice"]
+    # every field is a named flag now: nothing is positional, so nothing can be
+    # transposed, and the schema names each one for a caller building the call.
+    assert cast_set["positional"] == []
+    assert {"scope", "speaker", "voice"} <= {o["name"] for o in cast_set["options"]}
     assert cast_set["help"]
 
 

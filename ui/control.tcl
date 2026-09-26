@@ -426,7 +426,7 @@ proc refresh_chapters {} {
     .bl.tv delete [.bl.tv children {}]
     array unset ::MD
     if {$::SERIES eq ""} { load_md ; return }
-    set d [run_json state show $::SERIES]
+    set d [run_json state show --scope $::SERIES]
     if {$d eq ""} return
     set vols 0
     foreach c [dict get $d chapters] {
@@ -489,7 +489,7 @@ proc toggle_pause {} {
     set slug [selected_series]
     if {$slug eq ""} return
     set verb [expr {[series_paused $slug] ? "enable" : "disable"}]
-    run_json series $verb $slug
+    run_json series $verb --scope $slug
     log "$slug: sync [expr {$verb eq {enable} ? {resumed} : {paused}}]"
     refresh_series
     on_series_status
@@ -525,7 +525,7 @@ proc do_priority {w slug} {
     set v [string trim [$w.n get]]
     destroy $w
     if {![string is integer -strict $v]} { log "! priority must be an integer" ; return }
-    run_json series priority $slug $v
+    run_json series priority --scope $slug --priority $v
     log "$slug: priority $v"
     refresh_series
 }
@@ -666,14 +666,14 @@ proc do_stage {stage} {
     ;# run them synchronously and format the report rather than dumping raw JSON.
     if {$stage eq "check"}  { report_check $r ; return }
     if {$stage eq "cast"}   { report_cast  $r ; return }
-    run_cmd [list $stage $::SERIES $r]
+    run_cmd [list $stage --target $::SERIES --range $r]
 }
 
 proc report_check {range} {
     .br select .br.log
     log "\$ webnovel-audio check $::SERIES $range"
     status "checking $range…"
-    set d [run_json check $::SERIES $range]
+    set d [run_json check --target $::SERIES --range $range]
     status "ready"
     if {$d eq ""} return
     set cast [json::get $d cast]
@@ -703,7 +703,7 @@ proc report_check {range} {
 proc report_cast {range} {
     .br select .br.log
     log "\$ webnovel-audio cast update $::SERIES $range"
-    set d [run_json cast update $::SERIES $range]
+    set d [run_json cast update --scope $::SERIES --range $range]
     if {$d eq ""} return
     log "  [json::get $d overlay_action]: [json::get $d overlay_path]"
     load_editor cast 1
@@ -713,14 +713,14 @@ proc report_cast {range} {
 proc do_state {status} {
     set r [selected_range]
     if {$::SERIES eq "" || $r eq ""} { log "select chapters first" ; return }
-    run_json state set $::SERIES $r $status
+    run_json state set --scope $::SERIES --range $r --status $status
     refresh_chapters ; refresh_series
 }
 
 proc do_reset_errors {} {
     if {$::SERIES eq ""} return
     set r [selected_range]
-    if {$r eq ""} { run_json state reset $::SERIES } else { run_json state reset $::SERIES $r }
+    if {$r eq ""} { run_json state reset --scope $::SERIES } else { run_json state reset --scope $::SERIES --range $r }
     refresh_chapters ; refresh_series
 }
 
@@ -754,7 +754,7 @@ proc dlg_sync {} {
 
 proc sync_estimate {w args} {
     if {![winfo exists $w]} return
-    set a [list sync $::SERIES --estimate]
+    set a [list sync --scope $::SERIES --estimate]
     if {$::LIMIT > 0} { lappend a --limit $::LIMIT }
     set d [run_json {*}$a]
     if {$d eq ""} { $w.est configure -text "estimate unavailable" ; return }
@@ -763,7 +763,7 @@ proc sync_estimate {w args} {
 
 proc do_sync {w} {
     set lim $::LIMIT ; destroy $w
-    set a [list sync $::SERIES --yes]
+    set a [list sync --scope $::SERIES --yes]
     if {$lim > 0} { lappend a --limit $lim }
     run_cmd $a
 }
@@ -789,7 +789,7 @@ proc do_add {w} {
     set url [string trim [$w.u get]] ; set from [$w.f get]
     if {$url eq ""} return
     destroy $w
-    set d [run_json series add $url --from $from]
+    set d [run_json series add --url $url --from $from]
     if {$d ne ""} { log "added [json::get $d title] — [json::get $d chapters] chapters" }
     refresh_series
 }
@@ -811,7 +811,7 @@ proc editor_path {which} {
 }
 
 proc cache_bundle_paths {slug} {
-    set d [run_json series show $slug]
+    set d [run_json series show --scope $slug]
     if {$d eq "" || ![dict exists $d paths]} return
     set p [dict get $d paths]
     set ::BPATH($slug,cast) [dict get $p config]
@@ -972,7 +972,7 @@ proc play_selected {} {
     set sel [.bl.tv selection]
     if {![llength $sel]} { log "select a chapter to play" ; return }
     set n [.bl.tv set [lindex $sel 0] n]
-    set d [run_json state show $::SERIES $n]
+    set d [run_json state show --scope $::SERIES --range $n]
     if {$d eq ""} return
     set c [lindex [dict get $d chapters] 0]
     set path [json::get $c audio_path]
@@ -1214,7 +1214,7 @@ menu .sctx -tearoff 0
 .sctx add command -label "Pause sync" -command toggle_pause
 .sctx add separator
 .sctx add command -label "Refresh chapter list" -command {
-    if {[selected_series] ne ""} { run_cmd [list series refresh [selected_series]] }
+    if {[selected_series] ne ""} { run_cmd [list series refresh --scope [selected_series]] }
 }
 .sctx add command -label "Set priority…" -command dlg_priority
 .sctx add command -label "Edit cast"    -command {.br select .br.cast}
