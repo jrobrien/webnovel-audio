@@ -111,3 +111,9 @@ turquoise,,ter-kwoyz,blue-green mineral; fixes common "tur-koyze" g2p errors
 zircon,,zer-kon,zirconium silicate mineral
 
 
+well read,,well red,"adjective sense (erudite, e.g. 'a well read swordsman'); espeak reads present tense /riːd/ instead"
+definately,,definitely,common misspelling of 'definitely'; g2p reads it literally as dih-fihn-AYT-lee (like it contains 'ate')
+lives,VERB,livz,"3rd-sing present of live, e.g. 'he lives there'; espeak inconsistently defaults to the noun reading /laɪvz/ depending on context. Companion to the existing live/ADJ,VERB rows, which only match the bare surface 'live'"
+lives,NOUN,lyves,"plural of life, e.g. 'many lives were lost'; pin both sides so neither falls back to the wrong default"
+escapees,,eskay-peez,"es-kay-PEEZ; espeak says ehsk-AP-eez, using short /ae/ from 'cap' instead of the /ei/ of 'escape'"
+escapee,,eskay-pee,singular of the same; pin both so neither falls back to the /ae/ reading
