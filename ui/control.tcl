@@ -50,7 +50,7 @@ set ::CFGPATH "" ; set ::LEXDIR "data/lexicons" ; set ::SERIESDIR "data/series"
 array set ::BPATH {}
 set ::BASELEX ""
 set ::SERIES "" ; set ::RUNNING 0 ; set ::PIPE "" ; set ::SERVEPID ""
-set ::SERVEPIPE "" ; set ::STATUS "ready" ; set ::LIMIT 10
+set ::SERVEPIPE "" ; set ::STATUS "ready" ; set ::LIMIT 10 ; set ::SYNC_ALL 0
 array set ::EDIT {}          ;# tab -> path / mtime / dirty
 array set ::MD {}            ;# chapter row id -> text_path / status, from refresh
 array set ::HLAFTER {}       ;# tab -> pending re-highlight, coalesced
@@ -411,6 +411,12 @@ proc on_series_select {} {
     set slug [selected_series]
     if {$slug eq "" || $slug eq $::SERIES} return
     set ::SERIES $slug
+    ;# Chapter row ids are just "ch$n", not scoped by series, so
+    ;# refresh_chapters' own selection-preserving `keep` logic (meant to
+    ;# survive a same-series refresh after a render) would otherwise carry a
+    ;# chapter number over into a different series that happens to have the
+    ;# same number -- selecting the wrong chapter and jumping load_md to it.
+    .bl.tv selection remove [.bl.tv selection]
     refresh_chapters
     ;# after idle: the treeview has just been repopulated and does not know
     ;# its own scroll range until it has laid out, so moveto before then
@@ -725,16 +731,29 @@ proc do_reset_errors {} {
 }
 
 # ---------------------------------------------------------------- sync --------
+;# `@all` is the CLI's own spelling for "every enabled series" (`sync` with no
+;# --scope means the same thing) -- the checkbox just switches which one this
+;# dialog passes, no per-series looping needed on the UI side.
+proc sync_scope {} {
+    return [expr {$::SYNC_ALL ? "@all" : $::SERIES}]
+}
+
 proc dlg_sync {} {
-    if {$::SERIES eq ""} { log "select a series" ; return }
-    if {[series_paused $::SERIES]} {
+    if {$::SERIES eq ""} {
+        set ::SYNC_ALL 1
+    } elseif {[series_paused $::SERIES]} {
         log "! $::SERIES is paused — right-click the series to resume it"
         status "$::SERIES is paused"
         return
+    } else {
+        set ::SYNC_ALL 0
     }
     set w .sync ; catch {destroy $w}
     toplevel $w ; wm title $w "Sync" ; wm transient $w .
-    ttk::label $w.l -text "Sync $::SERIES — chapters to render:"
+    ttk::checkbutton $w.all -text "All series" -variable ::SYNC_ALL \
+        -command [list sync_estimate $w]
+    if {$::SERIES eq ""} { $w.all state disabled }
+    ttk::label $w.l -text "chapters to render:"
     ttk::spinbox $w.n -from 0 -to 999 -width 5 -textvariable ::LIMIT
     ttk::label $w.h -text "(0 = everything outstanding)"
     ttk::label $w.est -text "estimating…" -foreground "#2a7d4f"
@@ -742,11 +761,12 @@ proc dlg_sync {} {
     ttk::button $w.b.ok -text "Sync" -command [list do_sync $w]
     ttk::button $w.b.cx -text "Cancel" -command [list destroy $w]
     pack $w.b.ok $w.b.cx -side left -padx 4
-    grid $w.l -row 0 -column 0 -columnspan 3 -padx 10 -pady {10 4} -sticky w
-    grid $w.n -row 1 -column 0 -padx 10 -sticky w
-    grid $w.h -row 1 -column 1 -sticky w
-    grid $w.est -row 2 -column 0 -columnspan 3 -padx 10 -pady 6 -sticky w
-    grid $w.b -row 3 -column 0 -columnspan 3 -pady 8
+    grid $w.all -row 0 -column 0 -columnspan 3 -padx 10 -pady {10 4} -sticky w
+    grid $w.l -row 1 -column 0 -columnspan 3 -padx 10 -sticky w
+    grid $w.n -row 2 -column 0 -padx 10 -sticky w
+    grid $w.h -row 2 -column 1 -sticky w
+    grid $w.est -row 3 -column 0 -columnspan 3 -padx 10 -pady 6 -sticky w
+    grid $w.b -row 4 -column 0 -columnspan 3 -pady 8
     bind $w <Escape> [list destroy $w]
     trace add variable ::LIMIT write [list sync_estimate $w]
     sync_estimate $w
@@ -754,7 +774,10 @@ proc dlg_sync {} {
 
 proc sync_estimate {w args} {
     if {![winfo exists $w]} return
-    set a [list sync --scope $::SERIES --estimate]
+    set txt [expr {$::SYNC_ALL ? "Sync all series — chapters to render:"
+                                : "Sync $::SERIES — chapters to render:"}]
+    $w.l configure -text $txt
+    set a [list sync --scope [sync_scope] --estimate]
     if {$::LIMIT > 0} { lappend a --limit $::LIMIT }
     set d [run_json {*}$a]
     if {$d eq ""} { $w.est configure -text "estimate unavailable" ; return }
@@ -762,8 +785,8 @@ proc sync_estimate {w args} {
 }
 
 proc do_sync {w} {
-    set lim $::LIMIT ; destroy $w
-    set a [list sync --scope $::SERIES --yes]
+    set lim $::LIMIT ; set scope [sync_scope] ; destroy $w
+    set a [list sync --scope $scope --yes]
     if {$lim > 0} { lappend a --limit $lim }
     run_cmd $a
 }
