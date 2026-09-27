@@ -463,3 +463,32 @@ def test_ui_host_has_a_tk_that_can_render_text():
         f"{py} has Tk {version} with {families} font family; "
         f"the UI would render text in the 'fixed' bitmap font. {warn}"
     )
+
+
+@needs_display
+def test_segments_tab_shows_what_was_rendered(tmp_path):
+    """The Segments tab is the post-respell script a chapter was rendered
+    from: compact one-row-per-segment by default, the raw file on request."""
+    out = tmp_path / "seg.log"
+    r = _run(os.path.join(ROOT, "tests", "ui", "probe_segments.tcl"), str(out),
+             str(tmp_path), ui_conf=tmp_path / "ui.conf")
+    log = out.read_text() if out.exists() else ""
+    assert r.returncode == 0, f"{r.stderr}\n{log}"
+    assert "DONE" in log and "ERROR" not in log, log
+
+    def val(key):
+        m = re.search(rf"^{re.escape(key)} (.*)$", log, re.M)
+        assert m, f"no {key!r} in:\n{log}"
+        return m.group(1)
+
+    assert val("lines") == "4"
+    row = val("row2").split()
+    assert row[:4] == ["2", "machine", "af_kore", "·"] and "Awaiting directive…" in val("row2")
+    assert val("row3").split()[1:3] == ["pause", "1400"]
+    assert "Grando" in val("row4") and "Who's there?" in val("row4")
+    assert val("machine_tagged") == "1" and val("pause_dim") == "1"
+    assert val("tab") == "Segments"
+    assert "disabled" not in val("ext")
+    assert val("raw_first") == "[" and val("raw_key_tagged") == "1"
+    assert "no segments file" in val("missing") and "disabled" in val("missing_ext")
+    assert "segments" in val("menu1") and val("menu6") == "Render"   # indices shifted by one

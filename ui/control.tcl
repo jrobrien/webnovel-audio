@@ -105,7 +105,7 @@ proc apply_theme {{name ""}} {
 ;# treeview row tags, and the syntax tags.
 proc repaint_theme {} {
     set bg [pal field] ; set fg [pal fg] ; set sel [pal sel] ; set selfg [pal selfg]
-    foreach w {cast lex md log} {
+    foreach w {cast lex md seg log} {
         set t .br.$w.t
         if {![winfo exists $t]} continue
         $t configure -background $bg -foreground $fg -insertbackground $fg \
@@ -124,7 +124,7 @@ proc repaint_theme {} {
             -selectcolor [pal fg]
     }
     retag_rows
-    foreach w {cast lex md} { if {[winfo exists .br.$w.t]} { highlight $w } }
+    foreach w {cast lex md seg} { if {[winfo exists .br.$w.t]} { highlight $w } }
 }
 
 ;# Stage colours for the chapter rows, and the greyed-out paused series.
@@ -227,6 +227,7 @@ proc highlight {which} {
         lex  { hl_csv  $t $last }
         cast { hl_toml $t $last }
         md   { hl_md   $t $last }
+        seg  { hl_seg  $t $last }
     }
 }
 
@@ -431,7 +432,7 @@ proc refresh_chapters {} {
     set keep [.bl.tv selection]
     .bl.tv delete [.bl.tv children {}]
     array unset ::MD
-    if {$::SERIES eq ""} { load_md ; return }
+    if {$::SERIES eq ""} { load_md ; load_seg ; return }
     set d [run_json state show --scope $::SERIES]
     if {$d eq ""} return
     set vols 0
@@ -469,6 +470,7 @@ proc refresh_chapters {} {
         status "$::SERIES — [llength [.bl.tv children {}]] chapters"
     }
     load_md
+    load_seg
 }
 
 ;# selected chapter numbers -> a CLI range like "1-3,7,20-25"
@@ -561,12 +563,13 @@ proc chapter_ctx {X Y x y} {
         .bl.tv selection set $id
     }
     set n [llength [.bl.tv selection]]
-    .ctx entryconfigure 2 -label "Fetch ($n)"
-    .ctx entryconfigure 3 -label "Parse ($n)"
-    .ctx entryconfigure 4 -label "Check ($n)"
-    .ctx entryconfigure 5 -label "Render ($n)"
-    .ctx entryconfigure 7 -label "Update cast from selection ($n)"
+    .ctx entryconfigure 3 -label "Fetch ($n)"
+    .ctx entryconfigure 4 -label "Parse ($n)"
+    .ctx entryconfigure 5 -label "Check ($n)"
+    .ctx entryconfigure 6 -label "Render ($n)"
+    .ctx entryconfigure 8 -label "Update cast from selection ($n)"
     .ctx entryconfigure 0 -state [expr {$n == 1 ? "normal" : "disabled"}]
+    .ctx entryconfigure 1 -state [expr {$n == 1 ? "normal" : "disabled"}]
     tk_popup .ctx $X $Y
 }
 
@@ -929,6 +932,107 @@ proc load_md {} {
     ;# the moment the selection changes to something with no Markdown.
 }
 
+;# ---------------------------------------------------------------- segments ---
+;# What the renderer actually said: the chapter's .segments.json, written at
+;# render time after the lexicon respellings, one entry per synthesized
+;# sentence. Shown compact by default -- one row per segment, style / voice /
+;# speaker / text -- since the raw file spends ten lines on each; "Raw JSON"
+;# shows the file itself. Read-only: it is regenerated on every render.
+set ::SEGRAW 0
+
+proc seg_path {id} {
+    if {![info exists ::MD($id,path)] || $::MD($id,path) eq ""} { return "" }
+    return "[file rootname $::MD($id,path)].segments.json"
+}
+
+proc seg_set {body {path ""}} {
+    set t .br.seg.t
+    $t configure -state normal
+    $t delete 1.0 end
+    $t insert 1.0 $body
+    $t configure -state disabled
+    set ::EDIT(seg,path) $path
+    .br.seg.b.ext state [expr {$path eq "" ? "disabled" : "!disabled"}]
+    highlight seg
+}
+
+proc load_seg {} {
+    if {![winfo exists .br.seg.t]} return
+    set sel [.bl.tv selection]
+    if {$::SERIES eq "" || [llength $sel] != 1} {
+        seg_set "Select one chapter to see the segments it was rendered from." ; return
+    }
+    set id [lindex $sel 0]
+    set path [seg_path $id]
+    if {$path eq "" || ![file exists $path]} {
+        seg_set "Chapter #[.bl.tv set $id n] has no segments file yet.\
+                 \n\nIt is written when the chapter is rendered." ; return
+    }
+    if {[catch {open $path r} fh]} { seg_set "! cannot open $path\n\n$fh" ; return }
+    fconfigure $fh -encoding utf-8
+    set body [read $fh] ; close $fh
+    if {$::SEGRAW} { seg_set $body $path ; return }
+    if {[catch {json::parse $body} segs]} { seg_set "! $path: $segs" $path ; return }
+    set out {}
+    set i 0
+    foreach s $segs {
+        incr i
+        set kind [json::get $s kind]
+        if {$kind eq "pause"} {
+            lappend out [format "%4d  %-9s %s ms" $i pause [json::get $s pause_after_ms]]
+            continue
+        }
+        if {$kind eq "cue"} { lappend out [format "%4d  %-9s <earcon>" $i cue] ; continue }
+        set who [json::get $s speaker]
+        ;# one row per segment, whatever the text holds
+        set text [string map {"\n" " ↵ "} [json::get $s text]]
+        lappend out [format "%4d  %-9s %-10s %-10s %s" $i [json::get $s style] \
+            [json::get $s voice] [expr {$who eq "" ? "·" : $who}] $text]
+    }
+    seg_set [join $out "\n"] $path
+}
+
+proc hl_seg {t last} {
+    if {$::SEGRAW} {
+        ;# every string on the line: a key if a colon follows it, else a value
+        for {set i 1} {$i <= $last} {incr i} {
+            set ln [$t get $i.0 $i.end]
+            foreach m [regexp -all -indices -inline {"(?:[^"\\]|\\.)*"} $ln] {
+                lassign $m a b
+                set tag [expr {[regexp {^\s*:} [string range $ln $b+1 end]] ? "hl_key" : "hl_str"}]
+                hl_span $t $i $tag $a [expr {$b + 1}]
+            }
+        }
+        return
+    }
+    ;# columns: n(4) 2sp style(9) sp voice(10) sp speaker(10) sp text
+    for {set i 1} {$i <= $last} {incr i} {
+        set ln [$t get $i.0 $i.end]
+        set style [string trim [string range $ln 6 14]]
+        switch -- $style {
+            pause - cue { hl_span $t $i hl_dim 0 end ; continue }
+            dialogue    { set tag hl_str }
+            thought     { set tag hl_em }
+            heading     { set tag hl_head }
+            machine - system - chat { set tag hl_key }
+            default     { set tag "" }
+        }
+        hl_span $t $i hl_dim 0 4
+        if {$tag ne ""} { hl_span $t $i $tag 6 15 ; hl_span $t $i $tag 38 end }
+        hl_span $t $i hl_com 16 38
+    }
+}
+
+;# Right-click on a chapter: its segments straight into $EDITOR.
+proc external_seg {} {
+    set sel [.bl.tv selection]
+    if {[llength $sel] != 1} return
+    set path [seg_path [lindex $sel 0]]
+    if {$path eq "" || ![file exists $path]} { log "no segments file for that chapter yet" ; return }
+    set ::EDIT(seg,path) $path
+    external_editor seg
+}
+
 ;# Offer to keep unsaved work before a load/series-switch throws it away.
 proc confirm_discard {which} {
     set a [tk_messageBox -type yesnocancel -icon question -title "Unsaved changes" \
@@ -1267,10 +1371,11 @@ grid rowconfigure .bl 0 -weight 1
 grid columnconfigure .bl 0 -weight 1
 bind .bl.tv $::CTXBUT {chapter_ctx %X %Y %x %y}
 bind .bl.tv <Double-1> {play_selected ; break}
-bind .bl.tv <<TreeviewSelect>> load_md
+bind .bl.tv <<TreeviewSelect>> {load_md ; load_seg}
 
 menu .ctx -tearoff 0
 .ctx add command -label "Play"   -command play_selected
+.ctx add command -label "Open segments in \$EDITOR" -command external_seg
 .ctx add separator
 .ctx add command -label "Fetch"  -command {do_stage fetch}
 .ctx add command -label "Parse"  -command {do_stage parse}
@@ -1283,7 +1388,7 @@ menu .ctx -tearoff 0
 .ctx add command -label "Mark new (re-do)" -command {do_state new}
 .ctx add command -label "Reset errors" -command do_reset_errors
 
-# -- notebook: Cast | Lexicon | Markdown | Log
+# -- notebook: Cast | Lexicon | Markdown | Segments | Log
 ttk::notebook .br
 foreach {w label} {cast Cast lex Lexicon} {
     ttk::frame .br.$w
@@ -1320,6 +1425,24 @@ grid .br.md.b -columnspan 2 -sticky w -pady 4
 grid rowconfigure .br.md 0 -weight 1
 grid columnconfigure .br.md 0 -weight 1
 .br add .br.md -text Markdown
+
+;# Segments: read-only like Markdown; no wrap, so the columns line up.
+ttk::frame .br.seg
+text .br.seg.t -wrap none -state disabled -font TkFixedFont -padx 6 -pady 4 \
+    -yscrollcommand {.br.seg.sb set} -xscrollcommand {.br.seg.hb set}
+ttk::scrollbar .br.seg.sb -orient vertical   -command {.br.seg.t yview}
+ttk::scrollbar .br.seg.hb -orient horizontal -command {.br.seg.t xview}
+ttk::frame .br.seg.b
+ttk::button .br.seg.b.rev -text Reload -command load_seg
+ttk::checkbutton .br.seg.b.raw -text "Raw JSON" -variable ::SEGRAW -command load_seg
+ttk::button .br.seg.b.ext -text "Open in \$EDITOR" -command {external_editor seg}
+pack .br.seg.b.rev .br.seg.b.raw .br.seg.b.ext -side left -padx 3
+grid .br.seg.t .br.seg.sb -sticky nsew
+grid .br.seg.hb -sticky ew
+grid .br.seg.b -columnspan 2 -sticky w -pady 4
+grid rowconfigure .br.seg 0 -weight 1
+grid columnconfigure .br.seg 0 -weight 1
+.br add .br.seg -text Segments
 
 ttk::frame .br.log
 text .br.log.t -wrap word -state disabled -font TkFixedFont \
@@ -1373,6 +1496,7 @@ catch {wm geometry . $::geom(main)}
 repaint_theme
 ui_busy 0
 load_md
+load_seg
 log "webnovel-audio control — $::EXE"
 log "theme: $::THEME ([ttk::style theme use])"
 if {[set c [run_json config]] ne ""} {
