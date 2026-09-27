@@ -152,3 +152,66 @@ def test_unassigned_voice_falls_back_to_default():
     # an unassigned entry must never be counted as a voice already in use
     nxt = suggest_voices({"other": 2}, {"other": "f"}, cfg)
     assert nxt["other"].startswith(("af_", "bf_"))
+
+
+# -- machine voice (`//…//`) -------------------------------------------------
+
+def _machine_cfg():
+    c = Config()
+    c.synth.machine_marker = "//"
+    c.voices.machine = "af_kore"
+    return c
+
+
+def _styles(blocks, cfg):
+    return [(s.style, s.text) for s in build_segments(blocks, cfg) if s.kind == "speech"]
+
+
+def test_machine_marker_inline_and_single_paragraph():
+    blocks = [
+        Block("paragraph", "Evie answered. //Paul Dorgan, alone.//"),
+        Block("paragraph", "//Awaiting input…//", italic=[(0, 19)]),
+    ]
+    got = _styles(blocks, _machine_cfg())
+    assert got == [("narration", "Evie answered."), ("machine", "Paul Dorgan, alone."),
+                   ("machine", "Awaiting input…")]
+    assert all("/" not in t for _, t in got)
+
+
+def test_machine_run_spans_blocks_and_closes():
+    blocks = [
+        Block("paragraph", "//Status:", italic=[(0, 9)]),
+        Block("system", "Aura Pool: 5/5"),
+        Block("paragraph", "End Report//.", italic=[(0, 13)]),
+        Block("paragraph", "He blinked."),
+    ]
+    got = _styles(blocks, _machine_cfg())
+    assert [s for s, _ in got] == ["machine", "machine", "machine", "narration"]
+    assert got[0][1] == "Status."
+
+
+def test_unclosed_machine_run_ends_at_plain_narration():
+    blocks = [
+        Block("paragraph", "//Brawler selected.", italic=[(0, 19)]),
+        Block("paragraph", "Notes:", italic=[(0, 6)]),
+        Block("paragraph", "//Awaiting directive…//", italic=[(0, 23)]),
+        Block("paragraph", "He cleared his throat."),
+    ]
+    got = _styles(blocks, _machine_cfg())
+    assert [s for s, _ in got] == ["machine", "machine", "machine", "narration"]
+
+
+def test_machine_marker_off_by_default_and_spares_urls():
+    blocks = [Block("paragraph", "//Awaiting input.//")]
+    assert _styles(blocks, Config())[0][0] == "narration"
+    got = _styles([Block("paragraph", "See https://example.com now.")], _machine_cfg())
+    assert got[0][0] == "narration"
+
+
+def test_robot_chain_keeps_length_and_level():
+    sr = 24000
+    t = np.arange(sr) / sr
+    x = (0.3 * np.sin(2 * np.pi * 220 * t * (1 + 0.2 * t))).astype("float32")
+    y = apply_chain(x, sr, Config().dsp["machine"])
+    assert y.shape == x.shape and np.isfinite(y).all()
+    assert 0.3 < np.sqrt(np.mean(y * y)) / np.sqrt(np.mean(x * x)) < 1.5

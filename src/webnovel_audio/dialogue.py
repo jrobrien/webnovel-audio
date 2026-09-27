@@ -278,9 +278,14 @@ def discover(blocks: list[Block], cfg) -> tuple[dict[str, int], dict[str, str]]:
     """Run attribution over a chapter; return {speaker: line count} and a gender guess."""
     from collections import Counter
 
+    from .segment import machine_pieces
+
     attr = Attributor(cfg)
     counts: Counter[str] = Counter()
-    for block in blocks:
+    for block, machine in machine_pieces(blocks, cfg):
+        if machine:
+            attr.narr_run += 1
+            continue
         if block.kind != "paragraph":
             if block.kind in ("heading", "system"):
                 attr.narr_run += 1

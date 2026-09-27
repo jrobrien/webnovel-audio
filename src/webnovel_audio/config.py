@@ -60,6 +60,7 @@ class Voices:
     thought: str = "bm_george"
     dialogue_default: str = "am_michael"
     system_ui: str = "af_sky"
+    machine: str = ""               # `machine` style (see Synth.machine_marker); "" = system_ui
 
 
 @dataclass
@@ -94,6 +95,12 @@ class Synth:
     sample_rate: int = 24000
     system_rate: float = 1.06        # LitRPG status boxes read a touch faster
     thought_threshold: float = 0.6   # italic char coverage to call a sentence "thought"
+    # Delimiter an author wraps a machine voice in (an AI, a system talking in
+    # the MC's head): `//Awaiting input…//`. Text between a pair -- inline, or
+    # a run of paragraphs -- is read as style `machine`. "" = off; set it per
+    # series, since the same characters mean nothing special elsewhere.
+    machine_marker: str = ""
+    machine_rate: float = 1.0
 
 
 @dataclass
@@ -138,13 +145,16 @@ class Audio:
 
 
 # Effect chains applied after synthesis, keyed by speaker name, voice id, or style
-# (narration | thought | dialogue | system | heading). More specific keys win
-# per field: speaker -> voice -> style. Fields: gain_db, semitones, hp_hz, lp_hz,
-# tilt_db. These two ship as defaults so Phase 2 behaviour is unchanged.
+# (narration | thought | dialogue | system | machine | heading). More specific keys
+# win per field: speaker -> voice -> style. Fields: gain_db, semitones, hp_hz, lp_hz,
+# tilt_db, robot_hz/robot_mix, ring_hz/ring_mix. The defaults below ship built in.
 _DSP_DEFAULTS: dict[str, dict] = {
     "thought": {"gain_db": -1.5, "hp_hz": 115.0, "lp_hz": 3600.0},
     "system": {"gain_db": -1.0, "hp_hz": 250.0, "lp_hz": 3900.0, "tilt_db": 2.0},
     "chat": {"gain_db": -3.0, "hp_hz": 300.0, "lp_hz": 3400.0, "tilt_db": 1.0},
+    # monotone vocoder robot, a little ring-mod grit, band-limited like a speaker
+    "machine": {"robot_hz": 110.0, "robot_mix": 0.85, "ring_hz": 55.0, "ring_mix": 0.25,
+                "hp_hz": 180.0, "lp_hz": 5000.0, "tilt_db": 1.0},
 }
 
 

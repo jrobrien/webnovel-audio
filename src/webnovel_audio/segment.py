@@ -43,7 +43,7 @@ _STOPWORDS = set(
 class Segment:
     text: str
     voice: str
-    style: str = "narration"      # narration | thought | dialogue | system | heading | chat
+    style: str = "narration"      # narration | thought | dialogue | system | machine | heading | chat
     rate: float = 1.0
     pitch: float = 0.0
     pause_after_ms: int = 0
@@ -143,6 +143,63 @@ def _assign_chat_voice(user: str, cfg, assigned: dict[str, str]) -> str:
     return pick
 
 
+def _slice_block(b: Block, a: int, e: int) -> Block:
+    """b.text[a:e] as its own block, italic spans clipped and re-based."""
+    italic = [(max(x, a) - a, min(y, e) - a) for x, y in b.italic if min(y, e) > max(x, a)]
+    return Block(kind=b.kind, text=b.text[a:e], italic=italic, meta=b.meta)
+
+
+def machine_pieces(blocks: list[Block], cfg):
+    """Yield (block, is_machine), splitting out text wrapped in the series'
+    machine marker (`cfg.synth.machine_marker`, e.g. `//`).
+
+    The marker toggles, so it works inline (`She answered. //5B.//`), around one
+    paragraph, and around a run of them (`//Status:` … stat box … `End
+    Report.//`). Authors sometimes never close a run, so an open run also ends
+    at the first plain (non-italic, non-system) paragraph with no marker in it,
+    and at any heading, scene break or chat line; and a marker that starts a
+    block always opens, one that ends it always closes. Marker characters are dropped;
+    a piece left with no letters or digits (the `.` of `Report//.`) goes too.
+    """
+    marker = cfg.synth.machine_marker
+    if not marker:
+        for b in blocks:
+            yield b, False
+        return
+    mark = re.compile(rf"(?<!:){re.escape(marker)}")     # not the `//` of a URL
+    open_ = False
+    for b in blocks:
+        if b.kind not in ("paragraph", "system"):
+            open_ = False
+            yield b, False
+            continue
+        hits = [m.span() for m in mark.finditer(b.text)]
+        if (open_ and not hits and b.kind == "paragraph"
+                and _italic_share(b) < cfg.synth.thought_threshold):
+            open_ = False
+        if not hits:
+            yield b, open_
+            continue
+        pos = 0
+        for a, e in hits:
+            if any(ch.isalnum() for ch in b.text[pos:a]):
+                yield _slice_block(b, pos, a), open_
+            if not b.text[:a].strip():
+                open_ = True                    # leading marker always opens
+            elif not b.text[e:].strip(" .!?…"):
+                open_ = False                   # trailing one (`Report//.`) always closes
+            else:
+                open_ = not open_
+            pos = e
+        if any(ch.isalnum() for ch in b.text[pos:]):
+            yield _slice_block(b, pos, len(b.text)), open_
+
+
+def _italic_share(b: Block) -> float:
+    n = len(b.text)
+    return sum(min(y, n) - max(x, 0) for x, y in b.italic if min(y, n) > max(x, 0)) / n if n else 0.0
+
+
 def build_segments(blocks: list[Block], cfg, lexicon=None, nlp=None) -> list[Segment]:
     from .dialogue import Attributor, split_paragraph
 
@@ -152,7 +209,28 @@ def build_segments(blocks: list[Block], cfg, lexicon=None, nlp=None) -> list[Seg
     chat_voices: dict[str, str] = {}
     chat_run_open = False
 
-    for block in blocks:
+    for block, machine in machine_pieces(blocks, cfg):
+        if machine:
+            chat_run_open = False
+            norm = normalize_system if block.kind == "system" else normalize_text
+            raw = " ".join(norm(block.text).split())
+            for sent in split_sentences(raw) or [raw]:
+                text = _finish(sent, lexicon, nlp).strip()
+                if not text:
+                    continue
+                if text[-1] == ":":
+                    text = text[:-1] + "."
+                elif text[-1] not in ".!?…":
+                    text += "."                 # unterminated -> Kokoro clips the last word
+                segs.append(Segment(
+                    text=text, voice=cfg.voices.machine or cfg.voices.system_ui,
+                    style="machine", rate=round(cfg.synth.speed * cfg.synth.machine_rate, 3),
+                    pause_after_ms=cfg.pauses.sentence_ms,
+                ))
+            if segs and segs[-1].style == "machine":
+                segs[-1].pause_after_ms = cfg.pauses.paragraph_ms
+            continue
+
         if block.kind == "chat":
             user = block.meta.get("user", "")
             location = block.meta.get("location", "")

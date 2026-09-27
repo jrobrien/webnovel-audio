@@ -17,6 +17,7 @@ narrator          = "am_michael"
 thought           = "bm_george"   # internal monologue
 dialogue_default  = "am_michael"  # dialogue whose speaker isn't in [cast.voices]
 system_ui         = "af_sky"      # LitRPG status boxes / stat lines
+# machine         = "af_kore"     # [synth] machine_marker text; unset = system_ui
 
 [cast]
 # Per-series casting (example: the samples/salvage-run-ch1.html fixture).
@@ -52,6 +53,9 @@ speed             = 1.0
 sample_rate       = 24000
 system_rate       = 1.06       # LitRPG status boxes read a touch faster than prose
 thought_threshold = 0.6        # fraction of a sentence that must be italic to become "thought"
+# machine_marker  = "//"         # per series: //…// (inline or across paragraphs) is an AI /
+#                                # system voice -> style "machine", robotized by [dsp.machine]
+# machine_rate    = 1.0
 
 [pauses]
 sentence_ms       = 260
@@ -93,6 +97,15 @@ gain_db = -3.0            # sit chat behind the narration
 hp_hz   = 300
 lp_hz   = 3400            # band-limited -> "stream chat TTS" feel
 tilt_db = 1.0
+
+# Built in; override any field. robot_hz = the monotone pitch the vocoder
+# robot speaks at, robot_mix = how much of it (0 dry .. 1 full robot);
+# ring_hz/ring_mix = ring-modulator grit.
+# [dsp.machine]
+# robot_hz  = 110
+# robot_mix = 0.85
+# ring_hz   = 55
+# ring_mix  = 0.25
 
 [dsp.Resk]
 semitones = -1.0           # example: nudge one character's voice lower

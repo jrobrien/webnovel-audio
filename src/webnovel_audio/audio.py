@@ -67,13 +67,50 @@ def pitch_shift(x: np.ndarray, sr: int, semitones: float) -> np.ndarray:
     return (stretched[lo] * (1.0 - frac) + stretched[lo + 1] * frac).astype("float32")
 
 
+def robotize(x: np.ndarray, sr: int, hz: float, mix: float = 1.0, frame: int = 1024) -> np.ndarray:
+    """The classic vocoder robot: STFT frames resynthesised with their phase
+    thrown away and laid down one fixed period apart, so the spectral envelope
+    (the words) survives but every pitch contour collapses to a monotone `hz`.
+    `mix` blends it with the dry signal."""
+    if x.size < frame * 2 or hz <= 0:
+        return x
+    hop = max(1, int(round(sr / hz)))
+    win = np.hanning(frame).astype("float32")
+    pad = np.pad(x.astype("float32"), (frame // 2, frame))
+    starts = range(0, pad.size - frame, hop)
+    out = np.zeros(pad.size, dtype="float32")
+    norm = np.zeros(pad.size, dtype="float32")
+    for a in starts:
+        mag = np.abs(np.fft.rfft(pad[a:a + frame] * win))
+        grain = np.fft.fftshift(np.fft.irfft(mag, n=frame)).astype("float32") * win
+        out[a:a + frame] += grain
+        norm[a:a + frame] += win * win
+    norm[norm < 1e-6] = 1.0
+    wet = (out / norm)[frame // 2: frame // 2 + x.size]
+    rms_in = float(np.sqrt(np.mean(x * x))) or 1.0
+    rms_wet = float(np.sqrt(np.mean(wet * wet))) or 1.0
+    wet *= rms_in / rms_wet
+    return ((1.0 - mix) * x + mix * wet).astype("float32")
+
+
+def ring_mod(x: np.ndarray, sr: int, hz: float, mix: float) -> np.ndarray:
+    """Multiply by a sine carrier: metallic sidebands, the 'Dalek' grit."""
+    t = np.arange(x.size, dtype="float32") / sr
+    return (x * ((1.0 - mix) + mix * np.sin(2 * np.pi * hz * t))).astype("float32")
+
+
 def apply_chain(x: np.ndarray, sr: int, spec: dict) -> np.ndarray:
-    """Run one effect chain: {semitones, hp_hz, lp_hz, tilt_db, gain_db}."""
+    """Run one effect chain: {semitones, robot_hz, robot_mix, ring_hz, ring_mix,
+    hp_hz, lp_hz, tilt_db, gain_db}."""
     if x is None or x.size == 0 or not spec:
         return x
     st = float(spec.get("semitones", 0.0) or 0.0)
     if abs(st) >= 0.05:
         x = pitch_shift(x, sr, st)
+    if spec.get("robot_hz"):
+        x = robotize(x, sr, float(spec["robot_hz"]), float(spec.get("robot_mix", 1.0)))
+    if spec.get("ring_hz") and spec.get("ring_mix"):
+        x = ring_mod(x, sr, float(spec["ring_hz"]), float(spec["ring_mix"]))
     if spec.get("hp_hz") or spec.get("lp_hz") or spec.get("tilt_db"):
         x = _shape(x, sr, spec.get("hp_hz"), spec.get("lp_hz"), spec.get("tilt_db"))
     g = float(spec.get("gain_db", 0.0) or 0.0)
