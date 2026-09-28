@@ -90,6 +90,12 @@ for curly-apostrophe or other punctuation variants; normalization covers them.
 - If you truly can't tell whether it's grammar-dependent, ask the user
   rather than guessing — a wrong POS scope silently leaves other uses of the
   word unfixed.
+- **Before scoping, check the tag the tagger actually assigns**, in the real
+  sentence: `webnovel-audio tagger test "<sentence>"` prints a `tags:` line.
+  A POS rule only fires if the tagger agrees; spaCy calls `pasty` a NOUN
+  even in "pale and pasty". If it mis-tags the word, don't scope by POS:
+  make the common sense unscoped and catch the other sense with phrase
+  rules, which are matched first (`Cornish pasty`, `pasties`).
 
 ## 4. Preview the new reading — BEFORE touching the lexicon
 
