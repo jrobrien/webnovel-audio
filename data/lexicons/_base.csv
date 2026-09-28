@@ -138,3 +138,7 @@ coup d'état,,koo day-tah,French; espeak says KOOP DEH-tat
 coup d'etat,,koo day-tah,French; espeak says KOOP DEH-tat
 coups d'état,,koo day-tah,French; espeak says KOOP DEH-tat
 coups d'etat,,koo day-tah,French; espeak says KOOP DEH-tat
+pasty,,paystee,pale; spaCy tags it NOUN even as an adjective, so unscoped (a Cornish pasty would also say PAY-stee)
+Cornish pasty,,Cornish pass-tee,the pastry; beats the unscoped pasty rule
+Cornish pasties,,Cornish pass-teez,the pastry
+pasties,,pass-teez,plural is always the pastry
