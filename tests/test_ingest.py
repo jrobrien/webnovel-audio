@@ -4,7 +4,7 @@ import numpy as np
 
 from webnovel_audio.audio import inner_voice
 from webnovel_audio.config import Config
-from webnovel_audio.ingest import parse_document
+from webnovel_audio.providers.royalroad import parse_chapter
 from webnovel_audio.segment import build_segments
 
 SYNTHETIC = """
@@ -26,7 +26,7 @@ SYNTHETIC = """
 
 
 def _doc():
-    return parse_document(SYNTHETIC, url="http://example/x")
+    return parse_chapter(SYNTHETIC, url="http://example/x")
 
 
 def test_metadata_split():
@@ -90,7 +90,7 @@ def test_real_royalroad_fixture_if_present():
     path = os.path.join(os.path.dirname(__file__), "..", "samples", "salvage-run-ch1.html")
     if not os.path.exists(path):
         return
-    doc = parse_document(open(path, encoding="utf-8").read())
+    doc = parse_chapter(open(path, encoding="utf-8").read())
     joined = " ".join(b.text for b in doc.blocks)
     assert "lifted from its home" not in joined        # anti-piracy decoy stripped
     kinds = [b.kind for b in doc.blocks]

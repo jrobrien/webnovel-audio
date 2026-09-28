@@ -101,7 +101,7 @@ def _series_or_all(cfg, key: str | None, want_json: bool):
 
     if not key or key == _SCOPE_ALL:
         return None
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     try:
         row = db.get_series(key)
     finally:
@@ -234,9 +234,18 @@ def _one_off(stage: str, args, cfg: Config) -> int:
         return _explain(args.target, cfg) if getattr(args, "explain", False) \
             else _write_md(args.target, cfg)
     if stage == "fetched":
-        from .ingest import fetch_html
+        from . import providers
+        from .providers.http import PoliteClient
         out = getattr(args, "out", None) or "chapter.html"
-        html = fetch_html(args.target)
+        prov = providers.resolve(args.target)
+        if prov is not None:
+            html = prov.fetch(prov.ref_for(args.target), providers.context(cfg, prov))
+        else:
+            client = PoliteClient(delay=0)
+            try:
+                html = client.text(args.target)
+            finally:
+                client.close()
         with open(out, "w", encoding="utf-8") as fh:
             fh.write(html)
         print(f"saved {out} ({len(html)} bytes)")
@@ -1086,11 +1095,11 @@ def _bundle_dir_for(cfg: Config, slug: str) -> str:
     library layout for a slug that isn't tracked."""
     from . import bundle
     from .db import DB
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     try:
         s = db.get_series(slug)
         return bundle.bundle_dir(cfg, s) if s else os.path.join(
-            os.path.expanduser(cfg.royalroad.library_dir), slug)
+            os.path.expanduser(cfg.library.library_dir), slug)
     finally:
         db.close()
 
@@ -1110,7 +1119,7 @@ def _resolve_scope(cfg, scope: str | None, want_json: bool):
     if scope is None or scope == _SCOPE_BASE:
         return base, base, None
 
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     try:
         row = db.get_series(scope)
     finally:
@@ -1314,7 +1323,7 @@ def _cmd_cast(args) -> int:
 
     cfg = Config.load(args.config)
     want_json = getattr(args, "json", False)
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     try:
         s = db.get_series(args.scope)
         if not s:
@@ -1392,7 +1401,7 @@ def _cmd_state(args) -> int:
 
     cfg = Config.load(args.config)
     want_json = getattr(args, "json", False)
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     try:
         s = db.get_series(args.scope)
         if not s:
@@ -1435,8 +1444,8 @@ def _cmd_state(args) -> int:
                  "audio_path": c["audio_path"], "text_path": c["text_path"],
                  "narrator": c["narrator"],
                  "volume_chapter": c["volume_chapter"],
-                 "volume_index": (vmap.get(c["volume_rr_id"]) or {}).get("index"),
-                 "volume_title": (vmap.get(c["volume_rr_id"]) or {}).get("title"),
+                 "volume_index": (vmap.get(c["volume_source_id"]) or {}).get("index"),
+                 "volume_title": (vmap.get(c["volume_source_id"]) or {}).get("title"),
                  "unlocked": bool(c["unlocked"])} for c in rows]})
             return 0
         print(f"{s['title']}  [{s['slug']}]")
@@ -1538,7 +1547,7 @@ def _cmd_cache(args) -> int:
 
     cfg = Config.load(args.config)
     want_json = getattr(args, "json", False)
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     try:
         if args.action in ("prune", "clear"):
             return _cmd_cache_destructive(args, cfg, db, bundle, cache, want_json)
@@ -1686,7 +1695,7 @@ def _cmd_series_bundle(args, cfg, db, bundle, want_json: bool) -> int:
         return 0
 
     # scan
-    root = args.root or os.path.expanduser(cfg.royalroad.library_dir)
+    root = args.root or os.path.expanduser(cfg.library.library_dir)
     results = bundle.scan(cfg, db, root, dry_run=args.dry_run)
     if want_json:
         _jprint({"ok": True, "root": root, "results": results})
@@ -1734,7 +1743,7 @@ def _cmd_series(args) -> int:
     if args.action in ("export", "import", "scan", "path", "migrate",
                        "archive", "reclaim"):
         from . import bundle
-        db = DB(cfg.royalroad.state_db)
+        db = DB(cfg.library.state_db)
         try:
             return _cmd_series_bundle(args, cfg, db, bundle, want_json)
         except bundle.BundleError as exc:
@@ -1743,7 +1752,7 @@ def _cmd_series(args) -> int:
             db.close()
 
     if args.action in ("enable", "disable", "priority", "forget", "show"):
-        db = DB(cfg.royalroad.state_db)
+        db = DB(cfg.library.state_db)
         try:
             s = db.get_series(args.scope)
             if not s:
@@ -1853,7 +1862,7 @@ def _cmd_series(args) -> int:
 
     # default: list
     from . import bundle
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     rows = db.summary()
     db.close()
     for r in rows:
@@ -1975,15 +1984,15 @@ def _cmd_config(args) -> int:
         "executable": venv_bin if os.path.exists(venv_bin)
         else (shutil.which("webnovel-audio") or "webnovel-audio"),
         "project_dir": project,
-        "state_db": os.path.abspath(os.path.expanduser(cfg.royalroad.state_db)),
-        "library_dir": os.path.abspath(os.path.expanduser(cfg.royalroad.library_dir)),
+        "state_db": os.path.abspath(os.path.expanduser(cfg.library.state_db)),
+        "library_dir": os.path.abspath(os.path.expanduser(cfg.library.library_dir)),
         "lexicon_dir": resolve_data_path(cfg.general.lexicon_dir or "data/lexicons"),
         "base_lexicon": (os.path.abspath(os.path.expanduser(cfg.general.base_lexicon))
                          if cfg.general.base_lexicon else ""),
         "series_config_dir": resolve_data_path(
             cfg.general.series_config_dir or "data/series"),
         "models_dir": cfg.general.models_dir,
-        "request_delay": cfg.royalroad.request_delay,
+        "providers": cfg.providers,
         "backend": cfg.synth.backend,
         "narrator": cfg.cast.narrator or cfg.voices.narrator,
         "voices": _EN_VOICES,
@@ -2013,60 +2022,78 @@ def _cmd_config(args) -> int:
     return 0
 
 
+def _login_provider(name: str | None):
+    """The provider `login` acts on: the named one, else the only one with a
+    session."""
+    from . import providers
+
+    able = providers.with_session()
+    if name:
+        prov = providers.get(name)
+        if prov.session is None:
+            raise SystemExit(f"{name} has no login "
+                             f"(ones that do: {', '.join(p.name for p in able)})")
+        return prov
+    if len(able) != 1:
+        raise SystemExit("say which site: --provider "
+                         + " | ".join(p.name for p in able))
+    return able[0]
+
+
 def _cmd_login(args) -> int:
-    """Store (or clear) a royalroad.com session cookie.
+    """Store (or clear) a site's session cookie.
 
     Deliberately does not verify: that would need an account page whose markup
     drifts, and a bad cookie is reported honestly where it matters — `fetch`
     says so when a chapter is locked.
     """
-    from .royalroad import (SESSION_FILE, clear_session, load_session,
-                            parse_cookie_header, parse_cookies_txt, save_session)
+    from .providers.session import parse_cookie_header
 
     want_json = getattr(args, "json", False)
+    sess = _login_provider(getattr(args, "provider", None)).session
 
     if args.logout:
-        clear_session()
+        sess.clear()
         if want_json:
             _jprint({"ok": True, "stored": False, "cleared": True})
         else:
             print("session cleared.")
         return 0
     if args.status:
-        cookies = load_session()
+        cookies = sess.load()
         if want_json:
             _jprint({"ok": bool(cookies), "stored": bool(cookies),
                      "cookies": len(cookies or []),
-                     "file": SESSION_FILE if cookies else None,
+                     "file": sess.path if cookies else None,
                      "verified": False})
             return 0 if cookies else 1
         if cookies:
             import time
             when = time.strftime("%Y-%m-%d %H:%M",
-                                 time.localtime(os.path.getmtime(SESSION_FILE)))
-            print(f"{len(cookies)} cookie(s) stored {when} -> {SESSION_FILE}")
+                                 time.localtime(os.path.getmtime(sess.path)))
+            print(f"{len(cookies)} cookie(s) stored {when} -> {sess.path}")
             print("  (not verified — a stale cookie shows up as a failed fetch)")
         else:
             print("no session stored; chapter fetches are anonymous.")
         return 0 if cookies else 1
 
     if args.cookies_file:
-        cookies = parse_cookies_txt(args.cookies_file)
+        cookies = sess.parse_cookies_txt(args.cookies_file)
     elif args.cookie:
         cookies = parse_cookie_header(args.cookie)
     else:
-        print("paste the Cookie header for royalroad.com (from your browser devtools):")
+        print(f"paste the Cookie header for {sess.domain} (from your browser devtools):")
         cookies = parse_cookie_header(input().strip())
     if not cookies:
         return _fail("no_cookies", "no cookies parsed from that input",
                      hint="export cookies.txt, or copy the Cookie: header value",
                      json_mode=want_json)
-    save_session(cookies)
+    sess.save(cookies)
     if want_json:
         _jprint({"ok": True, "stored": True, "cookies": len(cookies),
-                 "file": SESSION_FILE})
+                 "file": sess.path})
     else:
-        print(f"saved {len(cookies)} cookie(s) for royalroad.com -> {SESSION_FILE}")
+        print(f"saved {len(cookies)} cookie(s) for {sess.domain} -> {sess.path}")
     return 0
 
 
@@ -2245,7 +2272,7 @@ def _build_parser():
     se_sub = se.add_subparsers(dest="action")
     a = se_sub.add_parser("add", help="start tracking (metadata only)")
     a.add_argument("--url", required=True, metavar="URL",
-                   help="fiction page URL or id")
+                   help="the series page URL on a supported site (see docs/PROVIDERS.md)")
     a.add_argument("--from", dest="frm", default="start",
                    help="mark chapters up to here as already-read and skip them: "
                         "start (default) | latest | <N> | <chapter-url>")
@@ -2574,7 +2601,9 @@ def _build_parser():
                        help="where the ONNX model files live (default: from config)")
     md.set_defaults(func=_cmd_models, action="fetch", cache_dir=None)
 
-    lg = sub.add_parser("login", help="store a royalroad.com session cookie")
+    lg = sub.add_parser("login", help="store a site's session cookie")
+    lg.add_argument("--provider", metavar="NAME", default=None,
+                    help="which site (default: the only one that has logins)")
     # Four flags, one of which is really a choice of mode: the handler checked
     # --logout first and unconditionally, so `login --status --logout` cleared the
     # session and never reported anything. Whichever lost was silently discarded,

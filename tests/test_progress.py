@@ -9,14 +9,14 @@ import pytest
 from webnovel_audio import progress
 from webnovel_audio.config import Config
 from webnovel_audio.db import DB
-from webnovel_audio.royalroad import ChapterRef, FictionInfo
+from webnovel_audio.providers import ChapterRef, SeriesInfo
 
 TS = progress.TS
 
 
 def _cfg(tmp_path, db_path):
     cfg = Config()
-    cfg.royalroad.state_db = str(db_path)
+    cfg.library.state_db = str(db_path)
     return cfg
 
 
@@ -29,11 +29,11 @@ def _seed(tmp_path, *, rendered=3, in_flight=0, gap_before_last=0.0):
     chapters that started and haven't ended (what an in-flight render looks like)."""
     path = tmp_path / "state.db"
     db = DB(str(path))
-    fi = FictionInfo(rr_id="9", slug="demo", title="Demo", author="A", url="https://rr/9")
+    fi = SeriesInfo(provider="royalroad", source_id="9", slug="demo", title="Demo", author="A", url="https://rr/9")
     sid = db.upsert_series(fi)
     n = rendered + in_flight
     db.replace_chapters(sid, [
-        ChapterRef(rr_id=str(100 + i), order=i, title=f"Chapter {i + 1}", slug=f"c{i}",
+        ChapterRef(source_id=str(100 + i), order=i, title=f"Chapter {i + 1}", slug=f"c{i}",
                    url=f"https://rr/{100 + i}", published_at="2026-01-01", unlocked=True)
         for i in range(n)])
     chs = db.chapters(sid)

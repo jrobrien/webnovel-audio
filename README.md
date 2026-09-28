@@ -435,11 +435,12 @@ but tkinter is the supported and tested host.
 
 ### Adding a content source
 
-Royal Road and local `.html` are **providers** (`src/webnovel_audio/providers.py`);
-plain `.txt` is passed through as-is. A new site (webnovel.com, an mbox, …) is one
-`Provider` subclass that produces an `ingest.Document`; everything downstream —
-audio, the readable `.md`, the feed, `.m4b` — is provider-agnostic. Contract and
-sketches: [`docs/PROVIDERS.md`](docs/PROVIDERS.md).
+Royal Road, ScribbleHub and local `.html` are **providers**
+(`src/webnovel_audio/providers/`); plain `.txt` is passed through as-is. A new
+site is one `Provider` subclass in its own module that produces a
+`document.Document`; everything downstream — audio, the readable `.md`, the
+feed, `.m4b` — is provider-agnostic, and a test keeps site knowledge out of it.
+Contract: [`docs/PROVIDERS.md`](docs/PROVIDERS.md).
 
 Per-series overrides live in the bundle: `library/<slug>/config.toml` takes any
 `config.toml` section and is merged over the base config for that series.
@@ -607,8 +608,9 @@ directory; `-c` for a different one):
 `[general]` `base_lexicon` (always-on) + cache/model paths · `[voices]` fallback voices · `[cast]` + `[cast.voices]`
 per-series casting (`seed_chapters` = `check`'s default sample window) · `[chat]` livestream-chat behaviour · `[synth]`
 (`thought_threshold`, `system_rate`) · `[pauses]` · `[audio]` loudness ·
-`[dsp.*]` effect chains keyed by speaker / voice / style · `[royalroad]`
-(`library_dir`, `state_db`, `request_delay`) · `[serve]` (`host`, `port`) ·
+`[dsp.*]` effect chains keyed by speaker / voice / style · `[library]`
+(`library_dir`, `state_db`) · one table per provider (`[royalroad]`,
+`[scribblehub]`: `request_delay`) · `[serve]` (`host`, `port`) ·
 `[book]` bitrate.
 
 ## Development

@@ -107,6 +107,13 @@ def _show_notes(series, c, vol, num, dur):
     return plain, html
 
 
+def _guid_prefix(series) -> str:
+    """GUIDs must never change once published, or podcast apps re-download
+    every episode; the provider owns its prefix."""
+    from . import providers
+    return providers.get(_col(series, "provider", "")).guid
+
+
 def build_feed(series, chapters, base_url: str, *, self_url: str = "",
                cover_local: bool = False, volumes: dict | None = None) -> str:
     volumes = volumes or {}
@@ -123,9 +130,10 @@ def build_feed(series, chapters, base_url: str, *, self_url: str = "",
         cover = series["cover_url"] or ""
 
     now = _dt.datetime.now(_dt.timezone.utc)
+    guid = _guid_prefix(series)
     items = []
     for c in rendered:
-        vid = _col(c, "volume_rr_id")
+        vid = _col(c, "volume_source_id")
         vol = volumes.get(vid) if vid else None
         fname = os.path.basename(c["audio_path"])
         size = os.path.getsize(c["audio_path"])
@@ -140,7 +148,7 @@ def build_feed(series, chapters, base_url: str, *, self_url: str = "",
         items.append(
             "    <item>\n"
             f"      <title>{escape(title)}</title>\n"
-            f"      <guid isPermaLink=\"false\">rr-{escape(str(c['rr_id']))}</guid>\n"
+            f"      <guid isPermaLink=\"false\">{escape(guid)}-{escape(str(c['source_id']))}</guid>\n"
             f"      <pubDate>{rfc822(c['published_at'], now)}</pubDate>\n"
             f"      <itunes:episode>{episode}</itunes:episode>\n"
             + (f"      <itunes:season>{vol['index']}</itunes:season>\n" if vol else "")

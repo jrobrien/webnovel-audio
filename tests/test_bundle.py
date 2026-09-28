@@ -13,26 +13,27 @@ from webnovel_audio.db import DB
 
 class _Fic:
     """Minimal stand-in for a provider's series info."""
-    def __init__(self, rr_id="999", slug="test-series", n=4):
-        self.rr_id, self.slug = rr_id, slug
+    def __init__(self, source_id="999", slug="test-series", n=4):
+        self.source_id, self.slug = source_id, slug
         self.title, self.author = "Test Series", "An Author"
-        self.url = f"https://example.test/fiction/{rr_id}"
+        self.url = f"https://example.test/fiction/{source_id}"
         self.cover_url, self.provider = "", "royalroad"
         self.tags, self.warnings = ["Fantasy", "Litrpg"], ["Gore"]
         self.status, self.rating = "ONGOING", 4.5
+        self.state = None
         self.volumes = [_Vol("10", "Volume One", 1), _Vol("11", "Volume Two", 2)]
-        self.chapters = [_Ch(rr_id, i) for i in range(n)]
+        self.chapters = [_Ch(source_id, i) for i in range(n)]
 
 
 class _Vol:
-    def __init__(self, rr_id, title, order):
-        self.rr_id, self.title, self.order = rr_id, title, order
-        self.cover_url = f"https://example.test/cover-{rr_id}.jpg"
+    def __init__(self, source_id, title, order):
+        self.source_id, self.title, self.order = source_id, title, order
+        self.cover_url = f"https://example.test/cover-{source_id}.jpg"
 
 
 class _Ch:
     def __init__(self, sid, i):
-        self.rr_id, self.order = f"{sid}-{i}", i
+        self.source_id, self.order = f"{sid}-{i}", i
         self.title, self.slug = f"Chapter {i + 1}", f"chapter-{i + 1}"
         self.url = f"https://example.test/ch/{i}"
         self.published_at, self.unlocked = "2026-01-01T00:00:00", True
@@ -43,18 +44,18 @@ class _Ch:
 def lib(tmp_path):
     """A config + DB + one populated series, laid out as today's library."""
     cfg = Config()
-    cfg.royalroad.state_db = str(tmp_path / "state.db")
-    cfg.royalroad.library_dir = str(tmp_path / "library")
+    cfg.library.state_db = str(tmp_path / "state.db")
+    cfg.library.library_dir = str(tmp_path / "library")
     cfg.general.base_lexicon = str(tmp_path / "_base.csv")
     (tmp_path / "_base.csv").write_text("surface,respell,ipa,notes\nfoo,foo,,\n")
 
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     fi = _Fic()
     sid = db.upsert_series(fi)
     db.replace_volumes(sid, fi.volumes)
     db.replace_chapters(sid, fi.chapters)
 
-    d = os.path.join(cfg.royalroad.library_dir, fi.slug)
+    d = os.path.join(cfg.library.library_dir, fi.slug)
     os.makedirs(d, exist_ok=True)
     # give one chapter a full rendered history, including the timings that
     # file-presence inference could never recover
@@ -201,7 +202,7 @@ def test_missing_bundle_is_a_supported_state(lib):
                                               "path": os.path.abspath(d)}
     # still tracked: removal stays explicit
     assert db.get_series("999") is not None
-    results = bundle.scan(cfg, db, cfg.royalroad.library_dir)
+    results = bundle.scan(cfg, db, cfg.library.library_dir)
     assert [r["action"] for r in results] == ["missing"]
 
 
@@ -217,7 +218,7 @@ def test_scan_imports_and_relocates(lib, tmp_path):
     cfg, db, s, d = lib
     bundle.sync_bundle(cfg, db, s)
     fresh = DB(str(tmp_path / "fresh.db"))
-    out = bundle.scan(cfg, fresh, cfg.royalroad.library_dir)
+    out = bundle.scan(cfg, fresh, cfg.library.library_dir)
     assert [r["action"] for r in out] == ["add"]
     assert fresh.get_series("999")["path"] == os.path.abspath(d)
     fresh.close()
@@ -227,7 +228,7 @@ def test_scan_dry_run_writes_nothing(lib, tmp_path):
     cfg, db, s, d = lib
     bundle.sync_bundle(cfg, db, s)
     fresh = DB(str(tmp_path / "fresh.db"))
-    out = bundle.scan(cfg, fresh, cfg.royalroad.library_dir, dry_run=True)
+    out = bundle.scan(cfg, fresh, cfg.library.library_dir, dry_run=True)
     assert out[0]["dry_run"] and out[0]["action"] == "add"
     assert fresh.list_series() == []
     fresh.close()
@@ -249,7 +250,7 @@ def test_corrupt_manifest_reports_rather_than_raises_in_scan(lib):
     cfg, db, s, d = lib
     bundle.sync_bundle(cfg, db, s)
     open(os.path.join(d, bundle.MANIFEST), "w").write("schema = [oops\n")
-    out = bundle.scan(cfg, db, cfg.royalroad.library_dir)
+    out = bundle.scan(cfg, db, cfg.library.library_dir)
     assert out[0]["ok"] is False and out[0]["code"] == "bad_manifest"
 
 
@@ -278,11 +279,11 @@ def test_new_series_gets_a_uuid_on_insert(tmp_path):
     """Regression: the migration backfill runs at open time, so a series added
     afterwards had uuid=NULL until the next process started."""
     db = DB(str(tmp_path / "s.db"))
-    db.upsert_series(_Fic(rr_id="321", slug="later"))
+    db.upsert_series(_Fic(source_id="321", slug="later"))
     row = db.get_series("321")
     assert row["uuid"]
     first = row["uuid"]
-    db.upsert_series(_Fic(rr_id="321", slug="later"))     # re-add must not re-identify
+    db.upsert_series(_Fic(source_id="321", slug="later"))     # re-add must not re-identify
     assert db.get_series("321")["uuid"] == first
     db.close()
 
@@ -610,10 +611,10 @@ def test_reclaim_keeps_a_key_not_yet_in_every_owning_bundle(legacy, tmp_path):
     bundles hold their own."""
     import hashlib
     cfg, db, s, d = legacy
-    other = _Fic(rr_id="777", slug="other-series")
+    other = _Fic(source_id="777", slug="other-series")
     sid2 = db.upsert_series(other)
     db.replace_chapters(sid2, other.chapters)
-    d2 = os.path.join(cfg.royalroad.library_dir, "other-series")
+    d2 = os.path.join(cfg.library.library_dir, "other-series")
     os.makedirs(os.path.join(d2, "chapters"), exist_ok=True)
     json.dump([{"kind": "speech", "text": "line 1", "voice": "am_michael",
                 "style": "narration", "rate": 1.0, "pitch": 0.0}],

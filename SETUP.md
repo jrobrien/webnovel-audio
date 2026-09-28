@@ -10,7 +10,7 @@ paywalled chapters only).
 |---|---|
 | OS | Linux (developed on Arch/Omarchy; anything with Python + ffmpeg works) |
 | Python | 3.12 or newer. `uv` prefers the one your distro ships (`python-preference = "system"` in `pyproject.toml`) — its Tk is built with Xft, which the control UI needs to render quotes and dashes. A uv-downloaded or conda Python is not, and `ui` will say so. |
-| [`uv`](https://docs.astral.sh/uv/) | package/venv manager — `curl -LsSf https://astral.sh/uv/install.sh | sh` |
+| [`uv`](https://docs.astral.sh/uv/) | package/venv manager — `curl -LsSf https://astral.sh/uv/install.sh \| sh` |
 | `ffmpeg` | on `PATH` (`ffmpeg -version`) — used for mastering, Opus, and `.m4b` |
 | `qrencode` | optional — `serve` shows a scannable QR of the feed URL if present (`pacman -S qrencode`; `libsixel` too for `qr -s`) |
 | Disk | ~400 MB for the Kokoro model, plus ~8 MB per rendered chapter |
@@ -54,9 +54,9 @@ most likely to touch:
 |---|---|
 | `[synth] backend` | `kokoro` (real audio) or `null` (silent stand-in, for testing the pipeline fast) |
 | `[voices] narrator` / `thought` / `system_ui` | default Kokoro voices (`webnovel-audio` has 54; English ids start `af_/am_/bf_/bm_`) |
-| `[royalroad] library_dir` | where rendered chapters are written (default `library/` under the working dir) |
-| `[royalroad] state_db` | SQLite tracking file (default `~/.local/state/webnovel-audio/state.db`) |
-| `[royalroad] request_delay` | seconds between requests to royalroad.com (be polite; default 2.5) |
+| `[library] library_dir` | where rendered chapters are written (default `library/` under the working dir) |
+| `[library] state_db` | SQLite tracking file (default `~/.local/state/webnovel-audio/state.db`) |
+| `[royalroad] request_delay`, `[scribblehub] request_delay` | seconds between requests to that site (be polite; default 2.5) |
 | `[serve] port` / `base_url` | the LAN feed server |
 | `[general] base_lexicon` | always-on respelling CSV (`data/lexicons/_base.csv`) applied to every series; a per-series row for the same word wins. `""` to disable |
 | `[general] lexicon_dir` / `series_config_dir` | pre-bundle fallbacks, still read for a tree that has not been migrated |
@@ -209,6 +209,8 @@ early-access). Credentials are never stored — only the session cookie.
    # or:  uv run webnovel-audio login --cookie-header "name=value; name2=value2"
    uv run webnovel-audio login --status     # is one stored? (does NOT verify it)
    ```
+   `--provider royalroad` picks the site; it's optional while Royal Road is
+   the only provider with logins.
 
 Stored at `~/.config/webnovel-audio/session.json` (mode 600). `login --logout`
 forgets it.
@@ -285,8 +287,11 @@ paths above. Nothing else is touched; no system packages are installed.
 - **`models fetch` fails** — network/proxy issue; the files are two GitHub-release
   URLs (see `src/webnovel_audio/synth/kokoro.py`), download them manually into
   `~/.cache/webnovel-audio/`.
-- **royalroad.com returns 429** — raise `[royalroad] request_delay`; `sync` also
-  backs off and retries automatically.
+- **a site returns 429** — raise that provider's `request_delay` (`[royalroad]`,
+  `[scribblehub]`); `sync` also backs off and retries automatically.
+- **`config: library_dir, state_db now belong under [library]`** — a config
+  from before 0.3; move those two keys from `[royalroad]` into a `[library]`
+  table.
 - **`serve` prints a `ConnectionResetError` traceback when a phone connects** —
   harmless: phones open extra speculative / HTTPS-probe TCP connections and drop
   them. Silenced as of the current version; if you still see it, update. The feed

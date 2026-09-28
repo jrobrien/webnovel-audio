@@ -116,10 +116,9 @@ class Pauses:
 
 
 @dataclass
-class RoyalRoad:
+class Library:
     library_dir: str = "library"
     state_db: str = "~/.local/state/webnovel-audio/state.db"
-    request_delay: float = 2.5       # seconds between royalroad.com requests
 
 
 @dataclass
@@ -163,6 +162,25 @@ def _build(dc, data: dict | None):
     return dc(**{k: v for k, v in (data or {}).items() if k in names})
 
 
+_CORE_SECTIONS = {"general", "voices", "cast", "chat", "synth", "pauses", "audio",
+                  "library", "serve", "book", "dsp", "metadata"}
+
+
+def _provider_sections(data: dict) -> dict:
+    """Every other top-level table belongs to a content provider, keyed by
+    the provider's name. Core never reads inside them."""
+    out = {}
+    for name, table in data.items():
+        if name in _CORE_SECTIONS or not isinstance(table, dict):
+            continue
+        stale = sorted({"library_dir", "state_db"} & set(table))
+        if stale:
+            raise SystemExit(f"config: {', '.join(stale)} now belong under [library], "
+                             f"not [{name}]")
+        out[name] = dict(table)
+    return out
+
+
 def _merge_dsp(user: dict | None) -> dict:
     out = {k: dict(v) for k, v in _DSP_DEFAULTS.items()}
     for key, spec in (user or {}).items():
@@ -179,11 +197,12 @@ class Config:
     synth: Synth = field(default_factory=Synth)
     pauses: Pauses = field(default_factory=Pauses)
     audio: Audio = field(default_factory=Audio)
-    royalroad: RoyalRoad = field(default_factory=RoyalRoad)
+    library: Library = field(default_factory=Library)
     serve: Serve = field(default_factory=Serve)
     book: Book = field(default_factory=Book)
     dsp: dict = field(default_factory=lambda: _merge_dsp(None))
     metadata: dict = field(default_factory=dict)
+    providers: dict = field(default_factory=dict)   # [<provider name>] tables
 
     def overlay(self, path: str | None) -> "Config":
         """Return a copy of this config with the TOML at `path` merged over it.
@@ -199,7 +218,7 @@ class Config:
         c = copy.deepcopy(self)
         for name, sub in (("general", c.general), ("voices", c.voices), ("cast", c.cast),
                           ("chat", c.chat), ("synth", c.synth), ("pauses", c.pauses),
-                          ("audio", c.audio), ("royalroad", c.royalroad),
+                          ("audio", c.audio), ("library", c.library),
                           ("serve", c.serve), ("book", c.book)):
             allowed = {f.name for f in fields(sub)}
             for k, v in (data.get(name) or {}).items():
@@ -208,6 +227,8 @@ class Config:
         for key, spec in (data.get("dsp") or {}).items():
             c.dsp.setdefault(key, {}).update(spec)
         c.metadata = {**c.metadata, **(data.get("metadata") or {})}
+        for name, table in _provider_sections(data).items():
+            c.providers.setdefault(name, {}).update(table)
         return c
 
     @classmethod
@@ -227,9 +248,10 @@ class Config:
             synth=_build(Synth, data.get("synth")),
             pauses=_build(Pauses, data.get("pauses")),
             audio=audio,
-            royalroad=_build(RoyalRoad, data.get("royalroad")),
+            library=_build(Library, data.get("library")),
             serve=_build(Serve, data.get("serve")),
             book=_build(Book, data.get("book")),
             dsp=_merge_dsp(data.get("dsp")),
             metadata=data.get("metadata", {}) or {},
+            providers=_provider_sections(data),
         )

@@ -1,30 +1,25 @@
-"""HTML ingest: a chapter web page (or saved .html) -> Blocks + metadata.
+"""Site-agnostic HTML -> Blocks toolkit for providers that read web pages.
 
-Tuned for Royal Road, but the shape is generic. Two jobs matter here:
+Nothing here knows any site. A provider picks the content container, title
+and author out of its own markup, then hands the container to
+`blocks_from_container`. Two jobs matter here:
 
-  1. Strip Royal Road's anti-piracy decoy text. RR injects a `<style>` rule like
-     `.<random>{display:none}` and drops a paragraph/span with that class into the
-     chapter body ("Unauthorized content usage: ..."). We parse the stylesheets,
-     collect every selector that hides content, and decompose matching nodes
-     (plus inline `display:none`, `hidden`, `aria-hidden`) before reading text.
+  1. Drop hidden text. Some sites inject decoy paragraphs hidden by a CSS
+     rule (`.<random>{display:none}`); `hidden_class_names` collects every
+     class a page's stylesheets hide and `strip_hidden` removes those nodes
+     plus inline `display:none`, `hidden` and `aria-hidden`.
 
-  2. Preserve italics. Whole-sentence / whole-paragraph italics in this genre are
-     internal monologue; `segment.build_segments` routes those to the `thought`
-     voice. We record italic character ranges on the raw block text so the
-     segmenter can measure per-sentence coverage.
+  2. Preserve italics. Whole-sentence / whole-paragraph italics in this genre
+     are internal monologue; `segment.build_segments` routes those to the
+     `thought` voice, so italic character ranges are recorded on each block.
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
 
 from bs4 import BeautifulSoup, Tag
 
-from .normalize import Block
-
-USER_AGENT = (
-    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0"
-)
+from ..normalize import Block
 
 _ITALIC_TAGS = {"em", "i"}
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
@@ -54,7 +49,11 @@ _SYSTEM_KEYWORDS = {
 _HANDLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_. ]*$")
 
 
-def _parse_chat(text: str) -> dict | None:
+def soup_of(html: str) -> BeautifulSoup:
+    return BeautifulSoup(html, "lxml")
+
+
+def parse_chat(text: str) -> dict | None:
     """Return {user, location, message} for a chat line, else None."""
     if not (text.startswith("[") and text.rstrip().endswith("]")):
         return None
@@ -77,32 +76,7 @@ def _parse_chat(text: str) -> dict | None:
     return {"user": user, "location": location.strip(), "message": message.strip()}
 
 
-@dataclass
-class Document:
-    blocks: list[Block]
-    fiction_title: str = ""
-    chapter_title: str = ""
-    author: str = ""
-    url: str = ""
-    next_url: str = ""
-    meta: dict = field(default_factory=dict)
-    # provenance, filled in by pipeline.load_document
-    raw_sha256: str = ""
-    raw_bytes: int = 0
-    retrieved_at: str = ""
-
-
-def fetch_html(url: str, *, timeout: float = 30.0) -> str:
-    """One polite GET. For bulk/authenticated fetching see the Phase 4 sync layer."""
-    import httpx
-
-    headers = {"User-Agent": USER_AGENT, "Accept-Language": "en-US,en;q=0.9"}
-    resp = httpx.get(url, headers=headers, follow_redirects=True, timeout=timeout)
-    resp.raise_for_status()
-    return resp.text
-
-
-def _hidden_class_names(soup: BeautifulSoup) -> set[str]:
+def hidden_class_names(soup: BeautifulSoup) -> set[str]:
     hidden: set[str] = set()
     for style in soup.find_all("style"):
         css = style.string or style.get_text() or ""
@@ -112,7 +86,7 @@ def _hidden_class_names(soup: BeautifulSoup) -> set[str]:
     return hidden
 
 
-def _strip_hidden(container: Tag, hidden_classes: set[str]) -> None:
+def strip_hidden(container: Tag, hidden_classes: set[str]) -> None:
     # executable / non-prose elements never contribute story text
     for el in list(container.find_all(
         ["script", "style", "noscript", "template", "iframe", "object", "embed", "svg"]
@@ -128,11 +102,15 @@ def _strip_hidden(container: Tag, hidden_classes: set[str]) -> None:
         style = (el.get("style") or "").replace(" ", "").lower()
         if "display:none" in style or "visibility:hidden" in style:
             el.decompose()
-    for el in list(container.find_all(class_=re.compile("author-note", re.I))):
+
+
+def drop_matching(container: Tag, class_pattern: str) -> None:
+    """Remove every element whose class matches `class_pattern` (a regex)."""
+    for el in list(container.find_all(class_=re.compile(class_pattern, re.I))):
         el.decompose()
 
 
-def _text_with_italics(el: Tag) -> tuple[str, list[tuple[int, int]]]:
+def text_with_italics(el: Tag) -> tuple[str, list[tuple[int, int]]]:
     parts: list[str] = []
     spans: list[tuple[int, int]] = []
     pos = 0
@@ -182,20 +160,30 @@ def _merge_spans(spans: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return [(a, b) for a, b in out]
 
 
-def _collapse_inline_ws(s: str) -> str:
+def collapse_inline_ws(s: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", s.replace("\n", " ")).strip()
 
 
-def _select_chapter_content(soup: BeautifulSoup) -> Tag | None:
-    for sel in ("div.chapter-content", "div.chapter-inner", "div.chapter-page"):
-        node = soup.select_one(sel)
-        if node:
-            return node
+def guess_content_container(soup: BeautifulSoup) -> Tag | None:
+    """Last resort for markup nobody has taught us: the div with most <p>s.
+    Beware it can pick a whole-page wrapper; providers should select their
+    container explicitly and only fall back to this."""
     divs = soup.find_all("div")
     return max(divs, key=lambda d: len(d.find_all("p")), default=None)
 
 
-def _blocks_from_content(content: Tag) -> list[Block]:
+def meta_content(soup: BeautifulSoup, *names: str) -> str:
+    """First non-empty <meta property|name=…> content among `names`."""
+    for n in names:
+        tag = soup.find("meta", attrs={"property": n}) or soup.find(
+            "meta", attrs={"name": n}
+        )
+        if tag and tag.get("content"):
+            return tag["content"].strip()
+    return ""
+
+
+def blocks_from_container(content: Tag) -> list[Block]:
     blocks: list[Block] = []
     children = [c for c in content.find_all(recursive=False) if isinstance(c, Tag)]
     if not children:  # some fictions dump loose text with no wrapping <p>
@@ -207,21 +195,21 @@ def _blocks_from_content(content: Tag) -> list[Block]:
             blocks.append(Block("scene_break"))
             continue
         if name in _HEADING_TAGS:
-            text = _collapse_inline_ws(el.get_text(" ", strip=True))
+            text = collapse_inline_ws(el.get_text(" ", strip=True))
             if text:
                 blocks.append(Block("heading", text))
             continue
 
-        raw, spans = _text_with_italics(el)
+        raw, spans = text_with_italics(el)
         if not raw.strip():
             continue
 
-        flat = _collapse_inline_ws(raw)
+        flat = collapse_inline_ws(raw)
         if _BREAK_GLYPHS_RE.match(flat):
             blocks.append(Block("scene_break"))
             continue
 
-        chat = _parse_chat(flat)
+        chat = parse_chat(flat)
         if chat:
             blocks.append(Block("chat", chat["message"],
                                 meta={"user": chat["user"], "location": chat["location"]}))
@@ -236,58 +224,8 @@ def _blocks_from_content(content: Tag) -> list[Block]:
     return blocks
 
 
-def _meta_from_head(soup: BeautifulSoup) -> dict:
-    def prop(*names: str) -> str:
-        for n in names:
-            tag = soup.find("meta", attrs={"property": n}) or soup.find(
-                "meta", attrs={"name": n}
-            )
-            if tag and tag.get("content"):
-                return tag["content"].strip()
-        return ""
-
-    og_title = prop("og:title", "twitter:title")
-    chapter_title, fiction_title = og_title, ""
-    if " - " in og_title:
-        chapter_title, fiction_title = (p.strip() for p in og_title.split(" - ", 1))
-    if not chapter_title:
-        h1 = soup.find("h1")
-        chapter_title = h1.get_text(" ", strip=True) if h1 else ""
-
-    next_url = ""
+def next_link_by_text(soup: BeautifulSoup, prefix: str = "next chapter") -> str:
     for a in soup.find_all("a", href=True):
-        if a.get_text(" ", strip=True).lower().startswith("next chapter"):
-            next_url = a["href"]
-            break
-
-    return {
-        "chapter_title": chapter_title,
-        "fiction_title": fiction_title,
-        "url": prop("og:url"),
-        "next_url": next_url,
-    }
-
-
-def parse_document(html: str, *, url: str = "") -> Document:
-    soup = BeautifulSoup(html, "lxml")
-    content = _select_chapter_content(soup)
-    if content is None:
-        raise SystemExit("could not locate chapter content in the page")
-
-    _strip_hidden(content, _hidden_class_names(soup))
-    blocks = _blocks_from_content(content)
-
-    head = _meta_from_head(soup)
-    return Document(
-        blocks=blocks,
-        fiction_title=head["fiction_title"],
-        chapter_title=head["chapter_title"],
-        author=_author(soup),
-        url=url or head["url"],
-        next_url=head["next_url"],
-    )
-
-
-def _author(soup: BeautifulSoup) -> str:
-    a = soup.select_one('.fic-header a[href*="/profile/"], a[href*="/profile/"]')
-    return a.get_text(" ", strip=True) if a else ""
+        if a.get_text(" ", strip=True).lower().startswith(prefix):
+            return a["href"]
+    return ""

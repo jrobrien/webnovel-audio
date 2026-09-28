@@ -20,7 +20,7 @@ from .config import Config
 from . import bundle
 from .db import DB
 from .feed import audio_mime, build_feed
-from .royalroad import _safe_slug
+from .safepath import safe_slug as _safe_slug
 
 _HOST_RE = re.compile(r"[^A-Za-z0-9.\-:\[\]]")
 
@@ -124,7 +124,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     @property
     def library(self) -> str:
-        return os.path.expanduser(self.cfg.royalroad.library_dir)
+        return os.path.expanduser(self.cfg.library.library_dir)
 
     def _base_url(self) -> str:
         if self.cfg.serve.base_url:
@@ -181,7 +181,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._send(404, b"not found\n", "text/plain")
 
     def _db(self) -> DB:
-        return DB(self.cfg.royalroad.state_db)
+        return DB(self.cfg.library.state_db)
 
     def _bundle(self, slug: str) -> str | None:
         """The series' bundle directory, or None if it isn't tracked. Files are

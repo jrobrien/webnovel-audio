@@ -1,7 +1,7 @@
 import os
 
 from webnovel_audio.config import Config
-from webnovel_audio.ingest import Document
+from webnovel_audio.document import Document
 from webnovel_audio.normalize import Block
 from webnovel_audio.textout import _emphasize, _yaml, render_markdown
 
@@ -42,13 +42,15 @@ def test_render_markdown_structure():
         Block("chat", "First!", meta={"user": "Noob9000", "location": "Earth"}),
         Block("paragraph", "The cold lingered."),
     ]
-    md = render_markdown(_doc(blocks=blocks), front_matter_extra={"chapter": 7})
+    md = render_markdown(_doc(blocks=blocks), front_matter_extra={
+        "chapter": 7, "provider": "royalroad", "source_id": "7007"})
 
     fm, _, body = md.partition("\n---\n")
     assert fm.startswith("---\n")
     assert 'title: "1- The Tomb"' in fm
     assert "chapter: 7" in fm
-    assert "royalroad_id: \"7007\"" in fm
+    assert 'provider: "royalroad"' in fm and 'source_id: "7007"' in fm
+    assert "royalroad_id" not in fm       # core no longer guesses ids from URLs
     assert "raw_sha256: \"deadbeef\"" in fm
     assert "generator: \"webnovel-audio " in fm
 

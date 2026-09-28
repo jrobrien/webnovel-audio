@@ -47,7 +47,7 @@ def open_ro(cfg: Config) -> sqlite3.Connection:
     which can ALTER TABLE. A monitoring command must not be able to do that,
     least of all while a sync holds the database.
     """
-    path = os.path.abspath(os.path.expanduser(cfg.royalroad.state_db))
+    path = os.path.abspath(os.path.expanduser(cfg.library.state_db))
     if not os.path.exists(path):
         raise FileNotFoundError(path)
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=10)
@@ -88,7 +88,7 @@ def _series_rows(con, key: str | None):
         return [s for s in rows if s["enabled"]]
     k = key.lower()
     hit = [s for s in rows
-           if k in (str(s["rr_id"]), (s["title"] or "").lower(), _dir_slug(s).lower())]
+           if k in (str(s["source_id"]), (s["title"] or "").lower(), _dir_slug(s).lower())]
     return hit or [s for s in rows if k in (s["title"] or "").lower()]
 
 

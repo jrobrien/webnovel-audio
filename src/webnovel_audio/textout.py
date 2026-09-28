@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 
 from . import __version__
-from .ingest import Document
+from .document import Document
 from .normalize import Block
 
 _LEADING_MD = re.compile(r"^([#>*+\-=]|\d+\.)\s")
@@ -87,10 +87,8 @@ def _front_matter(doc: Document, extra: dict | None, stage: str = "") -> str:
     ]
     for key, val in (extra or {}).items():
         fields.append((key, val))
-    cid = re.search(r"/chapter/(\d+)", doc.url or "")
     fields += [
         ("source", doc.url),
-        ("royalroad_id", cid.group(1) if cid else ""),
         ("retrieved", doc.retrieved_at),
         ("raw_sha256", doc.raw_sha256),
         ("raw_bytes", doc.raw_bytes),

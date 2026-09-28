@@ -127,7 +127,7 @@ def test_lex_rejects_a_scope_that_names_nothing(tmp_path, capsys):
 
     cfgp = tmp_path / "cfg.toml"
     cfgp.write_text(
-        f'[royalroad]\nstate_db = "{tmp_path / "state.db"}"\n'
+        f'[library]\nstate_db = "{tmp_path / "state.db"}"\n'
         f'library_dir = "{tmp_path / "lib"}"\n')
     rc = cli.main(["lex", "add", "--scope", "not-a-series", "--surface", "x",
                    "--respell", "y", "--json", "--config", str(cfgp)])
@@ -140,18 +140,18 @@ def test_lex_rejects_a_scope_that_names_nothing(tmp_path, capsys):
 def _tracked(tmp_path):
     """A config with one tracked series and a bundle directory on disk."""
     from webnovel_audio.db import DB
-    from webnovel_audio.royalroad import FictionInfo
+    from webnovel_audio.providers import SeriesInfo
 
     lib = tmp_path / "lib"
     (lib / "solo").mkdir(parents=True)
     (lib / "solo" / "lexicon.csv").write_text("surface,pos,respell,notes\n")
     db = DB(str(tmp_path / "state.db"))
-    db.upsert_series(FictionInfo(rr_id="solo", slug="solo", title="Solo",
+    db.upsert_series(SeriesInfo(provider="royalroad", source_id="solo", slug="solo", title="Solo",
                                 author="A", url="https://rr/solo"))
     db.con.commit()
     db.close()
     cfgp = tmp_path / "cfg.toml"
-    cfgp.write_text(f'[royalroad]\nstate_db = "{tmp_path / "state.db"}"\n'
+    cfgp.write_text(f'[library]\nstate_db = "{tmp_path / "state.db"}"\n'
                     f'library_dir = "{lib}"\n')
     return str(cfgp), lib / "solo"
 
@@ -208,7 +208,7 @@ def test_pron_rejects_a_scope_that_names_nothing(tmp_path, capsys):
     from webnovel_audio import cli
 
     cfgp = tmp_path / "cfg.toml"
-    cfgp.write_text(f'[royalroad]\nstate_db = "{tmp_path / "s.db"}"\n'
+    cfgp.write_text(f'[library]\nstate_db = "{tmp_path / "s.db"}"\n'
                     f'library_dir = "{tmp_path / "lib"}"\n')
     rc = cli.main(["pron", "he lives there", "--scope", "nope", "--json",
                    "--config", str(cfgp)])

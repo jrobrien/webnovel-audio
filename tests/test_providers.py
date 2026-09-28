@@ -20,7 +20,8 @@ def test_resolve_routing():
 def test_local_html_provider_stamps_provenance():
     if not os.path.exists(_CH):
         return
-    doc = providers.LocalHtmlProvider().read(_CH, cfg=Config())
+    prov = providers.LocalHtmlProvider()
+    doc = prov.read(_CH, providers.context(Config(), prov))
     assert doc.chapter_title == "1. Dead Air"
     assert len(doc.raw_sha256) == 64 and doc.raw_bytes > 0
     assert doc.retrieved_at                                    # from the file's mtime
@@ -28,8 +29,8 @@ def test_local_html_provider_stamps_provenance():
 
 
 def test_stamp_provenance_is_deterministic():
-    from webnovel_audio.ingest import Document
+    from webnovel_audio.document import Document, stamp_provenance
 
-    a = providers.stamp_provenance(Document(blocks=[]), "hello world")
-    b = providers.stamp_provenance(Document(blocks=[]), "hello world")
+    a = stamp_provenance(Document(blocks=[]), "hello world")
+    b = stamp_provenance(Document(blocks=[]), "hello world")
     assert a.raw_sha256 == b.raw_sha256 and a.raw_bytes == 11

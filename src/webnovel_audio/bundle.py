@@ -27,23 +27,32 @@ import uuid as _uuid
 from .config import Config, resolve_data_path
 from .db import DB
 
-SCHEMA = 1
+#: 2: provider-neutral ids (`rr_id` -> `source_id`) and `provider_state`.
+#: Schema-1 state is still read; see `_LEGACY_KEYS`.
+SCHEMA = 2
 MANIFEST = "manifest.toml"
 STATE = "state.json"
 
 # Columns exported verbatim. Listed rather than `SELECT *`-ed so a new column
 # has to be considered here too, instead of silently failing to round-trip.
 _CHAPTER_COLS = (
-    "rr_id", "ord", "title", "slug", "url", "published_at", "unlocked",
+    "source_id", "ord", "title", "slug", "url", "published_at", "unlocked",
     "status", "error_stage", "raw_path", "text_path", "audio_path",
     "duration_s", "fetched_at", "parsed_at", "rendered_at",
-    "render_started_at", "render_ended_at", "volume_rr_id", "volume_chapter",
+    "render_started_at", "render_ended_at", "volume_source_id", "volume_chapter",
     "narrator", "synth_fingerprint", "error",
 )
-_VOLUME_COLS = ("rr_id", "title", "cover_url", "ord")
-_SERIES_COLS = ("rr_id", "provider", "slug", "title", "author", "url",
+_VOLUME_COLS = ("source_id", "title", "cover_url", "ord")
+_SERIES_COLS = ("source_id", "provider", "slug", "title", "author", "url",
                 "cover_url", "enabled", "tags", "warnings", "status", "rating",
-                "added_at", "uuid")
+                "added_at", "uuid", "provider_state")
+
+#: schema-1 state.json key -> current column
+_LEGACY_KEYS = {"rr_id": "source_id", "volume_rr_id": "volume_source_id"}
+
+
+def _upgrade_keys(d: dict) -> dict:
+    return {_LEGACY_KEYS.get(k, k): v for k, v in d.items()}
 
 # Paths in these columns are rewritten bundle-relative on export and back on
 # import, so a bundle can be moved or unpacked anywhere.
@@ -71,7 +80,7 @@ def bundle_dir(cfg: Config, series_row) -> str:
         return os.path.abspath(os.path.expanduser(p))
     from .sync import _dir_slug
     return os.path.abspath(os.path.join(
-        os.path.expanduser(cfg.royalroad.library_dir), _dir_slug(series_row)))
+        os.path.expanduser(cfg.library.library_dir), _dir_slug(series_row)))
 
 
 #: every per-series path, relative to the bundle root — the single place that
@@ -96,7 +105,7 @@ def paths(bdir: str) -> dict:
 def legacy_paths(cfg: Config, slug: str) -> dict:
     """Where these files lived before the bundle migration. Read-only fallback,
     so an un-migrated tree keeps working until `migrate bundles` runs."""
-    lib = os.path.expanduser(cfg.royalroad.library_dir)
+    lib = os.path.expanduser(cfg.library.library_dir)
     return {
         # Anchored to the checkout, not the working directory -- same reason
         # as the base lexicon (see config.resolve_data_path). Harmless on a
@@ -208,8 +217,8 @@ def write_manifest(cfg: Config, series_row, *, fingerprints=None) -> str:
         f"slug   = {_toml_str(_row_get(series_row, 'slug'))}",
         "",
         "[source]",
-        f"provider = {_toml_str(_row_get(series_row, 'provider') or 'royalroad')}",
-        f"id       = {_toml_str(_row_get(series_row, 'rr_id'))}",
+        f"provider = {_toml_str(_row_get(series_row, 'provider'))}",
+        f"id       = {_toml_str(_row_get(series_row, 'source_id'))}",
         f"url      = {_toml_str(_row_get(series_row, 'url'))}",
         f"title    = {_toml_str(_row_get(series_row, 'title'))}",
         f"author   = {_toml_str(_row_get(series_row, 'author'))}",
@@ -232,7 +241,7 @@ def export_state(cfg: Config, db: DB, series_row) -> str:
     This is what makes `series import` exact. Inferring state from the files on
     disk recovers most of it, but loses `render_started_at`/`render_ended_at`
     (the render-cost model's only input) and cannot recover `published_at`,
-    `volume_rr_id` or `unlocked` without going back to the network.
+    `volume_source_id` or `unlocked` without going back to the network.
     """
     d = bundle_dir(cfg, series_row)
     sid = series_row["id"]
@@ -281,7 +290,7 @@ def sync_bundle(cfg: Config, db: DB, series_row, *, fingerprints=None) -> dict:
         return {"ok": False, "reason": "missing", "path": d}
     uid = _row_get(series_row, "uuid") or str(_uuid.uuid4())
     db.set_bundle(series_row["id"], d, uid)
-    series_row = db.get_series(str(_row_get(series_row, "rr_id")))
+    series_row = db.series_by_id(series_row["id"])
     return {"ok": True, "path": d,
             "manifest": write_manifest(cfg, series_row, fingerprints=fingerprints),
             "state": export_state(cfg, db, series_row)}
@@ -337,10 +346,11 @@ def import_bundle(cfg: Config, db: DB, path: str, *, dry_run: bool = False) -> d
     d = os.path.abspath(os.path.expanduser(path))
     man = read_manifest(d)
     src = man.get("source", {})
-    uid, rr_id = man["uuid"], str(src.get("id") or "")
+    uid, source_id = man["uuid"], str(src.get("id") or "")
     st = read_state(d)
 
-    existing = db.by_uuid(uid) or (db.get_series(rr_id) if rr_id else None)
+    existing = db.by_uuid(uid) or (
+        db.find_series(src.get("provider") or "", source_id) if source_id else None)
     action = "update" if existing else "add"
     chapters = st.get("chapters", [])
     if dry_run:
@@ -358,7 +368,7 @@ def import_bundle(cfg: Config, db: DB, path: str, *, dry_run: bool = False) -> d
 
 
 def _upsert_from_state(db: DB, st: dict, uid: str, existing) -> int:
-    s = st.get("series", {})
+    s = _upgrade_keys(st.get("series", {}))
     cols = [c for c in _SERIES_COLS if c != "uuid"]
     vals = [s.get(c) for c in cols]
     if existing:
@@ -376,28 +386,28 @@ def _upsert_from_state(db: DB, st: dict, uid: str, existing) -> int:
 
 def _replay_chapters(db: DB, sid: int, chapters: list[dict], base: str) -> None:
     cols = list(_CHAPTER_COLS)
-    sets = ", ".join(f"{c}=excluded.{c}" for c in cols if c != "rr_id")
+    sets = ", ".join(f"{c}=excluded.{c}" for c in cols if c != "source_id")
     for c in chapters:
-        row = dict(c)
+        row = _upgrade_keys(c)
         for k in _PATH_COLS:
             row[k] = _abspath(row.get(k), base)
         db.con.execute(
             f"INSERT INTO chapters (series_id, {', '.join(cols)}) "
             f"VALUES (?, {', '.join('?' * len(cols))}) "
-            f"ON CONFLICT(series_id, rr_id) DO UPDATE SET {sets}",
+            f"ON CONFLICT(series_id, source_id) DO UPDATE SET {sets}",
             (sid, *[row.get(k) for k in cols]))
     db.con.commit()
 
 
 def _replay_volumes(db: DB, sid: int, volumes: list[dict]) -> None:
-    for v in volumes:
+    for v in map(_upgrade_keys, volumes):
         db.con.execute(
-            """INSERT INTO volumes (series_id, rr_id, title, cover_url, ord)
+            """INSERT INTO volumes (series_id, source_id, title, cover_url, ord)
                VALUES (?,?,?,?,?)
-               ON CONFLICT(series_id, rr_id) DO UPDATE SET
+               ON CONFLICT(series_id, source_id) DO UPDATE SET
                  title=excluded.title, cover_url=excluded.cover_url,
                  ord=excluded.ord""",
-            (sid, str(v.get("rr_id")), v.get("title"), v.get("cover_url"),
+            (sid, str(v.get("source_id")), v.get("title"), v.get("cover_url"),
              v.get("ord")))
     db.con.commit()
 
@@ -451,7 +461,7 @@ def migrate(cfg: Config, db: DB, key: str | None = None, *,
             res["cache_linked"] = _link_cache(cfg, live, slug, p["cache"])
             _rewrite_paths(db, s["id"], bdir)
             db.set_bundle(s["id"], bdir, _row_get(s, "uuid"))
-            sync_bundle(cfg, db, db.get_series(str(s["rr_id"])))
+            sync_bundle(cfg, db, db.series_by_id(s["id"]))
         else:
             res["cache_linked"] = sum(
                 1 for owners in live.values() if slug in owners)

@@ -1,4 +1,8 @@
-"""Track Royal Road series and batch-render new chapters into a library."""
+"""Track web serials and batch-render new chapters into a library.
+
+Site-agnostic: every source-specific step goes through the series' provider
+(`providers.get(series["provider"])`).
+"""
 from __future__ import annotations
 
 import contextlib
@@ -14,11 +18,13 @@ from dataclasses import dataclass
 from . import bundle, pipeline, providers
 from .config import Config
 from .db import DB
-from .royalroad import _safe_slug, fetch_asset
+from .document import stamp_provenance
+from .providers import ChapterRef
+from .safepath import safe_slug
 
 
 def _db(cfg: Config) -> DB:
-    return DB(cfg.royalroad.state_db)
+    return DB(cfg.library.state_db)
 
 
 class SyncLocked(Exception):
@@ -30,7 +36,7 @@ class SyncLocked(Exception):
 
 
 def _lock_path(cfg: Config) -> str:
-    db_path = os.path.abspath(os.path.expanduser(cfg.royalroad.state_db))
+    db_path = os.path.abspath(os.path.expanduser(cfg.library.state_db))
     return os.path.join(os.path.dirname(db_path) or ".", "sync.lock")
 
 
@@ -61,10 +67,29 @@ def sync_lock(cfg: Config):
 
 
 def _series_provider(source: str) -> providers.Provider:
+    """The provider for a series URL that isn't tracked yet."""
     prov = providers.resolve_series(source)
     if prov is None:
         raise SystemExit(f"no content provider handles {source!r}")
     return prov
+
+
+def _ref(c) -> ChapterRef:
+    """A chapters row as the provider's ChapterRef."""
+    return ChapterRef(source_id=c["source_id"], order=c["ord"], title=c["title"] or "",
+                      slug=c["slug"] or "", url=c["url"] or "",
+                      published_at=c["published_at"] or "", unlocked=bool(c["unlocked"]),
+                      volume_id=c["volume_source_id"] or "")
+
+
+def _ctx(cfg: Config, db: DB, prov: providers.Provider, s,
+         bdir: str = "") -> providers.FetchContext:
+    """Everything a provider may use for one tracked series."""
+    ctx = providers.context(cfg, prov,
+                            raw_dir=os.path.join(bdir, bundle.LAYOUT["raw"]) if bdir else "",
+                            state=db.provider_state(s))
+    ctx.known = [_ref(c) for c in db.chapters(s["id"])]
+    return ctx
 
 
 def _slugify(s: str) -> str:
@@ -73,7 +98,7 @@ def _slugify(s: str) -> str:
 
 def _dir_slug(row) -> str:
     """The on-disk directory name for a series row (defence-in-depth vs. the DB)."""
-    return _safe_slug(row["slug"], "") or _slugify(row["title"])
+    return safe_slug(row["slug"], "") or _slugify(row["title"])
 
 
 def _series_cfg(cfg: Config, slug: str, bdir: str | None = None) -> Config:
@@ -105,15 +130,14 @@ def _series_cfg(cfg: Config, slug: str, bdir: str | None = None) -> Config:
     return sc
 
 
-def _cache_cover(cfg: Config, slug: str, cover_url: str, bdir: str = "") -> None:
-    slug = _safe_slug(slug, "")
+def _cache_cover(prov, ctx, slug: str, cover_url: str, bdir: str) -> None:
+    slug = safe_slug(slug, "")
     if not (cover_url and slug):
         return
-    bdir = bdir or os.path.join(os.path.expanduser(cfg.royalroad.library_dir), slug)
     dst = os.path.join(bdir, bundle.LAYOUT["covers"], "cover.jpg")
     if os.path.exists(dst):
         return
-    data = fetch_asset(cover_url)          # cookie-less, Royal Road hosts only
+    data = prov.fetch_cover(cover_url, ctx)   # the provider restricts the host
     if not data:
         return
     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -121,21 +145,20 @@ def _cache_cover(cfg: Config, slug: str, cover_url: str, bdir: str = "") -> None
         fh.write(data)
 
 
-def _cache_volume_covers(cfg: Config, slug: str, volumes, bdir: str = "") -> None:
-    """Each volume has its own cover on Royal Road — that's half the reason
-    volumes are worth modelling. Cached beside the series cover."""
-    slug = _safe_slug(slug, "")
+def _cache_volume_covers(prov, ctx, slug: str, volumes, bdir: str) -> None:
+    """A volume can have its own cover — that's half the reason volumes are
+    worth modelling. Cached beside the series cover."""
+    slug = safe_slug(slug, "")
     if not slug:
         return
-    bdir = bdir or os.path.join(os.path.expanduser(cfg.royalroad.library_dir), slug)
     base = os.path.join(bdir, bundle.LAYOUT["covers"])
     for v in volumes or []:
         if not v.cover_url:
             continue
-        dst = os.path.join(base, f"cover-v{_safe_slug(v.rr_id, '0')}.jpg")
+        dst = os.path.join(base, f"cover-v{safe_slug(v.source_id, '0')}.jpg")
         if os.path.exists(dst):
             continue
-        data = fetch_asset(v.cover_url)
+        data = prov.fetch_cover(v.cover_url, ctx)
         if not data:
             continue
         os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -143,11 +166,15 @@ def _cache_volume_covers(cfg: Config, slug: str, volumes, bdir: str = "") -> Non
             fh.write(data)
 
 
-def _chapter_view(c) -> tuple[int, str, bool]:
-    """(order, rr_id, unlocked) from a ChapterRef or a sqlite3.Row."""
+def _chapter_view(c) -> tuple[int, str, bool, str]:
+    """(order, source_id, unlocked, url) from a ChapterRef or a sqlite3.Row."""
     if hasattr(c, "order"):
-        return c.order, c.rr_id, bool(c.unlocked)
-    return c["ord"], c["rr_id"], bool(c["unlocked"])
+        return c.order, c.source_id, bool(c.unlocked), c.url
+    return c["ord"], c["source_id"], bool(c["unlocked"]), c["url"] or ""
+
+
+def _norm_url(u: str) -> str:
+    return (u or "").strip().lower().split("#", 1)[0].split("?", 1)[0].rstrip("/")
 
 
 def _skip_through(chapters, start: str) -> int:
@@ -158,15 +185,20 @@ def _skip_through(chapters, start: str) -> int:
     """
     start = (start or "start").strip().lower()
     view = [_chapter_view(c) for c in chapters]
-    unlocked = [o for o, _, u in view if u]
+    unlocked = [o for o, _, u, _ in view if u]
     if start in ("start", "begin", "0", "all", ""):
         return 0
     if start in ("latest", "current", "caught-up"):
         return (max(unlocked) + 1) if unlocked else 0
-    if "/chapter/" in start:
-        cid = re.search(r"/chapter/(\d+)", start)
-        for o, rid, _ in view:
-            if cid and rid == cid.group(1):
+    if "://" in start:
+        # a chapter URL: exact match, else the chapter whose id is a path segment
+        want = _norm_url(start)
+        segs = set(want.split("/"))
+        for o, _, _, url in view:
+            if url and _norm_url(url) == want:
+                return o + 1
+        for o, sid, _, _ in view:
+            if sid and sid.lower() in segs:
                 return o + 1
         return 0
     if start.isdigit():
@@ -188,31 +220,23 @@ def _toml_str(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
-def _fetch_chapter_blocks(cfg: Config, prov, bdir: str, refs, log=print):
-    """refs: iterable of (rr_id, url, ord). Returns (blocks, [ord fetched]).
+def _fetch_chapter_blocks(cfg: Config, prov, ctx, bdir: str, rows, log=print):
+    """rows: chapter rows to sample. Returns (blocks, [ord fetched]).
 
-    Reuses/populates the same `.raw/<rr_id>.html` cache `sync` uses, so a
-    chapter sampled here isn't re-fetched when it's actually rendered later.
-    One bad chapter is logged and skipped, never raised.
+    Reuses/populates the same raw cache `fetch` uses, so a chapter sampled here
+    isn't re-fetched when it's actually rendered later. One bad chapter is
+    logged and skipped, never raised.
     """
-    from .ingest import parse_document
-
-    raw_dir = os.path.join(bdir, bundle.LAYOUT["raw"])
     blocks, fetched = [], []
-    for rr_id, url, order in refs:
+    for c in rows:
         try:
-            raw_path = os.path.join(raw_dir, f"{_safe_slug(rr_id, 'chapter')}.html")
-            if os.path.exists(raw_path):
-                html = open(raw_path, encoding="utf-8").read()
-            else:
-                html = prov.raw(url, cfg=cfg)
-                os.makedirs(raw_dir, exist_ok=True)
-                with open(raw_path, "w", encoding="utf-8") as fh:
-                    fh.write(html)
-            blocks += parse_document(html, url=url).blocks
-            fetched.append(order)
+            raw_path = _raw_path(bdir, prov, c)
+            if not os.path.exists(raw_path):
+                _write_raw(raw_path, prov.fetch(_ref(c), ctx))
+            blocks += _load_doc(prov, ctx, c, raw_path).blocks
+            fetched.append(c["ord"])
         except Exception as exc:  # noqa: BLE001 - one bad chapter shouldn't sink the rest
-            log(f"  couldn't read chapter #{order + 1}: {exc}")
+            log(f"  couldn't read chapter #{c['ord'] + 1}: {exc}")
     return blocks, fetched
 
 
@@ -376,10 +400,10 @@ def suggest_cast(cfg: Config, key: str, *, spans=None,
             log(f"{s['title']}: no chapters in that range")
             return empty
 
-        prov = _series_provider(s["url"])
-        refs = [(c["rr_id"], c["url"], c["ord"]) for c in sample]
+        prov = providers.get(s["provider"])
         bdir = bundle.bundle_dir(cfg, s)
-        blocks, fetched = _fetch_chapter_blocks(cfg, prov, bdir, refs, log=log)
+        blocks, fetched = _fetch_chapter_blocks(cfg, prov, _ctx(cfg, db, prov, s, bdir),
+                                                bdir, sample, log=log)
         if not fetched:
             log(f"{s['title']}: no chapters could be sampled")
             return empty
@@ -447,9 +471,11 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
     prov = _series_provider(url)
     db = _db(cfg)
     try:
-        fi = prov.series(url, cfg=cfg)
-        if not fi.rr_id or not fi.chapters:
-            raise SystemExit(f"could not read a fiction + chapter list from {url}")
+        ctx = providers.context(cfg, prov)
+        fi = prov.series(url, ctx)
+        fi.provider = prov.name
+        if not fi.source_id or not fi.chapters:
+            raise SystemExit(f"could not read a series + chapter list from {url}")
         sid = db.upsert_series(fi)
         db.replace_volumes(sid, fi.volumes)
         new = db.replace_chapters(sid, fi.chapters)
@@ -457,10 +483,10 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
         if through:
             db.set_status([c["id"] for c in db.range(sid, None, through)
                            if c["status"] == "new"], "skipped")
-        row = db.get_series(fi.rr_id)
+        row = db.series_by_id(sid)
         bdir = bundle.bundle_dir(cfg, row)
-        _cache_cover(cfg, fi.slug, fi.cover_url, bdir)
-        _cache_volume_covers(cfg, fi.slug, fi.volumes, bdir)
+        _cache_cover(prov, ctx, fi.slug, fi.cover_url, bdir)
+        _cache_volume_covers(prov, ctx, fi.slug, fi.volumes, bdir)
         pend = len(db.pending(sid))
 
         # pin the resolved voices now, so this series keeps sounding the same
@@ -493,24 +519,34 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
         db.close()
 
 
+def _refresh_one(cfg: Config, db: DB, s):
+    """Re-read one tracked series' metadata and chapter list from its source.
+    Returns (new chapter count, SeriesInfo)."""
+    prov = providers.get(s["provider"])
+    bdir = bundle.bundle_dir(cfg, s)
+    ctx = _ctx(cfg, db, prov, s, bdir)
+    fi = prov.series(s["url"], ctx)
+    fi.provider = prov.name
+    # refresh the series metadata too, not just the chapter list: tags,
+    # warnings, status and rating all drift, and a series added before
+    # those columns existed would otherwise stay null forever
+    db.upsert_series(fi)
+    db.replace_volumes(s["id"], fi.volumes)
+    new = db.replace_chapters(s["id"], fi.chapters)
+    _cache_cover(prov, ctx, fi.slug, fi.cover_url, bdir)
+    _cache_volume_covers(prov, ctx, fi.slug, fi.volumes, bdir)
+    return new, fi
+
+
 def refresh(cfg: Config, key: str | None = None, log=print) -> list[dict]:
     db = _db(cfg)
     out: list[dict] = []
     try:
         targets = [db.get_series(key)] if key else db.list_series()
         for s in filter(None, targets):
-            fi = _series_provider(s["url"]).series(s["url"], cfg=cfg)
-            # refresh the series metadata too, not just the chapter list: tags,
-            # warnings, status and rating all drift, and a series added before
-            # those columns existed would otherwise stay null forever
-            db.upsert_series(fi)
-            db.replace_volumes(s["id"], fi.volumes)
-            new = db.replace_chapters(s["id"], fi.chapters)
-            bdir = bundle.bundle_dir(cfg, s)
-            _cache_cover(cfg, fi.slug, fi.cover_url, bdir)
-            _cache_volume_covers(cfg, fi.slug, fi.volumes, bdir)
+            new, fi = _refresh_one(cfg, db, s)
             log(f"{s['title']}: {len(fi.chapters)} chapters (+{new} new)")
-            bundle.sync_bundle(cfg, db, db.get_series(str(s["rr_id"])))
+            bundle.sync_bundle(cfg, db, db.series_by_id(s["id"]))
             out.append({"slug": fi.slug, "title": fi.title,
                         "chapters": len(fi.chapters), "new": new})
         return out
@@ -555,7 +591,7 @@ def write_feeds(cfg: Config, key: str | None = None, out_dir: str | None = None,
     db = _db(cfg)
     written: list[str] = []
     try:
-        lib = os.path.expanduser(cfg.royalroad.library_dir)
+        lib = os.path.expanduser(cfg.library.library_dir)
         out_dir = out_dir or os.path.join(lib, "_feeds")
         os.makedirs(out_dir, exist_ok=True)
         targets = [db.get_series(key)] if key else db.list_series()
@@ -591,50 +627,55 @@ def write_feeds(cfg: Config, key: str | None = None, out_dir: str | None = None,
 # so re-rendering never re-downloads.
 
 def _raw_path(bdir: str, prov, c) -> str:
-    ext = getattr(prov, "raw_ext", ".html")
     return os.path.join(bdir, bundle.LAYOUT["raw"],
-                        f"{_safe_slug(c['rr_id'], 'chapter')}{ext}")
+                        f"{safe_slug(c['source_id'], 'chapter')}{prov.raw_ext}")
 
 
 def _out_stem(bdir: str, c) -> str:
-    name = f"{c['ord'] + 1:03d}-{_safe_slug(c['slug'], c['rr_id'])}"
+    name = f"{c['ord'] + 1:03d}-{safe_slug(c['slug'], c['source_id'])}"
     return os.path.join(bdir, bundle.LAYOUT["chapters"], name)
 
 
-class ChapterLocked(Exception):
-    """The source says this chapter needs an account we don't have."""
+ChapterLocked = providers.ChapterLocked
 
 
-def _do_fetch(cfg, db, prov, bdir, c, *, force=False) -> str:
+def _write_raw(path: str, text: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def _load_doc(prov, ctx, c, raw_path: str):
+    """The cached raw artifact, parsed by the provider that fetched it."""
+    raw = open(raw_path, encoding="utf-8").read()
+    return stamp_provenance(prov.parse(raw, _ref(c), ctx), raw, source_path=raw_path)
+
+
+def _md_extra(prov, c) -> dict:
+    return {"chapter": c["ord"] + 1, "published": c["published_at"] or "",
+            "provider": prov.name, "source_id": c["source_id"]}
+
+
+def _do_fetch(cfg, db, prov, ctx, bdir, c, *, force=False) -> str:
     path = _raw_path(bdir, prov, c)
     if force or not os.path.exists(path):
-        # The session cookie is never verified up front (see royalroad.py) — a
-        # missing or stale one surfaces here, where it's actionable.
-        if not c["unlocked"]:
-            from .royalroad import load_session
-            hint = ("run `webnovel-audio login` first" if not load_session()
-                    else "stored session may be stale — re-run `webnovel-audio login`")
-            raise ChapterLocked(f"chapter is marked locked; {hint}")
-        text = prov.raw(c["url"], cfg=cfg)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as fh:
-            fh.write(text)
+        # an account problem surfaces here, where it's actionable
+        prov.check_fetchable(_ref(c), ctx)
+        _write_raw(path, prov.fetch(_ref(c), ctx))
     db.mark_stage(c["id"], "fetched", raw_path=path)
     return path
 
 
-def _do_parse(cfg, db, prov, bdir, c, raw_path, *, force=False) -> str:
-    from .pipeline import load_document
+def _do_parse(cfg, db, prov, ctx, bdir, c, raw_path, *, force=False) -> str:
     from .textout import render_markdown
 
     md_path = _out_stem(bdir, c) + ".md"
     if force or not os.path.exists(md_path):
-        _, _, doc = load_document(raw_path, cfg)
-        if doc is not None:
-            os.makedirs(os.path.dirname(md_path), exist_ok=True)
-            with open(md_path, "w", encoding="utf-8") as fh:
-                fh.write(render_markdown(doc, stage="parse", front_matter_extra={
-                    "chapter": c["ord"] + 1, "published": c["published_at"] or ""}))
+        doc = _load_doc(prov, ctx, c, raw_path)
+        os.makedirs(os.path.dirname(md_path), exist_ok=True)
+        with open(md_path, "w", encoding="utf-8") as fh:
+            fh.write(render_markdown(doc, stage="parse",
+                                     front_matter_extra=_md_extra(prov, c)))
     db.mark_stage(c["id"], "parsed",
                   text_path=md_path if os.path.exists(md_path) else None)
     return md_path
@@ -690,15 +731,14 @@ def _opus_tags(scfg, series_row, c, vol_info=None, rendered_at=None,
     return {k: v for k, v in out.items() if v}
 
 
-def _do_render(cfg, db, scfg, bdir, c, raw_path, *, backend="kokoro",
+def _do_render(cfg, db, prov, ctx, scfg, bdir, c, raw_path, *, backend="kokoro",
                series_row=None, vol_info=None) -> tuple[str, float]:
     out_path = _out_stem(bdir, c) + ".opus"
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
     from . import cache as _cache
     fp = _cache.current_fingerprint(scfg, backend)
-    rep = pipeline.render(raw_path, out_path, scfg, backend=backend,
-                          md_meta={"chapter": c["ord"] + 1,
-                                   "published": c["published_at"] or ""},
+    rep = pipeline.render(_load_doc(prov, ctx, c, raw_path), out_path, scfg, backend=backend,
+                          md_meta=_md_extra(prov, c),
                           tags=(_opus_tags(scfg, series_row, c, vol_info,
                                            rendered_at=started, fingerprint=fp)
                                 if series_row is not None else None),
@@ -712,7 +752,7 @@ def _do_render(cfg, db, scfg, bdir, c, raw_path, *, backend="kokoro",
     return out_path, rep.audio_seconds, rep
 
 
-def _advance(cfg, db, prov, scfg, bdir, c, *, upto, force=False, backend="kokoro",
+def _advance(cfg, db, prov, ctx, scfg, bdir, c, *, upto, force=False, backend="kokoro",
              series_row=None, vol_map=None):
     """Walk one chapter up to `upto`. Returns an event dict for the caller."""
     from .db import stage_rank
@@ -724,16 +764,16 @@ def _advance(cfg, db, prov, scfg, bdir, c, *, upto, force=False, backend="kokoro
     raw = c["raw_path"] if c["raw_path"] and os.path.exists(c["raw_path"]) else None
     if want >= stage_rank("fetched"):
         if raw is None or (force and upto == "fetched"):
-            raw = _do_fetch(cfg, db, prov, bdir, c, force=force and upto == "fetched")
+            raw = _do_fetch(cfg, db, prov, ctx, bdir, c, force=force and upto == "fetched")
             ev["fetched"] = True
         elif have < stage_rank("fetched"):
             db.mark_stage(c["id"], "fetched", raw_path=raw)
     if want >= stage_rank("parsed"):
-        _do_parse(cfg, db, prov, bdir, c, raw, force=force and upto == "parsed")
+        _do_parse(cfg, db, prov, ctx, bdir, c, raw, force=force and upto == "parsed")
         ev["parsed"] = True
     if want >= stage_rank("rendered"):
-        vol = (vol_map or {}).get(c["volume_rr_id"]) if c["volume_rr_id"] else None
-        path, secs, rep = _do_render(cfg, db, scfg, bdir, c, raw, backend=backend,
+        vol = (vol_map or {}).get(c["volume_source_id"]) if c["volume_source_id"] else None
+        path, secs, rep = _do_render(cfg, db, prov, ctx, scfg, bdir, c, raw, backend=backend,
                                      series_row=series_row, vol_info=vol)
         ev["path"] = path
         ev["audio_seconds"] = round(secs, 1)
@@ -772,19 +812,14 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
         _emit({"event": "start", "stage": stage, "series": len(targets),
                "dry_run": dry_run, "range": spans or None})
 
-        touched: list[str] = []
+        touched: list[int] = []
         for s in targets:
             slug = _dir_slug(s)
-            prov = _series_provider(s["url"])
+            prov = providers.get(s["provider"])
             bdir = bundle.bundle_dir(cfg, s)
             if refresh_first:
-                fi = prov.series(s["url"], cfg=cfg)
-                db.upsert_series(fi)
-                db.replace_volumes(s["id"], fi.volumes)
-                db.replace_chapters(s["id"], fi.chapters)
-                # single-artifact providers (a Gutenberg .txt) pull once, here
-                prov.prefetch(fi, cfg=cfg,
-                              cache_dir=os.path.join(bdir, bundle.LAYOUT["raw"]))
+                _refresh_one(cfg, db, s)
+            ctx = _ctx(cfg, db, prov, db.series_by_id(s["id"]), bdir)
             todo = (db.select(s["id"], spans) if explicit
                     else db.outstanding(s["id"], stage, limit))
             if explicit and limit:
@@ -793,7 +828,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                    "pending": len(todo)})
             if not todo:
                 continue
-            touched.append(str(s["rr_id"]))
+            touched.append(s["id"])
             log(f"\n{s['title']}: {len(todo)} chapter(s) to {stage.rstrip('ed')}"
                 f"{' (explicit range)' if explicit else ''}")
             scfg = _series_cfg(cfg, slug, bdir)
@@ -811,7 +846,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                 t0 = time.time()
                 try:
                     log(f"  #{num} {c['title']}")
-                    ev = _advance(cfg, db, prov, scfg, bdir, c, upto=stage,
+                    ev = _advance(cfg, db, prov, ctx, scfg, bdir, c, upto=stage,
                                   force=explicit, backend=backend, series_row=s,
                                   vol_map=vol_map)
                     res.rendered += 1
@@ -830,7 +865,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                            "title": c["title"], "result": "error", "stage": stage,
                            "error": str(exc)[:400]})
         if not dry_run:
-            for row in filter(None, (db.get_series(k) for k in touched)):
+            for row in filter(None, (db.series_by_id(k) for k in touched)):
                 bundle.sync_bundle(cfg, db, row)
         _emit({"event": "done", "stage": stage, "done": res.rendered,
                "errors": res.errors, "skipped": res.skipped})

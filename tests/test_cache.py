@@ -17,15 +17,15 @@ from test_bundle import _Fic  # noqa: F401  (shared fixture helpers)
 @pytest.fixture
 def lib(tmp_path):
     cfg = Config()
-    cfg.royalroad.state_db = str(tmp_path / "state.db")
-    cfg.royalroad.library_dir = str(tmp_path / "library")
+    cfg.library.state_db = str(tmp_path / "state.db")
+    cfg.library.library_dir = str(tmp_path / "library")
     cfg.general.cache_dir = str(tmp_path / "shared-cache")
     cfg.synth.backend = "null"
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     fi = _Fic()
     sid = db.upsert_series(fi)
     db.replace_chapters(sid, fi.chapters)
-    d = os.path.join(cfg.royalroad.library_dir, fi.slug)
+    d = os.path.join(cfg.library.library_dir, fi.slug)
     os.makedirs(os.path.join(d, "chapters"), exist_ok=True)
     db.set_bundle(sid, d, db.get_series("999")["uuid"])
     yield cfg, db, db.get_series("999"), d
@@ -361,9 +361,9 @@ def test_prune_stale_leaves_the_current_generation(lib):
 
 def test_prune_scoped_to_one_series_leaves_others_alone(lib, tmp_path):
     cfg, db, s, d = lib
-    other = _Fic(rr_id="777", slug="other-series")
+    other = _Fic(source_id="777", slug="other-series")
     sid2 = db.upsert_series(other)
-    d2 = os.path.join(cfg.royalroad.library_dir, "other-series")
+    d2 = os.path.join(cfg.library.library_dir, "other-series")
     os.makedirs(os.path.join(d2, "chapters"), exist_ok=True)
     db.set_bundle(sid2, d2, db.get_series("777")["uuid"])
     _populate(cfg, db, d, ["mine"], ["mine-orphan"])
@@ -434,8 +434,8 @@ def cli_lib(lib, tmp_path):
     p.write_text(
         f'[general]\ncache_dir = "{cfg.general.cache_dir}"\n'
         f'[synth]\nbackend = "null"\n'
-        f'[royalroad]\nstate_db = "{cfg.royalroad.state_db}"\n'
-        f'library_dir = "{cfg.royalroad.library_dir}"\n')
+        f'[library]\nstate_db = "{cfg.library.state_db}"\n'
+        f'library_dir = "{cfg.library.library_dir}"\n')
     db.con.commit()
     return cfg, db, d, str(p)
 

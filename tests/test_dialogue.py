@@ -5,7 +5,7 @@ import numpy as np
 from webnovel_audio.audio import apply_chain, pitch_shift
 from webnovel_audio.config import Config
 from webnovel_audio.dialogue import Attributor, split_paragraph
-from webnovel_audio.ingest import parse_document
+from webnovel_audio.providers.royalroad import parse_chapter
 from webnovel_audio.normalize import Block
 from webnovel_audio.segment import build_segments
 
@@ -116,7 +116,7 @@ def test_real_fixture_cast_if_present():
         return
     cfg = _cfg(protagonist="Mara",
                voices={"Mara": "af_heart", "Resk": "am_michael"})
-    doc = parse_document(open(path, encoding="utf-8").read())
+    doc = parse_chapter(open(path, encoding="utf-8").read())
     segs = build_segments(doc.blocks, cfg)
     dlg = [(s.speaker, s.text) for s in segs if s.style == "dialogue"]
     speakers = {sp for sp, _ in dlg}

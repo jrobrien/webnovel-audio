@@ -110,10 +110,16 @@ tilt_db = 1.0
 [dsp.Resk]
 semitones = -1.0           # example: nudge one character's voice lower
 
-[royalroad]
+[library]
 library_dir   = "library"                              # rendered chapters land here, per series
 state_db      = "~/.local/state/webnovel-audio/state.db"
+
+# Content providers: one table per site, named after the provider.
+[royalroad]
 request_delay = 2.5                                     # seconds between royalroad.com requests
+
+[scribblehub]
+request_delay = 2.5                                     # seconds between scribblehub.com requests
 
 [serve]
 host = "0.0.0.0"                                        # `webnovel-audio serve` -> podcast feeds

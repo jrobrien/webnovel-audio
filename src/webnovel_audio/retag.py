@@ -37,7 +37,7 @@ def retag_series(cfg: Config, key: str | None = None, *, dry_run: bool = False,
                 if c["status"] != "rendered" or not path or not os.path.exists(path):
                     skipped += 1
                     continue
-                vol = vol_map.get(c["volume_rr_id"]) if c["volume_rr_id"] else None
+                vol = vol_map.get(c["volume_source_id"]) if c["volume_source_id"] else None
                 tags = _full_tags(scfg, s, c, vol)
                 if dry_run:
                     log(f"  would retag #{c['ord'] + 1} {os.path.basename(path)}")

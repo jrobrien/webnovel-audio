@@ -3,7 +3,9 @@ import json
 import pytest
 import os.path
 
-from webnovel_audio.royalroad import _safe_id, _safe_slug, fetch_asset, parse_fiction
+from webnovel_audio.providers.http import fetch_asset
+from webnovel_audio.providers.royalroad import ASSET_HOSTS, _safe_id, parse_fiction
+from webnovel_audio.safepath import safe_slug as _safe_slug
 from webnovel_audio.serve import _h
 from webnovel_audio.textout import _yaml
 
@@ -37,16 +39,17 @@ def test_parse_fiction_sanitises_crafted_chapter_list():
     fi = parse_fiction(html, url="https://www.royalroad.com/fiction/9/demo")
     assert len(fi.chapters) == 1                      # the non-numeric id is dropped
     c = fi.chapters[0]
-    assert c.rr_id == "555"
+    assert c.source_id == "555"
     assert "/" not in c.slug and ".." not in c.slug
     assert "/chapter/555/" in c.url and "shadow" in c.url and "../" not in c.url
 
 
-def test_fetch_asset_rejects_non_royalroad_host():
+def test_fetch_asset_rejects_other_hosts():
     # host check happens before any network call
-    assert fetch_asset("http://169.254.169.254/latest/meta-data/") is None
-    assert fetch_asset("https://evil.example/x.jpg") is None
-    assert fetch_asset("not a url") is None
+    assert fetch_asset("http://169.254.169.254/latest/meta-data/", ASSET_HOSTS) is None
+    assert fetch_asset("https://evil.example/x.jpg", ASSET_HOSTS) is None
+    assert fetch_asset("https://evilroyalroad.com/x.jpg", ASSET_HOSTS) is None
+    assert fetch_asset("not a url", ASSET_HOSTS) is None
 
 
 def test_serve_html_escape_covers_quotes_and_angles():
@@ -65,53 +68,51 @@ def test_login_does_not_verify(tmp_path, monkeypatch, capsys):
     verified them (that needed an account page whose markup drifts)."""
     import types
 
-    from webnovel_audio import cli, royalroad
+    from webnovel_audio import cli
+    from webnovel_audio.providers import session
 
-    monkeypatch.setattr(royalroad, "CONFIG_DIR", str(tmp_path))
-    monkeypatch.setattr(royalroad, "SESSION_FILE", str(tmp_path / "session.json"))
-    monkeypatch.setattr(cli, "_cmd_login", cli._cmd_login)   # re-bind after patch
-
-    assert not hasattr(royalroad.RRClient, "is_authenticated")
+    monkeypatch.setattr(session, "CONFIG_DIR", str(tmp_path))
 
     rc = cli._cmd_login(types.SimpleNamespace(
-        logout=False, status=False, cookies_file=None,
+        provider=None, logout=False, status=False, cookies_file=None,
         cookie="__cfduid=abc; .AspNetCore.Identity.Application=xyz"))
     out = capsys.readouterr().out
     assert rc == 0 and "saved 2 cookie(s)" in out
     assert "authenticated" not in out.lower()
+    assert (tmp_path / "session.json").exists()
 
     rc = cli._cmd_login(types.SimpleNamespace(
-        logout=False, status=True, cookies_file=None, cookie=None))
+        provider=None, logout=False, status=True, cookies_file=None, cookie=None))
     out = capsys.readouterr().out
     assert rc == 0 and "not verified" in out
 
 
-def test_locked_chapter_points_at_login(tmp_path):
+def test_locked_chapter_points_at_login(tmp_path, monkeypatch):
     """A locked chapter fails with an actionable message rather than silently
     caching a paywall page."""
-    from webnovel_audio import sync
+    from webnovel_audio import providers, sync
     from webnovel_audio.config import Config
     from webnovel_audio.db import DB
-    from webnovel_audio.royalroad import ChapterRef, FictionInfo
+    from webnovel_audio.providers import ChapterRef, SeriesInfo, session
 
+    monkeypatch.setattr(session, "CONFIG_DIR", str(tmp_path))
     cfg = Config()
-    cfg.royalroad.state_db = str(tmp_path / "s.db")
-    cfg.royalroad.library_dir = str(tmp_path / "lib")
-    db = DB(cfg.royalroad.state_db)
-    sid = db.upsert_series(FictionInfo(rr_id="9", slug="demo", title="Demo",
-                                       url="https://rr/9"))
-    db.replace_chapters(sid, [ChapterRef(rr_id="1", order=0, title="Locked",
+    cfg.library.state_db = str(tmp_path / "s.db")
+    cfg.library.library_dir = str(tmp_path / "lib")
+    db = DB(cfg.library.state_db)
+    sid = db.upsert_series(SeriesInfo(provider="royalroad", source_id="9", slug="demo",
+                                      title="Demo", url="https://rr/9"))
+    db.replace_chapters(sid, [ChapterRef(source_id="1", order=0, title="Locked",
                                          slug="locked", url="https://rr/c/1",
                                          published_at="", unlocked=False)])
     c = db.chapters(sid)[0]
 
-    class Prov:
-        raw_ext = ".html"
-
-        def raw(self, url, *, cfg):
-            raise AssertionError("must not fetch a locked chapter")
-
+    prov = providers.get("royalroad")
+    monkeypatch.setattr(type(prov), "_get",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("must not fetch a locked chapter")))
+    ctx = providers.context(cfg, prov)
     with pytest.raises(sync.ChapterLocked) as exc:
-        sync._do_fetch(cfg, db, Prov(), "demo", c)
+        sync._do_fetch(cfg, db, prov, ctx, str(tmp_path / "demo"), c)
     assert "login" in str(exc.value)
     db.close()

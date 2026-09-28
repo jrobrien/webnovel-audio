@@ -351,30 +351,39 @@ have. It's recomputed each render and written beside the audio as
 `.segments.json`, which makes that file the provenance of *that* render and a
 diff baseline for "what would change if I re-rendered?".
 
-**Provider seam for single-artifact sources.** `Provider.prefetch(fi, cfg,
-cache_dir)` runs once per series before per-chapter `raw()` calls, and
-`raw_ext` names the cached artifact's extension. Royal Road ignores both. A
-Project Gutenberg `.txt` provider would download the whole book in `prefetch`,
-split it into chapters, and serve `raw()` from local slices — so later fetches
-never touch the network.
+**Site knowledge lives only in `providers/`** (0.3). Core resolves a provider
+by source for a new series and by `series.provider` for a tracked one, and
+talks to it through `Provider`: `series`, `fetch(ref, ctx)`, `parse(raw, ref,
+ctx)`, `check_fetchable`, `fetch_cover`. Before 0.3 the cached raw page was
+parsed by whichever provider matched its *file path* — always the local-HTML
+one, with Royal Road's selectors — and Royal Road assumptions sat in `sync`,
+`textout`, `feed`, `config` and `db`. `tests/test_architecture.py` now fails if
+a core module names a site or imports a concrete provider. See
+`docs/PROVIDERS.md`.
+
+**Single-artifact sources fit the same seam.** `fetch` takes the chapter
+record, not a URL, so a Project Gutenberg `.txt` provider can list chapters
+with no URLs from `series`, cache the whole file under `ctx.raw_dir`, and serve
+`fetch` from local slices; `raw_ext` names the cached artifact's extension.
 
 ## Auth
 
 A stored session cookie and nothing else. `login` parses cookies out of a
-browser export and saves them 0600; `RRClient` attaches them to content fetches
-so a subscriber-only chapter can be read. It is deliberately **not verified** —
+browser export and saves them 0600 (`providers/session.py`, one file per
+provider that has logins); the provider attaches them to content fetches so a
+subscriber-only chapter can be read. It is deliberately **not verified** —
 0.2.0 checked by GETting `/my/follows`, which meant depending on an account page
 whose markup drifts, and the answer was stale by the next request anyway. A bad
-cookie surfaces where it's actionable instead: `_do_fetch` raises `ChapterLocked`
-for a chapter whose `unlocked` flag is false, naming `login` and saying whether a
-session exists at all. Nothing reads account state — the follows reader and
+cookie surfaces where it's actionable instead: `Provider.check_fetchable`
+raises `ChapterLocked` for a chapter whose `unlocked` flag is false, naming
+`login` and saying whether a session exists at all. Nothing reads account state — the follows reader and
 reading-position sync were removed in 0.2.1.
 
 ## Source metadata
 
 `parse_fiction` also lifts tags (`a.fiction-tag`), content warnings
 (`.text-center.font-red-sunglo li`), status (`span.label` against a known set)
-and rating (`meta[books:rating:value]`) into `FictionInfo` / the `series` table
+and rating (`meta[books:rating:value]`) into `SeriesInfo` / the `series` table
 (lists JSON-encoded). Every extractor goes through `_soft()` so a Royal Road
 markup rename degrades to an empty value rather than breaking a sync — these are
 presentational classes with no stability guarantee, and empty is a truthful

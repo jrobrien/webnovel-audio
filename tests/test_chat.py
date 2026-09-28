@@ -1,7 +1,8 @@
 import os
 
 from webnovel_audio.config import Config
-from webnovel_audio.ingest import _parse_chat, parse_document
+from webnovel_audio.providers.html import parse_chat as _parse_chat
+from webnovel_audio.providers.royalroad import parse_chapter
 from webnovel_audio.normalize import normalize_chat_message, normalize_username
 from webnovel_audio.segment import build_segments
 
@@ -39,7 +40,7 @@ def test_chat_message_normalization():
 
 def test_build_segments_chat_routing():
     cfg = Config()
-    blocks = parse_document(_SYNTH).blocks
+    blocks = parse_chapter(_SYNTH).blocks
     segs = build_segments(blocks, cfg)
     styles = [s.style for s in segs]
     kinds = [s.kind for s in segs]
@@ -57,7 +58,7 @@ def test_build_segments_chat_routing():
 
 def test_chat_earcon_only_at_run_start():
     cfg = Config()
-    segs = build_segments(parse_document(_SYNTH).blocks, cfg)
+    segs = build_segments(parse_chapter(_SYNTH).blocks, cfg)
     cue_idx = [i for i, s in enumerate(segs) if s.kind == "cue"]
     # two runs in the fixture -> exactly two earcons
     assert len(cue_idx) == 2
@@ -67,7 +68,7 @@ def test_real_fixture_chat_and_system():
     path = os.path.join(os.path.dirname(__file__), "..", "samples", "salvage-run-ch1.html")
     if not os.path.exists(path):
         return
-    doc = parse_document(open(path, encoding="utf-8").read())
+    doc = parse_chapter(open(path, encoding="utf-8").read())
     kinds = [b.kind for b in doc.blocks]
     assert kinds.count("chat") >= 6            # [Handle (Loc): ...] livestream lines
     assert kinds.count("system") >= 5          # [bracketed] ship-AI lines + stat block

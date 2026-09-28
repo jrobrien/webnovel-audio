@@ -5,7 +5,7 @@ import pytest
 from webnovel_audio import sync
 from webnovel_audio.config import Config
 from webnovel_audio.db import DB
-from webnovel_audio.royalroad import ChapterRef, FictionInfo
+from webnovel_audio.providers import ChapterRef, SeriesInfo
 
 FICTION_FIXTURE = os.path.join(
     os.path.dirname(__file__), "..", "samples", "salvage-run-fiction.html"
@@ -18,7 +18,7 @@ CHAPTER_STUB = """<html><head><meta property="og:title" content="4. Deck Four - 
 
 def _chapters(n=5):
     return [
-        ChapterRef(rr_id=str(100 + i), order=i, title=f"Chapter {i + 1}",
+        ChapterRef(source_id=str(100 + i), order=i, title=f"Chapter {i + 1}",
                    slug=f"ch-{i + 1}", url=f"https://rr/chapter/{100 + i}/ch-{i + 1}",
                    published_at="2026-01-01", unlocked=True)
         for i in range(n)
@@ -27,7 +27,7 @@ def _chapters(n=5):
 
 def test_db_roundtrip_and_pending(tmp_path):
     db = DB(str(tmp_path / "s.db"))
-    fi = FictionInfo(rr_id="9", slug="demo", title="Demo", author="A", url="https://rr/9")
+    fi = SeriesInfo(provider="royalroad", source_id="9", slug="demo", title="Demo", author="A", url="https://rr/9")
     sid = db.upsert_series(fi)
     assert db.replace_chapters(sid, _chapters(5)) == 5
     assert db.replace_chapters(sid, _chapters(7)) == 2      # 2 new, idempotent for the rest
@@ -73,7 +73,7 @@ def test_parse_range():
 
 def test_db_select_spans(tmp_path):
     db = DB(str(tmp_path / "s.db"))
-    sid = db.upsert_series(FictionInfo(rr_id="9", slug="demo", title="Demo",
+    sid = db.upsert_series(SeriesInfo(provider="royalroad", source_id="9", slug="demo", title="Demo",
                                        url="https://rr/9"))
     db.replace_chapters(sid, _chapters(10))
     nums = lambda spans: [c["ord"] + 1 for c in db.select(sid, spans)]
@@ -100,25 +100,25 @@ def test_explicit_range_is_imperative(tmp_path, monkeypatch):
         return
     fiction_html = open(FICTION_FIXTURE, encoding="utf-8").read()
     monkeypatch.setattr(
-        providers.RoyalRoadProvider, "raw",
-        lambda self, url, *, cfg: fiction_html if "/chapter/" not in url else CHAPTER_STUB)
+        providers.RoyalRoadProvider, "_get",
+        lambda self, url, ctx: fiction_html if "/chapter/" not in url else CHAPTER_STUB)
     monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
 
     cfg = Config()
-    cfg.royalroad.state_db = str(tmp_path / "state.db")
-    cfg.royalroad.library_dir = str(tmp_path / "lib")
+    cfg.library.state_db = str(tmp_path / "state.db")
+    cfg.library.library_dir = str(tmp_path / "lib")
     cfg.synth.backend = "null"
     sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run",
                     start="3", log=lambda *_: None)          # 1-3 skipped
 
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     s = db.get_series("salvage-run")
     assert [c["status"] for c in db.range(s["id"], 1, 3)] == ["skipped"] * 3
     db.close()
 
     # declarative: skipped chapters are left alone
     sync.run_stage(cfg, "rendered", "salvage-run", backend="null", log=lambda *_: None)
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     s = db.get_series("salvage-run")
     assert [c["status"] for c in db.range(s["id"], 1, 3)] == ["skipped"] * 3
     assert all(c["status"] == "rendered" for c in db.range(s["id"], 4, 6))
@@ -128,7 +128,7 @@ def test_explicit_range_is_imperative(tmp_path, monkeypatch):
     res = sync.run_stage(cfg, "rendered", "salvage-run", lo=1, hi=3, backend="null",
                          log=lambda *_: None)
     assert res.rendered == 3
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     s = db.get_series("salvage-run")
     assert all(c["status"] == "rendered" for c in db.range(s["id"], 1, 3))
     db.close()
@@ -136,7 +136,7 @@ def test_explicit_range_is_imperative(tmp_path, monkeypatch):
 
 def test_sync_lock_blocks_a_second_holder(tmp_path):
     cfg = Config()
-    cfg.royalroad.state_db = str(tmp_path / "s.db")
+    cfg.library.state_db = str(tmp_path / "s.db")
     with sync.sync_lock(cfg):
         with pytest.raises(sync.SyncLocked):
             with sync.sync_lock(cfg):
@@ -153,7 +153,7 @@ def test_cmd_sync_refuses_when_locked(tmp_path, capsys):
 
     cfgp = tmp_path / "c.toml"
     dbp = tmp_path / "s.db"
-    cfgp.write_text(f'[royalroad]\nstate_db = "{dbp}"\n')
+    cfgp.write_text(f'[library]\nstate_db = "{dbp}"\n')
     cfg = Config.load(str(cfgp))
     with sync.sync_lock(cfg):
         rc = cli._cmd_sync(types.SimpleNamespace(
@@ -205,19 +205,19 @@ def test_add_and_sync_offline(tmp_path, monkeypatch):
     fiction_html = open(FICTION_FIXTURE, encoding="utf-8").read()
     # intercept the RoyalRoad provider's only network method
     monkeypatch.setattr(
-        providers.RoyalRoadProvider, "raw",
-        lambda self, url, *, cfg: fiction_html if "/chapter/" not in url else CHAPTER_STUB,
+        providers.RoyalRoadProvider, "_get",
+        lambda self, url, ctx: fiction_html if "/chapter/" not in url else CHAPTER_STUB,
     )
     monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
 
     cfg = Config()
-    cfg.royalroad.state_db = str(tmp_path / "state.db")
-    cfg.royalroad.library_dir = str(tmp_path / "lib")
+    cfg.library.state_db = str(tmp_path / "state.db")
+    cfg.library.library_dir = str(tmp_path / "lib")
 
     info = sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run",
                            start="4", log=lambda *_: None)
     assert info["provider"] == "royalroad" and info["pending"] == 2
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     s = db.get_series("424242")
     assert len(db.pending(s["id"])) == 2                    # chapters 5, 6 (1-4 skipped)
 
@@ -237,7 +237,7 @@ def test_add_and_sync_offline(tmp_path, monkeypatch):
     ch = next(e for e in events if e["event"] == "chapter" and e.get("result") == "ok")
     assert ch["number"] == 5 and "path" in ch and ch["audio_seconds"] >= 0
 
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     s = db.get_series("424242")
     done = [c for c in db.chapters(s["id"]) if c["status"] == "rendered"]
     assert len(done) == 1 and os.path.exists(done[0]["audio_path"])
@@ -256,16 +256,16 @@ def test_series_add_registers_only(tmp_path, monkeypatch):
     fiction_html = open(FICTION_FIXTURE, encoding="utf-8").read()
     hits = []
 
-    def fake_raw(self, url, *, cfg):
+    def fake_raw(self, url, ctx):
         hits.append(url)
         return fiction_html if "/chapter/" not in url else CHAPTER_STUB
 
-    monkeypatch.setattr(providers.RoyalRoadProvider, "raw", fake_raw)
+    monkeypatch.setattr(providers.RoyalRoadProvider, "_get", fake_raw)
     monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
 
     cfg = Config()
-    cfg.royalroad.state_db = str(tmp_path / "state.db")
-    cfg.royalroad.library_dir = str(tmp_path / "lib")
+    cfg.library.state_db = str(tmp_path / "state.db")
+    cfg.library.library_dir = str(tmp_path / "lib")
     cfg.general.series_config_dir = str(tmp_path / "series")
 
     info = sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run",
@@ -274,7 +274,7 @@ def test_series_add_registers_only(tmp_path, monkeypatch):
     assert not any("/chapter/" in u for u in hits)          # no chapter fetched
     # ...but the resolved voices ARE pinned, so the series can't drift when the
     # global defaults change later. The overlay lives in the series bundle.
-    overlay = os.path.join(cfg.royalroad.library_dir, info["slug"], "config.toml")
+    overlay = os.path.join(cfg.library.library_dir, info["slug"], "config.toml")
     assert os.path.exists(overlay)
     import tomllib
     pinned = tomllib.loads(open(overlay).read())
@@ -283,13 +283,13 @@ def test_series_add_registers_only(tmp_path, monkeypatch):
 
     # and an empty but *named* lexicon, so an editor pane shows which series
     # is open the way config.toml already does
-    lex = os.path.join(cfg.royalroad.library_dir, info["slug"], "lexicon.csv")
+    lex = os.path.join(cfg.library.library_dir, info["slug"], "lexicon.csv")
     assert os.path.exists(lex)
     assert open(lex).read().startswith(f"# {info['slug']} —")
     from webnovel_audio.lexicon import Lexicon
     assert Lexicon.load(lex).rules == []
     # "--from 2" is recorded per chapter, not as an invisible cutoff
-    db = DB(cfg.royalroad.state_db)
+    db = DB(cfg.library.state_db)
     s = db.get_series("salvage-run")
     st = {c["ord"] + 1: c["status"] for c in db.chapters(s["id"])}
     assert st[1] == st[2] == "skipped" and st[3] == "new"
@@ -330,17 +330,17 @@ def test_suggest_cast_appends_new_speaker_on_a_later_range(tmp_path, monkeypatch
     stub_a = CHAPTER_STUB                                       # chapters 1-3: "Resk"
     stub_b = CHAPTER_STUB.replace("Resk", "Mara")                # chapters 4-6: "Mara"
 
-    def fake_raw(self, url, *, cfg):
+    def fake_raw(self, url, ctx):
         if "/chapter/" not in url:
             return fiction_html
         return stub_a if any(f"/{n}/" in url for n in (1001, 1002, 1003)) else stub_b
 
-    monkeypatch.setattr(providers.RoyalRoadProvider, "raw", fake_raw)
+    monkeypatch.setattr(providers.RoyalRoadProvider, "_get", fake_raw)
     monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
 
     cfg = Config()
-    cfg.royalroad.state_db = str(tmp_path / "state.db")
-    cfg.royalroad.library_dir = str(tmp_path / "lib")
+    cfg.library.state_db = str(tmp_path / "state.db")
+    cfg.library.library_dir = str(tmp_path / "lib")
     cfg.general.series_config_dir = str(tmp_path / "series")
 
     sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run",
@@ -378,14 +378,14 @@ def test_cmd_check_is_report_only(tmp_path, monkeypatch, capsys):
         return
     fiction_html = open(FICTION_FIXTURE, encoding="utf-8").read()
     monkeypatch.setattr(
-        providers.RoyalRoadProvider, "raw",
-        lambda self, url, *, cfg: fiction_html if "/chapter/" not in url else CHAPTER_STUB,
+        providers.RoyalRoadProvider, "_get",
+        lambda self, url, ctx: fiction_html if "/chapter/" not in url else CHAPTER_STUB,
     )
     monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
 
     cfgp = tmp_path / "c.toml"
     cfgp.write_text(
-        f'[royalroad]\nstate_db = "{tmp_path / "s.db"}"\nlibrary_dir = "{tmp_path / "lib"}"\n'
+        f'[library]\nstate_db = "{tmp_path / "s.db"}"\nlibrary_dir = "{tmp_path / "lib"}"\n'
         f'[general]\nseries_config_dir = "{tmp_path / "series"}"\n'
         f'lexicon_dir = "{tmp_path / "lex"}"\n'
     )
@@ -454,10 +454,10 @@ def _sync_args(**kw):
 def _seeded(tmp_path, n_rendered=2, n_new=3):
     """A library with some rendered chapters (for the median) and some outstanding."""
     cfg = Config()
-    cfg.royalroad.state_db = str(tmp_path / "s.db")
-    cfg.royalroad.library_dir = str(tmp_path / "lib")
-    db = DB(cfg.royalroad.state_db)
-    sid = db.upsert_series(FictionInfo(rr_id="9", slug="demo", title="Demo",
+    cfg.library.state_db = str(tmp_path / "s.db")
+    cfg.library.library_dir = str(tmp_path / "lib")
+    db = DB(cfg.library.state_db)
+    sid = db.upsert_series(SeriesInfo(provider="royalroad", source_id="9", slug="demo", title="Demo",
                                        url="https://rr/9"))
     db.replace_chapters(sid, _chapters(n_rendered + n_new))
     for c in db.chapters(sid)[:n_rendered]:
@@ -496,8 +496,8 @@ def test_sync_confirmation_declined(tmp_path, monkeypatch, capsys):
 
     cfg = _seeded(tmp_path)
     cfgp = tmp_path / "c.toml"
-    cfgp.write_text(f'[royalroad]\nstate_db = "{cfg.royalroad.state_db}"\n'
-                    f'library_dir = "{cfg.royalroad.library_dir}"\n')
+    cfgp.write_text(f'[library]\nstate_db = "{cfg.library.state_db}"\n'
+                    f'library_dir = "{cfg.library.library_dir}"\n')
     monkeypatch.setattr("sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda *_: "n")
     called = []
@@ -514,8 +514,8 @@ def test_sync_yes_flag_skips_prompt(tmp_path, monkeypatch):
 
     cfg = _seeded(tmp_path)
     cfgp = tmp_path / "c.toml"
-    cfgp.write_text(f'[royalroad]\nstate_db = "{cfg.royalroad.state_db}"\n'
-                    f'library_dir = "{cfg.royalroad.library_dir}"\n')
+    cfgp.write_text(f'[library]\nstate_db = "{cfg.library.state_db}"\n'
+                    f'library_dir = "{cfg.library.library_dir}"\n')
 
     def boom(*_a, **_k):
         raise AssertionError("must not prompt with --yes")
@@ -535,7 +535,7 @@ def test_opus_tags_carry_provenance(tmp_path):
 
     cfg = Config()
     db = DB(str(tmp_path / "s.db"))
-    fi = FictionInfo(rr_id="9", slug="demo", title="Demo", author="A Writer",
+    fi = SeriesInfo(provider="royalroad", source_id="9", slug="demo", title="Demo", author="A Writer",
                      url="https://rr/9", tags=["Sci-fi", "Space Opera"],
                      warnings=["Graphic Violence", "Profanity"],
                      status="ONGOING", rating=4.5)
@@ -567,7 +567,7 @@ def test_stage_never_demotes_a_finished_chapter(tmp_path):
     `parse <slug> 2-3` on already-rendered chapters used to reset them to
     'parsed', which then made them look outstanding again."""
     db = DB(str(tmp_path / "s.db"))
-    sid = db.upsert_series(FictionInfo(rr_id="9", slug="demo", title="Demo",
+    sid = db.upsert_series(SeriesInfo(provider="royalroad", source_id="9", slug="demo", title="Demo",
                                        url="https://rr/9"))
     db.replace_chapters(sid, _chapters(3))
     c = db.chapters(sid)[0]
@@ -592,20 +592,20 @@ def test_stage_never_demotes_a_finished_chapter(tmp_path):
 
 
 def _vols():
-    from webnovel_audio.royalroad import VolumeRef
+    from webnovel_audio.providers import VolumeRef
     # RR order is NOT contiguous — Sky Pride really runs 1,2,3,4,6,7
-    return [VolumeRef(rr_id="10", title="Vol One", cover_url="", order=1),
-            VolumeRef(rr_id="20", title="Vol Two", cover_url="", order=3)]
+    return [VolumeRef(source_id="10", title="Vol One", cover_url="", order=1),
+            VolumeRef(source_id="20", title="Vol Two", cover_url="", order=3)]
 
 
 def test_volumes_and_positions(tmp_path):
     """Volume membership is per chapter and optional; position within a volume
     is computed, and is NOT the author's chapter number (an interstitial
     shifts it — Sky Pride V2 has an author's note at position 11)."""
-    from webnovel_audio.royalroad import ChapterRef
+    from webnovel_audio.providers import ChapterRef
 
     db = DB(str(tmp_path / "s.db"))
-    fi = FictionInfo(rr_id="9", slug="demo", title="Demo", url="https://rr/9",
+    fi = SeriesInfo(provider="royalroad", source_id="9", slug="demo", title="Demo", url="https://rr/9",
                      volumes=_vols())
     sid = db.upsert_series(fi)
     db.replace_volumes(sid, fi.volumes)
@@ -621,9 +621,9 @@ def test_volumes_and_positions(tmp_path):
     db.replace_chapters(sid, chs)
     rows = {c["ord"] + 1: c for c in db.chapters(sid)}
 
-    assert rows[1]["volume_rr_id"] == "10" and rows[1]["volume_chapter"] == 1
+    assert rows[1]["volume_source_id"] == "10" and rows[1]["volume_chapter"] == 1
     assert rows[2]["volume_chapter"] == 2
-    assert rows[3]["volume_rr_id"] is None and rows[3]["volume_chapter"] is None
+    assert rows[3]["volume_source_id"] is None and rows[3]["volume_chapter"] is None
     assert rows[4]["volume_chapter"] == 1          # position restarts per volume
     # the interstitial at position 2 pushes "V2 C2" to position 3
     assert rows[5]["volume_chapter"] == 2
@@ -636,11 +636,11 @@ def test_volumes_and_positions(tmp_path):
 
 
 def test_opus_tags_use_volume(tmp_path):
-    from webnovel_audio.royalroad import ChapterRef
+    from webnovel_audio.providers import ChapterRef
 
     cfg = Config()
     db = DB(str(tmp_path / "s.db"))
-    fi = FictionInfo(rr_id="9", slug="demo", title="Demo", author="A", url="https://rr/9",
+    fi = SeriesInfo(provider="royalroad", source_id="9", slug="demo", title="Demo", author="A", url="https://rr/9",
                      volumes=_vols())
     sid = db.upsert_series(fi)
     db.replace_volumes(sid, fi.volumes)
@@ -701,7 +701,7 @@ def test_cli_structured_errors(tmp_path, capsys):
     from webnovel_audio import cli
 
     cfgp = tmp_path / "c.toml"
-    cfgp.write_text(f'[royalroad]\nstate_db = "{tmp_path / "s.db"}"\n')
+    cfgp.write_text(f'[library]\nstate_db = "{tmp_path / "s.db"}"\n')
 
     rc = cli._cmd_cast(types.SimpleNamespace(
         action="set", scope="nope", speaker="X", voice="am_michael",
@@ -741,7 +741,7 @@ def test_schema_covers_every_command(capsys):
 
 
 def _series(db, slug, title):
-    return db.upsert_series(FictionInfo(rr_id=slug, slug=slug, title=title,
+    return db.upsert_series(SeriesInfo(provider="royalroad", source_id=slug, slug=slug, title=title,
                                         author="A", url=f"https://rr/{slug}"))
 
 

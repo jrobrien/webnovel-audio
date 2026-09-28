@@ -20,14 +20,14 @@ def test_hms_and_mime():
 
 
 def _series():
-    return {"slug": "demo", "title": "Demo Series", "author": "Jo",
+    return {"slug": "demo", "title": "Demo Series", "author": "Jo", "provider": "royalroad",
             "url": "https://rr/9", "cover_url": "https://cdn/x.jpg"}
 
 
 def _chapter(tmp_path, ord_, status="rendered", dur=1163.0):
     p = tmp_path / f"{ord_ + 1:03d}-c.opus"
     p.write_bytes(b"OggS" + b"\0" * 900)
-    return {"ord": ord_, "rr_id": str(1000 + ord_), "title": f"Chapter {ord_ + 1}",
+    return {"ord": ord_, "source_id": str(1000 + ord_), "title": f"Chapter {ord_ + 1}",
             "status": status, "audio_path": str(p) if status == "rendered" else None,
             "duration_s": dur, "published_at": f"2026-09-0{ord_ + 1}T04:00:00Z",
             "rendered_at": "2026-09-09T00:00:00"}

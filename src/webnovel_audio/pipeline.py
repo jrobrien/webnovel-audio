@@ -12,6 +12,7 @@ import soundfile as sf
 from .audio import apply_chain, assemble, write_opus
 from .config import Config
 from .config import resolve_data_path
+from .document import Document
 from .lexicon import Lexicon
 from .normalize import Block, load_blocks_from_text
 from .segment import Segment, build_segments, segments_to_json
@@ -34,31 +35,39 @@ class Report:
     total_segments: int = 0
 
 
-def load_document(source: str, cfg: Config):
-    """Return (blocks, meta, doc) for a source.
+def document_script(doc: Document, cfg: Config):
+    """(blocks, meta) for a Document: its blocks, optionally led by a spoken
+    title heading, and the Opus tags it carries."""
+    blocks = list(doc.blocks)
+    if cfg.general.speak_title and doc.chapter_title:
+        fic = doc.fiction_title if cfg.general.speak_series else ""
+        blocks.insert(0, Block("heading", doc.chapter_title, meta={"fiction": fic}))
+    meta = {k: v for k, v in {
+        "title": doc.chapter_title,
+        "album": doc.fiction_title,
+        "artist": doc.author,
+        "comment": doc.url,            # players show this; keep it the source link
+        "SOURCE_URL": doc.url,
+        "FETCHED_AT": doc.retrieved_at,
+        "RAW_SHA256": doc.raw_sha256,
+    }.items() if v}
+    return blocks, meta
 
-    A content provider (Royal Road, a saved .html, …) yields an ingest.Document
-    with provenance stamped; `meta` carries the Opus tags. A plain .txt file is
-    already the artifact, so `doc` is None and no Markdown is emitted for it.
+
+def load_document(source: str, cfg: Config):
+    """Return (blocks, meta, doc) for a one-off source (a URL, a saved page,
+    a .txt). Tracked chapters don't come through here: `sync` parses their
+    cached raw artifact with the series' own provider.
+
+    A plain .txt file is already the artifact, so `doc` is None and no
+    Markdown is emitted for it.
     """
     from . import providers
 
     prov = providers.resolve(source)
     if prov is not None:
-        doc = prov.read(source, cfg=cfg)
-        blocks = list(doc.blocks)
-        if cfg.general.speak_title and doc.chapter_title:
-            fic = doc.fiction_title if cfg.general.speak_series else ""
-            blocks.insert(0, Block("heading", doc.chapter_title, meta={"fiction": fic}))
-        meta = {k: v for k, v in {
-            "title": doc.chapter_title,
-            "album": doc.fiction_title,
-            "artist": doc.author,
-            "comment": doc.url,            # players show this; keep it the source link
-            "SOURCE_URL": doc.url,
-            "FETCHED_AT": doc.retrieved_at,
-            "RAW_SHA256": doc.raw_sha256,
-        }.items() if v}
+        doc = prov.read(source, providers.context(cfg, prov))
+        blocks, meta = document_script(doc, cfg)
         return blocks, meta, doc
 
     return load_blocks_from_text(open(source, encoding="utf-8").read()), {}, None
@@ -177,14 +186,18 @@ def _load_nlp(cfg: Config):
     return nlp
 
 
-def build_script(source: str, cfg: Config):
-    blocks, meta, doc = load_document(source, cfg)
+def build_script(source: str | Document, cfg: Config):
+    if isinstance(source, Document):
+        doc = source
+        blocks, meta = document_script(doc, cfg)
+    else:
+        blocks, meta, doc = load_document(source, cfg)
     segs = build_segments(blocks, cfg, _load_lexicon(cfg), _load_nlp(cfg))
     return blocks, segs, meta, doc
 
 
 def render(
-    input_txt: str,
+    source: str | Document,
     out_path: str,
     cfg: Config,
     *,
@@ -195,7 +208,7 @@ def render(
     tags: dict | None = None,
     log=print,
 ) -> Report:
-    blocks, segs, doc_meta, doc = build_script(input_txt, cfg)
+    blocks, segs, doc_meta, doc = build_script(source, cfg)
 
     stem = os.path.splitext(out_path)[0]
     os.makedirs(os.path.dirname(os.path.abspath(stem)) or ".", exist_ok=True)

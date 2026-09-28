@@ -5,8 +5,8 @@ two off-path states: `error` (with `error_stage` naming which stage broke, so a
 render failure doesn't lose the fact that it *was* fetched and parsed) and
 `skipped` (deliberately not wanted: behind `series add --from N`, or set by
 hand). `status` is the *only* notion of progress in the system — there is no
-separate "how far the reader has got" marker, and nothing here talks to Royal
-Road about reading position.
+separate "how far the reader has got" marker, and nothing here talks to a
+source site about reading position.
 """
 from __future__ import annotations
 
@@ -32,8 +32,8 @@ def stage_rank(status: str) -> int:
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS series (
     id             INTEGER PRIMARY KEY,
-    rr_id          TEXT UNIQUE NOT NULL,   -- provider-native id
-    provider       TEXT DEFAULT 'royalroad',
+    source_id      TEXT NOT NULL,        -- the provider's own id for the series
+    provider       TEXT,                 -- providers.get(name) serves this series
     slug           TEXT,
     title          TEXT,
     author         TEXT,
@@ -47,12 +47,14 @@ CREATE TABLE IF NOT EXISTS series (
     rating         REAL,
     added_at       TEXT,
     uuid           TEXT,                 -- stable identity; survives moves and re-import
-    path           TEXT                  -- absolute bundle directory (machine-local)
+    path           TEXT,                 -- absolute bundle directory (machine-local)
+    provider_state TEXT,                 -- provider-owned JSON; core never reads it
+    UNIQUE (provider, source_id)
 );
 CREATE TABLE IF NOT EXISTS chapters (
     id           INTEGER PRIMARY KEY,
     series_id    INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
-    rr_id        TEXT NOT NULL,
+    source_id    TEXT NOT NULL,
     ord          INTEGER NOT NULL,
     title        TEXT,
     slug         TEXT,
@@ -70,21 +72,21 @@ CREATE TABLE IF NOT EXISTS chapters (
     rendered_at  TEXT,
     render_started_at TEXT,   -- wall clock around the synth, for cost estimates
     render_ended_at   TEXT,
-    volume_rr_id      TEXT,   -- provider volumeId; NULL is normal (see replace_volumes)
+    volume_source_id  TEXT,   -- provider volume id; NULL is normal (see replace_volumes)
     volume_chapter    INTEGER,-- 1-based position within its volume
     narrator          TEXT,   -- voice actually used, recorded at render time
     synth_fingerprint TEXT,   -- which synth generation produced this audio
     error        TEXT,
-    UNIQUE (series_id, rr_id)
+    UNIQUE (series_id, source_id)
 );
 CREATE TABLE IF NOT EXISTS volumes (
     id          INTEGER PRIMARY KEY,
     series_id   INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
-    rr_id       TEXT NOT NULL,        -- provider volumeId
+    source_id   TEXT NOT NULL,        -- provider volume id
     title       TEXT,
     cover_url   TEXT,
-    ord         INTEGER,              -- provider order; NOT contiguous (RR skips)
-    UNIQUE (series_id, rr_id)
+    ord         INTEGER,              -- provider order; need NOT be contiguous
+    UNIQUE (series_id, source_id)
 );
 CREATE INDEX IF NOT EXISTS chapters_series_ord ON chapters(series_id, ord);
 """
@@ -103,19 +105,23 @@ class DB:
         self._migrate()
         self.con.commit()
 
+    def _cols(self, table: str) -> set[str]:
+        return {r["name"] for r in self.con.execute(f"PRAGMA table_info({table})")}
+
     def _migrate(self) -> None:
-        cols = {r["name"] for r in self.con.execute("PRAGMA table_info(chapters)")}
+        cols = self._cols("chapters")
+        # a pre-0.3 DB still has the old volume column name; add under that
+        # name so the rename below carries it over
+        vol = "volume_rr_id" if "rr_id" in cols else "volume_source_id"
         for name, decl in (("duration_s", "REAL"), ("error_stage", "TEXT"),
                            ("raw_path", "TEXT"), ("text_path", "TEXT"),
                            ("fetched_at", "TEXT"), ("parsed_at", "TEXT"),
                            ("render_started_at", "TEXT"), ("render_ended_at", "TEXT"),
-                           ("volume_rr_id", "TEXT"), ("volume_chapter", "INTEGER"),
+                           (vol, "TEXT"), ("volume_chapter", "INTEGER"),
                            ("narrator", "TEXT"), ("synth_fingerprint", "TEXT")):
             if name not in cols:
                 self.con.execute(f"ALTER TABLE chapters ADD COLUMN {name} {decl}")
-        scols = {r["name"] for r in self.con.execute("PRAGMA table_info(series)")}
-        if "provider" not in scols:
-            self.con.execute("ALTER TABLE series ADD COLUMN provider TEXT DEFAULT 'royalroad'")
+        scols = self._cols("series")
         if "enabled" not in scols:
             self.con.execute("ALTER TABLE series ADD COLUMN enabled INTEGER DEFAULT 1")
         for name, decl in (("tags", "TEXT"), ("warnings", "TEXT"),
@@ -157,35 +163,94 @@ class DB:
             # folded in just above.
             self.con.execute("ALTER TABLE series DROP COLUMN progress_order")
 
+        if "rr_id" in self._cols("series"):
+            self._migrate_source_ids()
+
+    def _migrate_source_ids(self) -> None:
+        """0.3: provider-neutral ids. `rr_id` becomes `source_id` everywhere,
+        and a series is unique per (provider, source_id) rather than by id
+        alone: two sites can use the same number for different series.
+
+        SQLite cannot change a UNIQUE constraint in place, so `series` is
+        rebuilt. Foreign keys are switched off for it: with them on, dropping
+        the old table would cascade-delete every chapter.
+        """
+        old = self._cols("series")
+        create = _SCHEMA.split("CREATE TABLE IF NOT EXISTS series (", 1)[1].split(");", 1)[0]
+        target = [line.strip().split()[0] for line in create.strip().splitlines()
+                  if line.strip() and not line.strip().startswith(("UNIQUE", "--"))]
+        copy = [c for c in target if (c if c != "source_id" else "rr_id") in old]
+        src = ["rr_id" if c == "source_id" else c for c in copy]
+        self.con.commit()
+        self.con.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self.con.executescript(
+                "BEGIN;"
+                f"CREATE TABLE series_new ({create});"
+                f"INSERT INTO series_new ({', '.join(copy)}) "
+                f"SELECT {', '.join(src)} FROM series;"
+                "DROP TABLE series;"
+                "ALTER TABLE series_new RENAME TO series;"
+                "ALTER TABLE chapters RENAME COLUMN rr_id TO source_id;"
+                "ALTER TABLE chapters RENAME COLUMN volume_rr_id TO volume_source_id;"
+                "ALTER TABLE volumes RENAME COLUMN rr_id TO source_id;"
+                "COMMIT;")
+            bad = self.con.execute("PRAGMA foreign_key_check").fetchall()
+            if bad:
+                raise SystemExit(f"state DB migration left {len(bad)} dangling rows")
+        finally:
+            self.con.execute("PRAGMA foreign_keys = ON")
+
     # -- series ------------------------------------------------------------
     def upsert_series(self, fi) -> int:
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
-        tags = json.dumps(getattr(fi, "tags", []) or [])
-        warnings = json.dumps(getattr(fi, "warnings", []) or [])
-        cur = self.con.execute(
+        tags = json.dumps(fi.tags or [])
+        warnings = json.dumps(fi.warnings or [])
+        self.con.execute(
             # `uuid` is assigned on insert and never updated — it is this
             # series' identity across exports, moves and re-imports.
-            """INSERT INTO series (rr_id, provider, slug, title, author, url, cover_url,
+            """INSERT INTO series (source_id, provider, slug, title, author, url, cover_url,
                                    tags, warnings, status, rating, added_at, uuid)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-               ON CONFLICT(rr_id) DO UPDATE SET
-                 provider=excluded.provider, slug=excluded.slug, title=excluded.title,
+               ON CONFLICT(provider, source_id) DO UPDATE SET
+                 slug=excluded.slug, title=excluded.title,
                  author=excluded.author, url=excluded.url, cover_url=excluded.cover_url,
                  tags=excluded.tags, warnings=excluded.warnings,
                  status=excluded.status, rating=excluded.rating""",
-            (fi.rr_id, getattr(fi, "provider", "royalroad"), fi.slug, fi.title,
+            (fi.source_id, fi.provider, fi.slug, fi.title,
              fi.author, fi.url, fi.cover_url, tags, warnings,
-             getattr(fi, "status", ""), getattr(fi, "rating", 0.0), now,
-             str(uuid.uuid4())),
+             fi.status, fi.rating, now, str(uuid.uuid4())),
         )
+        row = self.find_series(fi.provider, fi.source_id)
+        if fi.state is not None:
+            self.set_provider_state(row["id"], fi.state)
         self.con.commit()
-        row = self.get_series(fi.rr_id)
-        return row["id"] if row else cur.lastrowid
+        return row["id"]
+
+    def find_series(self, provider: str, source_id: str):
+        return self.con.execute(
+            "SELECT * FROM series WHERE provider=? AND source_id=?",
+            (provider, str(source_id))).fetchone()
+
+    def series_by_id(self, series_id: int):
+        return self.con.execute("SELECT * FROM series WHERE id=?", (series_id,)).fetchone()
+
+    def provider_state(self, series_row) -> dict:
+        try:
+            return json.loads(series_row["provider_state"] or "{}")
+        except (ValueError, TypeError, IndexError, KeyError):
+            return {}
+
+    def set_provider_state(self, series_id: int, state: dict) -> None:
+        self.con.execute("UPDATE series SET provider_state=? WHERE id=?",
+                         (json.dumps(state, sort_keys=True), series_id))
+        self.con.commit()
 
     def get_series(self, key: str):
+        """A series by source id, slug, or a slug/title fragment."""
         key = str(key)
         row = self.con.execute(
-            "SELECT * FROM series WHERE rr_id=? OR slug=?", (key, key)
+            "SELECT * FROM series WHERE source_id=? OR slug=? ORDER BY id", (key, key)
         ).fetchone()
         if row:
             return row
@@ -248,8 +313,8 @@ class DB:
 
             out.append({
                 "slug": s["slug"], "title": s["title"], "author": s["author"],
-                "url": s["url"], "rr_id": s["rr_id"],
-                "provider": s["provider"] if "provider" in keys else "royalroad",
+                "url": s["url"], "source_id": s["source_id"],
+                "provider": s["provider"],
                 "enabled": bool(s["enabled"]) if "enabled" in keys else True,
                 "priority": (s["priority"] if "priority" in keys else None) or 100,
                 "tags": _jlist("tags"), "warnings": _jlist("warnings"),
@@ -270,17 +335,17 @@ class DB:
     # -- volumes ---------------------------------------------------------
     def replace_volumes(self, series_id: int, volumes) -> int:
         """Upsert the volume list. Volumes are optional and often incomplete:
-        Royal Road authors assign them per chapter, so a fiction can have none
-        at all, or leave most chapters unassigned (Spector: 529 of 746). A
-        chapter with no volume is normal, not an error."""
+        authors may assign them per chapter, so a series can have none at all,
+        or leave most chapters unassigned (Spector: 529 of 746). A chapter with
+        no volume is normal, not an error."""
         for v in volumes or []:
             self.con.execute(
-                """INSERT INTO volumes (series_id, rr_id, title, cover_url, ord)
+                """INSERT INTO volumes (series_id, source_id, title, cover_url, ord)
                    VALUES (?,?,?,?,?)
-                   ON CONFLICT(series_id, rr_id) DO UPDATE SET
+                   ON CONFLICT(series_id, source_id) DO UPDATE SET
                      title=excluded.title, cover_url=excluded.cover_url,
                      ord=excluded.ord""",
-                (series_id, str(v.rr_id), v.title, v.cover_url, v.order))
+                (series_id, str(v.source_id), v.title, v.cover_url, v.order))
         self.con.commit()
         return len(volumes or [])
 
@@ -290,11 +355,11 @@ class DB:
         ).fetchall()
 
     def volume_map(self, series_id: int) -> dict:
-        """rr_id -> row, plus a 1-based `index` that IS contiguous (RR's `ord`
-        is not — Sky Pride runs 1,2,3,4,6,7)."""
+        """source_id -> row, plus a 1-based `index` that IS contiguous (the
+        provider's `ord` need not be — Sky Pride runs 1,2,3,4,6,7)."""
         out = {}
         for i, v in enumerate(self.volumes(series_id), 1):
-            out[v["rr_id"]] = {"row": v, "index": i, "title": v["title"],
+            out[v["source_id"]] = {"row": v, "index": i, "title": v["title"],
                                "cover_url": v["cover_url"]}
         return out
 
@@ -302,35 +367,35 @@ class DB:
     def replace_chapters(self, series_id: int, chapters) -> int:
         """Upsert chapter rows (keeps status / audio_path). Returns how many are new."""
         existing = {
-            r["rr_id"] for r in self.con.execute(
-                "SELECT rr_id FROM chapters WHERE series_id=?", (series_id,)
+            r["source_id"] for r in self.con.execute(
+                "SELECT source_id FROM chapters WHERE series_id=?", (series_id,)
             )
         }
         # 1-based position within each volume, in chapter order
         seq, counts = {}, {}
         for c in sorted(chapters, key=lambda c: c.order):
-            vid = getattr(c, "volume_id", None)
+            vid = c.volume_id or None
             counts[vid] = counts.get(vid, 0) + 1
-            seq[c.rr_id] = counts[vid] if vid else None
+            seq[c.source_id] = counts[vid] if vid else None
         for c in chapters:
             self.con.execute(
                 """INSERT INTO chapters
-                     (series_id, rr_id, ord, title, slug, url, published_at, unlocked,
-                      volume_rr_id, volume_chapter)
+                     (series_id, source_id, ord, title, slug, url, published_at, unlocked,
+                      volume_source_id, volume_chapter)
                    VALUES (?,?,?,?,?,?,?,?,?,?)
-                   ON CONFLICT(series_id, rr_id) DO UPDATE SET
+                   ON CONFLICT(series_id, source_id) DO UPDATE SET
                      ord=excluded.ord, title=excluded.title, slug=excluded.slug,
                      url=excluded.url, published_at=excluded.published_at,
                      unlocked=excluded.unlocked,
-                     volume_rr_id=excluded.volume_rr_id,
+                     volume_source_id=excluded.volume_source_id,
                      volume_chapter=excluded.volume_chapter""",
-                (series_id, c.rr_id, c.order, c.title, c.slug, c.url,
+                (series_id, c.source_id, c.order, c.title, c.slug, c.url,
                  c.published_at, int(c.unlocked),
-                 str(c.volume_id) if getattr(c, "volume_id", None) else None,
-                 seq.get(c.rr_id)),
+                 str(c.volume_id) if c.volume_id else None,
+                 seq.get(c.source_id)),
             )
         self.con.commit()
-        return sum(1 for c in chapters if c.rr_id not in existing)
+        return sum(1 for c in chapters if c.source_id not in existing)
 
     def chapters(self, series_id: int) -> list[sqlite3.Row]:
         return self.con.execute(
