@@ -516,18 +516,24 @@ def _cmd_pron(args) -> int:
         return _fail("no_text", "no text to sound out",
                      hint="webnovel-audio pron Montgomery",
                      json_mode=want_json)
-    raw = _phonemes(text)
-    out = {"ok": True, "text": text, "scope": scope,
+    # the lexicon sees normalized text when rendering (curly quotes folded,
+    # numbers spelled out, …), so preview exactly that or rules mislead
+    from .normalize import normalize_text
+    spoken = " ".join(normalize_text(text).split())
+    raw = _phonemes(spoken)
+    out = {"ok": True, "text": text, "normalized": spoken, "scope": scope,
            "phonemes": raw, "say": _gloss(raw), "changed": False}
     if not want_json:
         print(f"text      : {text}")
+        if spoken != text:
+            print(f"normalized: {spoken}")
         print(f"phonemes  : {raw}")
         print(f"≈ say     : {_gloss(raw)}")
     if lex is not None:
         from . import tagger as _tagger
-        applied = lex.apply(text, _tagger.load(getattr(cfg.general, "tagger", "")
-                                               or _tagger.DEFAULT_MODEL))
-        if applied != text:
+        applied = lex.apply(spoken, _tagger.load(getattr(cfg.general, "tagger", "")
+                                                 or _tagger.DEFAULT_MODEL))
+        if applied != spoken:
             new = _phonemes(applied)
             out.update(changed=True, applied=applied,
                        applied_phonemes=new, applied_say=_gloss(new))

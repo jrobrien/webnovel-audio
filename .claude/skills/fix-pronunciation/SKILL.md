@@ -72,6 +72,11 @@ confirm a word actually IS mispronounced before spending a lexicon row on
 it — if the gloss already matches what the user wants, stop here and say so
 instead of adding a no-op rule.
 
+The lexicon matches **normalized** text, the same as rendering: curly quotes
+are already straight, `...` is `…`, dashes are spaced. When `pron` prints a
+`normalized:` line, write `--surface` in that form. Don't add separate rows
+for curly-apostrophe or other punctuation variants; normalization covers them.
+
 ## 3. Decide the part of speech (skip for names/places)
 
 - A **name, place, or loanword** that's always said the same way (a person's

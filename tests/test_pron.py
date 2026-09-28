@@ -43,3 +43,25 @@ def test_pron_command_shows_before_and_after(tmp_path, capsys):
     assert rc == 0
     assert "phonemes" in out and "with lexicon : Gram" in out
     assert "GRAM" in out                                  # the after-lexicon gloss
+
+
+@pytest.mark.skipif(importlib.util.find_spec("kokoro_onnx") is None,
+                    reason="needs the kokoro extra for the espeak g2p")
+def test_pron_matches_like_render_does(tmp_path, capsys):
+    """Rendering normalizes before the lexicon runs, so a curly apostrophe
+    matches a straight-quoted rule. `pron` used to apply the lexicon to the
+    raw text and report no match, which invited redundant rules."""
+    import json
+
+    cfg = tmp_path / "c.toml"
+    cfg.write_text('[general]\nbase_lexicon = "%s"\n' % (tmp_path / "_base.csv"))
+    (tmp_path / "_base.csv").write_text(
+        "surface,pos,respell,notes\ncoup d'etat,,koo day-tah,\n")
+
+    rc = cli._cmd_pron(types.SimpleNamespace(
+        text=["a coup d’etat"], config=str(cfg), scope=None, no_lexicon=False,
+        check=False, json=True))
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert out["normalized"] == "a coup d'etat"
+    assert out["changed"] and out["applied"] == "a koo day-tah"
