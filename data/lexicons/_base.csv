@@ -132,3 +132,13 @@ décor,,day-kor,g2p mis-stresses accented word as DAY-kur
 précis,,pray-see,"g2p reads final s, should be silent"
 macramé,,mack-ruh-may,g2p misplaces stress/syllable break
 fêted,,fay-tid,"g2p mangles circumflex vowel, reads as feh-rid"
+coup,,koo,silent p; espeak says KOOP
+coups,,kooz,silent p
+coup d'état,,koo day-tah,French; espeak says KOOP DEH-tat
+coup d'etat,,koo day-tah,French; espeak says KOOP DEH-tat
+coups d'état,,koo day-tah,French; espeak says KOOP DEH-tat
+coups d'etat,,koo day-tah,French; espeak says KOOP DEH-tat
+coup d’état,,koo day-tah,curly-apostrophe form
+coup d’etat,,koo day-tah,curly-apostrophe form
+coups d’état,,koo day-tah,curly-apostrophe form
+coups d’etat,,koo day-tah,curly-apostrophe form
