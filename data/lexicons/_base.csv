@@ -142,3 +142,11 @@ pasty,,paystee,pale; spaCy tags it NOUN even as an adjective, so unscoped (a Cor
 Cornish pasty,,Cornish pass-tee,the pastry; beats the unscoped pasty rule
 Cornish pasties,,Cornish pass-teez,the pastry
 pasties,,pass-teez,plural is always the pastry
+dumbass,,dumb-ass,compound; hyphen joins it tighter than a word space
+dumbasses,,dumb-asses,compound; hyphen joins it tighter than a word space
+goddamn,,god-damn,compound; hyphen joins it tighter than a word space
+goddam,,god-dam,compound; hyphen joins it tighter than a word space
+goddamned,,god-damned,compound; hyphen joins it tighter than a word space
+goddammit,,god-dammit,compound; hyphen joins it tighter than a word space
+goddamnit,,god-damnit,compound; hyphen joins it tighter than a word space
+goddamit,,god-damit,compound; hyphen joins it tighter than a word space
