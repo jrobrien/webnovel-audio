@@ -491,4 +491,4 @@ def test_segments_tab_shows_what_was_rendered(tmp_path):
     assert "disabled" not in val("ext")
     assert val("raw_first") == "[" and val("raw_key_tagged") == "1"
     assert "no segments file" in val("missing") and "disabled" in val("missing_ext")
-    assert "segments" in val("menu1") and val("menu6") == "Render"   # indices shifted by one
+    assert "segments" in val("menu1") and val("menu5") == "Render"   # indices shifted by one

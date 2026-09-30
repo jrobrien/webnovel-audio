@@ -35,6 +35,25 @@ class Report:
     total_segments: int = 0
 
 
+def write_markdown(doc: Document | None, stem: str, *, stage: str,
+                   md_meta: dict | None = None) -> str | None:
+    """The readable `.md` peek artifact for a parsed chapter, from its `Document`.
+
+    The one place that turns a `Document` into that file — `render()` and
+    `sync._do_parse` both call this rather than each keeping their own copy of
+    the same three lines, so the "parse" and "render" stages can't quietly
+    drift apart in how they render the same input.
+    """
+    if doc is None:
+        return None
+    from .textout import render_markdown
+
+    path = stem + ".md"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(render_markdown(doc, front_matter_extra=md_meta, stage=stage))
+    return path
+
+
 def document_script(doc: Document, cfg: Config):
     """(blocks, meta) for a Document: its blocks, optionally led by a spoken
     title heading, and the Opus tags it carries."""
@@ -217,10 +236,7 @@ def render(
     with open(script_path, "w", encoding="utf-8") as fh:
         fh.write(segments_to_json(segs))
 
-    if doc is not None:
-        from .textout import render_markdown
-        with open(stem + ".md", "w", encoding="utf-8") as fh:
-            fh.write(render_markdown(doc, front_matter_extra=md_meta, stage="render"))
+    if write_markdown(doc, stem, stage="render", md_meta=md_meta):
         log(f"text:   {stem}.md")
 
     speech = [s for s in segs if s.kind == "speech" and s.text.strip()]

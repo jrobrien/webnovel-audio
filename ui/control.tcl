@@ -565,9 +565,8 @@ proc chapter_ctx {X Y x y} {
     set n [llength [.bl.tv selection]]
     .ctx entryconfigure 3 -label "Fetch ($n)"
     .ctx entryconfigure 4 -label "Parse ($n)"
-    .ctx entryconfigure 5 -label "Check ($n)"
-    .ctx entryconfigure 6 -label "Render ($n)"
-    .ctx entryconfigure 8 -label "Update cast from selection ($n)"
+    .ctx entryconfigure 5 -label "Render ($n)"
+    .ctx entryconfigure 7 -label "Update cast from selection ($n)"
     .ctx entryconfigure 0 -state [expr {$n == 1 ? "normal" : "disabled"}]
     .ctx entryconfigure 1 -state [expr {$n == 1 ? "normal" : "disabled"}]
     tk_popup .ctx $X $Y
@@ -671,42 +670,10 @@ proc do_stage {stage} {
     if {$::SERIES eq ""} { log "select a series" ; return }
     set r [selected_range]
     if {$r eq ""} { log "select one or more chapters" ; return }
-    ;# `check` and `cast update` return one JSON object, not a stream of events —
-    ;# run them synchronously and format the report rather than dumping raw JSON.
-    if {$stage eq "check"}  { report_check $r ; return }
+    ;# `cast update` returns one JSON object, not a stream of events — run it
+    ;# synchronously and format the report rather than dumping raw JSON.
     if {$stage eq "cast"}   { report_cast  $r ; return }
     run_cmd [list $stage --target $::SERIES --range $r]
-}
-
-proc report_check {range} {
-    .br select .br.log
-    log "\$ webnovel-audio check $::SERIES $range"
-    status "checking $range…"
-    set d [run_json check --target $::SERIES --range $range]
-    status "ready"
-    if {$d eq ""} return
-    set cast [json::get $d cast]
-    set new {}
-    foreach k [dict keys $cast] {
-        if {[json::get [dict get $cast $k] new] ne "0"} { lappend new $k }
-    }
-    log "  cast: [llength [dict keys $cast]] speaker(s), [llength $new] unmapped"
-    foreach k [lrange $new 0 9] {
-        set i [dict get $cast $k]
-        log "    $k — [json::get $i count] line(s), [json::get $i gender]"
-    }
-    if {[llength $new]} { log "    -> right-click > Update cast to add them" }
-    set het [json::get $d heteronyms]
-    if {[llength $het]} {
-        log "  heteronyms (judge by ear):"
-        foreach h [lrange $het 0 7] {
-            log "    [json::get $h word] x[json::get $h count]  …[json::get $h context]…"
-        }
-    }
-    set cand [json::get $d lexicon_candidates]
-    if {[llength $cand]} {
-        log "  unknown names ([llength $cand]): [join [lrange $cand 0 14] {, }]"
-    }
 }
 
 proc report_cast {range} {
@@ -1379,7 +1346,6 @@ menu .ctx -tearoff 0
 .ctx add separator
 .ctx add command -label "Fetch"  -command {do_stage fetch}
 .ctx add command -label "Parse"  -command {do_stage parse}
-.ctx add command -label "Check"  -command {do_stage check}
 .ctx add command -label "Render" -command {do_stage render}
 .ctx add separator
 .ctx add command -label "Update cast from selection" -command {do_stage cast}

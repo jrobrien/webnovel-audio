@@ -52,7 +52,7 @@ proc report {} {
 
         .bl.tv selection set ch1 ; update
         puts $::LOG "menu1 [.ctx entrycget 1 -label]"
-        puts $::LOG "menu6 [.ctx entrycget 6 -label]"
+        puts $::LOG "menu5 [.ctx entrycget 5 -label]"
         puts $::LOG DONE
     } e]} { puts $::LOG "ERROR: $e\n$::errorInfo" }
     close $::LOG

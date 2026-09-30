@@ -667,15 +667,12 @@ def _do_fetch(cfg, db, prov, ctx, bdir, c, *, force=False) -> str:
 
 
 def _do_parse(cfg, db, prov, ctx, bdir, c, raw_path, *, force=False) -> str:
-    from .textout import render_markdown
-
-    md_path = _out_stem(bdir, c) + ".md"
+    stem = _out_stem(bdir, c)
+    md_path = stem + ".md"
     if force or not os.path.exists(md_path):
         doc = _load_doc(prov, ctx, c, raw_path)
         os.makedirs(os.path.dirname(md_path), exist_ok=True)
-        with open(md_path, "w", encoding="utf-8") as fh:
-            fh.write(render_markdown(doc, stage="parse",
-                                     front_matter_extra=_md_extra(prov, c)))
+        pipeline.write_markdown(doc, stem, stage="parse", md_meta=_md_extra(prov, c))
     db.mark_stage(c["id"], "parsed",
                   text_path=md_path if os.path.exists(md_path) else None)
     return md_path
