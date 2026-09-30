@@ -164,6 +164,27 @@ def collapse_inline_ws(s: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", s.replace("\n", " ")).strip()
 
 
+def system_clause_text(raw: str) -> str:
+    """A boxed stat readout's `<br>` line breaks, as spoken clause breaks.
+
+    Authors lay these out one stat per line (`Level: 7<br>Archetype:
+    Watcher<br>...`); `collapse_inline_ws` flattens that straight to spaces
+    like ordinary prose, which runs every "label: value" into the next with
+    nothing between them. Turning each line break into a full stop instead
+    gives each stat its own TTS sentence/pause, while the colon inside a
+    line still binds "label: value" together. A bare header line with no
+    value of its own (`Attributes:`) stays glued to what follows it.
+    """
+    lines = [collapse_inline_ws(ln) for ln in raw.replace("\r", "").split("\n")]
+    lines = [ln for ln in lines if ln]
+    if not lines:
+        return ""
+    out = lines[0]
+    for ln in lines[1:]:
+        out += (" " if out.endswith(":") else ". ") + ln
+    return out
+
+
 def guess_content_container(soup: BeautifulSoup) -> Tag | None:
     """Last resort for markup nobody has taught us: the div with most <p>s.
     Beware it can pick a whole-page wrapper; providers should select their
@@ -217,7 +238,7 @@ def blocks_from_container(content: Tag) -> list[Block]:
 
         if name in _SYSTEM_TAGS or flat.startswith("[") and flat.rstrip().endswith("]") \
                 or _SYSTEM_HINT_RE.search(flat):
-            blocks.append(Block("system", flat.strip("[]").strip()))
+            blocks.append(Block("system", system_clause_text(raw).strip("[]").strip()))
             continue
 
         blocks.append(Block("paragraph", raw, italic=spans))

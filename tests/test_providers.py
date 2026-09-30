@@ -1,7 +1,10 @@
 import os
 
+from bs4 import BeautifulSoup
+
 from webnovel_audio import providers
 from webnovel_audio.config import Config
+from webnovel_audio.providers.html import blocks_from_container, system_clause_text
 
 _CH = os.path.join(os.path.dirname(__file__), "..", "samples", "salvage-run-ch1.html")
 
@@ -34,3 +37,29 @@ def test_stamp_provenance_is_deterministic():
     a = stamp_provenance(Document(blocks=[]), "hello world")
     b = stamp_provenance(Document(blocks=[]), "hello world")
     assert a.raw_sha256 == b.raw_sha256 and a.raw_bytes == 11
+
+
+def test_system_clause_text_breaks_stat_lines_not_headers():
+    # one stat per <br> line -> each becomes its own spoken clause, but a bare
+    # header with no value of its own ("Attributes:") stays glued to what follows
+    raw = "Level: 7\nArchetype: Watcher\n\nAttributes:\nStrength: 15.5\nSpeed: 19.25"
+    assert system_clause_text(raw) == (
+        "Level: 7. Archetype: Watcher. Attributes: Strength: 15.5. Speed: 19.25"
+    )
+
+
+def test_stat_box_br_lines_become_separate_system_clauses():
+    # a real RoyalRoad LitRPG stat box: one <p><strong><em> with <br> per stat,
+    # no actual <table> -- the <br> structure used to be flattened to bare spaces
+    html = (
+        "<div>"
+        "<p><strong><em>Level: 7<br>Archetype: Watcher<br><br>"
+        "Attributes:<br>Strength: 15.5<br>Speed: 19.25</em></strong></p>"
+        "</div>"
+    )
+    container = BeautifulSoup(html, "lxml").div
+    blocks = blocks_from_container(container)
+    assert len(blocks) == 1 and blocks[0].kind == "system"
+    assert blocks[0].text == (
+        "Level: 7. Archetype: Watcher. Attributes: Strength: 15.5. Speed: 19.25"
+    )
