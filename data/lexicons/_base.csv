@@ -143,7 +143,6 @@ goddammit,,god-dammit,compound; hyphen joins it tighter than a word space
 goddamnit,,god-damnit,compound; hyphen joins it tighter than a word space
 goddamit,,god-damit,compound; hyphen joins it tighter than a word space
 stogie,,stogy,"a cigar; hard g, espeak said STOH-jee"
-yeah,,yah,default g2p added a trailing h artifact
 mmm,,ummm,g2p spells consonant-only interjection out letter by letter
 tsk,,tut,g2p reads it as a word (TUHSK) not a tongue click
 shh,,shush,g2p spells it out letter by letter
@@ -159,3 +158,4 @@ mmmhmmm,,uh huh,g2p spells it out letter by letter
 uh-huh,,uh huh,hyphenated form reads flatter than spaced
 hm,,hmm,"single hm has no vowel, g2p spells it out"
 hmmmmmm,,hmm,long run breaks the g2p's short-hmm handling
+yeah,,ya,default g2p adds a trailing h; ya is a short yuh without it
