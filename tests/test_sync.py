@@ -236,6 +236,12 @@ def test_add_and_sync_offline(tmp_path, monkeypatch):
     assert "chapter_begin" in kinds
     ch = next(e for e in events if e["event"] == "chapter" and e.get("result") == "ok")
     assert ch["number"] == 5 and "path" in ch and ch["audio_seconds"] >= 0
+    # what the UI needs to edit its lists in place: before/after status, the
+    # transcript, and the series' real counts once its chapter list is refreshed
+    assert ch["was"] == "new" and ch["status"] == "rendered"
+    assert ch["text_path"].endswith(".md") and os.path.exists(ch["text_path"])
+    ser = next(e for e in events if e["event"] == "series")
+    assert ser["counts"] == {"rendered": 0, "errors": 0, "pending": 2}
 
     db = DB(cfg.library.state_db)
     s = db.get_series("424242")

@@ -656,6 +656,95 @@ proc cmd_readable {} {
     handle_event $ev $line
 }
 
+;# --- live list updates ---------------------------------------------------------
+;# A running command streams `series`, `chapter_begin` and `chapter` events. They
+;# say what changed (`was` / `status`, the series' `counts`), so the two lists are
+;# edited in place: no subprocess, no rebuild, scroll position untouched.
+;# `cmd_finish` still does one full refresh at the end -- the backstop for what an
+;# event can't say (the "Next up" column, a run that was stopped half way).
+array set ::VERB {fetched fetching… parsed parsing… rendered rendering…}
+
+;# {rendered errors pending} that one chapter in status `st` adds to its series
+;# row -- the rules of DB.summary: pending is anything not rendered or skipped,
+;# and an errored chapter is retried, so it counts as pending too.
+proc status_counts {st} {
+    switch -- $st {
+        rendered { return {1 0 0} }
+        error    { return {0 1 1} }
+        skipped  { return {0 0 0} }
+        default  { return [expr {$st eq "" ? {0 0 0} : {0 0 1}}] }
+    }
+}
+
+proc live {handler ev} {
+    if {[catch {$handler $ev} msg]} { log "! live update ($handler): $msg" }
+}
+
+proc live_series {ev} {
+    set slug [json::get $ev slug] ; set c [json::get $ev counts]
+    if {$c eq "" || ![.top.tv exists $slug]} return
+    foreach {col key} {rendered rendered pending pending err errors} {
+        .top.tv set $slug $col [json::get $c $key]
+    }
+}
+
+proc live_begin {ev} {
+    set n [json::get $ev number] ; set stage [json::get $ev stage]
+    if {$n eq "" || [json::get $ev slug] ne $::SERIES} return
+    if {[.bl.tv exists ch$n] && [info exists ::VERB($stage)]} {
+        .bl.tv set ch$n status $::VERB($stage)
+    }
+}
+
+proc live_chapter {ev} {
+    set res [json::get $ev result] ; set slug [json::get $ev slug]
+    set n [json::get $ev number] ; set now [json::get $ev status]
+    ;# `status` is absent from a CLI older than this UI; the final refresh covers it
+    if {($res ne "ok" && $res ne "error") || $now eq "" || $n eq ""} return
+
+    if {[.top.tv exists $slug]} {
+        lassign [status_counts [json::get $ev was]] r0 e0 p0
+        lassign [status_counts $now] r1 e1 p1
+        foreach {col d} [list rendered [expr {$r1 - $r0}] pending [expr {$p1 - $p0}] \
+                              err [expr {$e1 - $e0}]] {
+            set cur [.top.tv set $slug $col]
+            if {$d != 0 && [string is integer -strict $cur]} {
+                .top.tv set $slug $col [expr {max(0, $cur + $d)}]
+            }
+        }
+    }
+    if {$slug ne $::SERIES} return
+
+    set id ch$n
+    if {![.bl.tv exists $id]} {
+        ;# a chapter the sync's own list refresh just found: place it by number
+        set at end ; set i 0
+        foreach c [.bl.tv children {}] {
+            if {[.bl.tv set $c n] > $n} { set at $i ; break }
+            incr i
+        }
+        .bl.tv insert {} $at -id $id -tags $now \
+            -values [list $n "" [json::get $ev title] $now "" ""]
+    }
+    .bl.tv set $id status $now
+    .bl.tv item $id -tags $now
+    set a [json::get $ev audio_seconds]
+    if {$a ne "" && $a > 0} { .bl.tv set $id dur "[expr {int($a / 60)}]m" }
+    if {$res eq "error"} {
+        .bl.tv set $id note "[json::get $ev stage]: [string range [json::get $ev error] 0 48]"
+        set cols [.bl.tv cget -displaycolumns]
+        if {$cols ne "#all" && "note" ni $cols} {
+            .bl.tv configure -displaycolumns [concat $cols note]
+        }
+    } else {
+        .bl.tv set $id note ""
+    }
+    set ::MD($id,status) $now
+    set tp [json::get $ev text_path]
+    if {$tp ne ""} { set ::MD($id,path) $tp }
+    if {$id in [.bl.tv selection]} { load_md ; load_seg }
+}
+
 ;# Split out of cmd_readable so it can be driven directly with synthetic events.
 ;# It used to be reachable only through a live subprocess, which is how a broken
 ;# `expr` in the success branch survived: the tests never completed a chapter.
@@ -664,11 +753,13 @@ proc handle_event {ev {raw ""}} {
         start  { log "start: [json::get $ev stage], [json::get $ev series] series" }
         locked { log "! refused: another render/sync holds the lock"
                  status "refused — another run is active" }
-        series { log "  [json::get $ev title]: [json::get $ev pending] to do" }
+        series { log "  [json::get $ev title]: [json::get $ev pending] to do"
+                 live live_series $ev }
         chapter_begin {
             set n [json::get $ev number]
             status "[json::get $ev stage] #$n — [json::get $ev title]"
             log "    #$n [json::get $ev title] …"
+            live live_begin $ev
         }
         chapter {
             set n [json::get $ev number]
@@ -688,6 +779,7 @@ proc handle_event {ev {raw ""}} {
                 }
                 log "    #$n ok$detail"
             }
+            live live_chapter $ev
         }
         done {
             log "done: [json::get $ev done] ok, [json::get $ev errors] error(s)"

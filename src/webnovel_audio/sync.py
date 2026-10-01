@@ -749,6 +749,11 @@ def _do_render(cfg, db, prov, ctx, scfg, bdir, c, raw_path, *, backend="kokoro",
     return out_path, rep.audio_seconds, rep
 
 
+def _status_of(db, chapter_id: int) -> str:
+    row = db.con.execute("SELECT status FROM chapters WHERE id=?", (chapter_id,)).fetchone()
+    return row["status"] if row else ""
+
+
 def _advance(cfg, db, prov, ctx, scfg, bdir, c, *, upto, force=False, backend="kokoro",
              series_row=None, vol_map=None):
     """Walk one chapter up to `upto`. Returns an event dict for the caller."""
@@ -766,8 +771,10 @@ def _advance(cfg, db, prov, ctx, scfg, bdir, c, *, upto, force=False, backend="k
         elif have < stage_rank("fetched"):
             db.mark_stage(c["id"], "fetched", raw_path=raw)
     if want >= stage_rank("parsed"):
-        _do_parse(cfg, db, prov, ctx, bdir, c, raw, force=force and upto == "parsed")
+        md = _do_parse(cfg, db, prov, ctx, bdir, c, raw, force=force and upto == "parsed")
         ev["parsed"] = True
+        if os.path.exists(md):
+            ev["text_path"] = md
     if want >= stage_rank("rendered"):
         vol = (vol_map or {}).get(c["volume_source_id"]) if c["volume_source_id"] else None
         path, secs, rep = _do_render(cfg, db, prov, ctx, scfg, bdir, c, raw, backend=backend,
@@ -821,8 +828,14 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                     else db.outstanding(s["id"], stage, limit))
             if explicit and limit:
                 todo = todo[:limit]
+            # the series' real counts, taken after any chapter-list refresh, so a
+            # UI showing older numbers can resync before it starts applying deltas
+            chs = db.chapters(s["id"])
             _emit({"event": "series", "slug": slug, "title": s["title"],
-                   "pending": len(todo)})
+                   "pending": len(todo),
+                   "counts": {"rendered": sum(c["status"] == "rendered" for c in chs),
+                              "errors": sum(c["status"] == "error" for c in chs),
+                              "pending": len(db.pending(s["id"]))}})
             if not todo:
                 continue
             touched.append(s["id"])
@@ -847,6 +860,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                                   force=explicit, backend=backend, series_row=s,
                                   vol_map=vol_map)
                     res.rendered += 1
+                    ev["was"], ev["status"] = c["status"], _status_of(db, c["id"])
                     hit, tot = ev.get("cached_segments"), ev.get("total_segments")
                     if hit:
                         # a fully cached re-render finishes in seconds; without
@@ -860,6 +874,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                     log(f"    ! error: {exc}")
                     _emit({"event": "chapter", "slug": slug, "number": num,
                            "title": c["title"], "result": "error", "stage": stage,
+                           "was": c["status"], "status": "error",
                            "error": str(exc)[:400]})
         if not dry_run:
             for row in filter(None, (db.series_by_id(k) for k in touched)):

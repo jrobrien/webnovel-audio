@@ -525,3 +525,34 @@ def test_series_menu_sync_and_delete(tmp_path):
     assert val("del_after_no") == "0" and val("forgot_after_no") == "0"
     assert val("del_after_yes") == "0"
     assert "--purge --yes" in val("forget_call")
+
+
+@needs_display
+def test_run_events_update_the_lists_in_place(tmp_path):
+    """A running command's events edit the series and chapter rows directly,
+    with no subprocess and no rebuild (which would reset the scroll position)."""
+    out = tmp_path / "live.log"
+    r = _run(os.path.join(ROOT, "tests", "ui", "probe_live.tcl"), str(out),
+             ui_conf=tmp_path / "ui.conf")
+    log = out.read_text() if out.exists() else ""
+    assert r.returncode == 0, f"{r.stderr}\n{log}"
+    assert "DONE" in log and "ERROR" not in log and "BGERROR" not in log, log
+
+    def val(key):
+        m = re.search(rf"^{re.escape(key)} (.*)$", log, re.M)
+        assert m, f"no {key!r} in:\n{log}"
+        return m.group(1)
+
+    assert val("series_counts") == "1 3 0"                 # resynced from the event
+    assert val("begin_status") == "rendering…"
+    assert val("done_status") == "rendered" and val("done_dur") == "2m"
+    assert val("done_tag") == "rendered" and val("done_md") == "/x/003.md"
+    assert val("done_series") == "2 2 0"                   # +1 rendered, -1 pending
+    assert val("reparse_series") == "2 2 0" and val("reparse_status") == "rendered"
+    assert val("err_status") == "error" and val("err_note") == "rendered: boom"
+    assert val("err_series") == "2 2 1"                    # errored chapters stay pending
+    assert "note" in val("err_cols")
+    assert val("order") == "ch1 ch3 ch4 ch5"
+    assert val("other_series") == "6 4 0" and val("other_chapters") == "4"
+    assert val("noops_series") == "3 1 1"                  # only the ch4 event moved it
+    assert val("subprocs") == "0" and val("log_has_live_error") == "0"
