@@ -612,6 +612,7 @@ def test_reclaim_keeps_a_key_not_yet_in_every_owning_bundle(legacy, tmp_path):
     import hashlib
     cfg, db, s, d = legacy
     other = _Fic(source_id="777", slug="other-series")
+    other.title = "Other Series"            # the slug is derived from the title
     sid2 = db.upsert_series(other)
     db.replace_chapters(sid2, other.chapters)
     d2 = os.path.join(cfg.library.library_dir, "other-series")

@@ -754,10 +754,10 @@ def test_priority_orders_every_consumer_the_same_way(tmp_path):
     high = _series(db, "high", "Zzz High")     # alphabetically last
 
     # defaults: nothing set, so it falls back to title order
-    assert [s["slug"] for s in db.list_series()] == ["low", "high"]
+    assert [s["slug"] for s in db.list_series()] == ["aaa-low", "zzz-high"]
 
     db.set_priority(high, 900)
-    assert [s["slug"] for s in db.list_series()] == ["high", "low"]
+    assert [s["slug"] for s in db.list_series()] == ["zzz-high", "aaa-low"]
 
 
 def test_pausing_preserves_priority(tmp_path):

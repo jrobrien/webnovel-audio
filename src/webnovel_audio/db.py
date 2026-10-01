@@ -16,6 +16,8 @@ import sqlite3
 import time
 import uuid
 
+from .safepath import series_slug
+
 # the ordered pipeline; index = how far a chapter has progressed
 STAGES = ("new", "fetched", "parsed", "rendered")
 STATUSES = (*STAGES, "error", "skipped")
@@ -208,16 +210,19 @@ class DB:
         warnings = json.dumps(fi.warnings or [])
         self.con.execute(
             # `uuid` is assigned on insert and never updated — it is this
-            # series' identity across exports, moves and re-imports.
+            # series' identity across exports, moves and re-imports. `slug`
+            # is likewise set once, from the title: the site's own slug follows
+            # every retitle and carries promo text, and this is the handle the
+            # CLI, feeds and directory names hang off.
             """INSERT INTO series (source_id, provider, slug, title, author, url, cover_url,
                                    tags, warnings, status, rating, added_at, uuid)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(provider, source_id) DO UPDATE SET
-                 slug=excluded.slug, title=excluded.title,
+                 title=excluded.title,
                  author=excluded.author, url=excluded.url, cover_url=excluded.cover_url,
                  tags=excluded.tags, warnings=excluded.warnings,
                  status=excluded.status, rating=excluded.rating""",
-            (fi.source_id, fi.provider, fi.slug, fi.title,
+            (fi.source_id, fi.provider, series_slug(fi.title, fi.slug), fi.title,
              fi.author, fi.url, fi.cover_url, tags, warnings,
              fi.status, fi.rating, now, str(uuid.uuid4())),
         )
