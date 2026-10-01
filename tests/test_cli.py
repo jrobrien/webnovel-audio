@@ -193,6 +193,12 @@ def test_purge_dry_run_reports_without_deleting(tmp_path, capsys):
     assert rc == 0 and out["dry_run"] is True
     assert out["would_remove"] == str(bundle_dir)
     assert bundle_dir.exists()
+    # the size and breakdown the UI's delete confirmation shows
+    assert out["exists"] is True and out["bytes"] >= 0 and out["files"] >= 1
+    assert out["human"] and out["chapters"] >= 0 and out["rendered"] >= 0
+    assert sum(p["files"] for p in out["parts"]) == out["files"]
+    assert [p["bytes"] for p in out["parts"]] == sorted(
+        (p["bytes"] for p in out["parts"]), reverse=True)
     # still tracked: a dry run must not forget it either
     rc = cli.main(["series", "show", "--scope", "solo", "--json", "--config", cfgp])
     assert rc == 0

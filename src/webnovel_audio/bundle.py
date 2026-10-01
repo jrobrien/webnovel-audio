@@ -731,6 +731,29 @@ def _write_zst(out: str, items) -> None:
                 raise BundleError("archive_failed", "zstd exited non-zero")
 
 
+def purge_plan(cfg: Config, series_row) -> dict:
+    """What `purge` would delete, without deleting: the bundle's total size and a
+    per-entry breakdown (chapters, cache, raw HTML, ...), largest first."""
+    d = bundle_dir(cfg, series_row)
+    if not os.path.isdir(d):
+        return {"path": d, "exists": False, "bytes": 0, "files": 0, "parts": []}
+    size, files = du(d)
+    parts = []
+    for name in sorted(os.listdir(d)):
+        p = os.path.join(d, name)
+        if os.path.isdir(p) and not os.path.islink(p):
+            nbytes, nfiles = du(p)
+        else:
+            try:
+                nbytes, nfiles = os.lstat(p).st_size, 1
+            except OSError:
+                continue
+        parts.append({"name": name, "bytes": nbytes,
+                      "human": human_bytes(nbytes), "files": nfiles})
+    parts.sort(key=lambda x: -x["bytes"])
+    return {"path": d, "exists": True, "bytes": size, "files": files, "parts": parts}
+
+
 def purge(cfg: Config, db: DB, series_row) -> dict:
     """Delete a series' bundle from disk. One directory — which is the whole
     point of the layout: before it, `forget --purge` could not reach the

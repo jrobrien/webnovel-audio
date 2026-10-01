@@ -50,7 +50,7 @@ set ::CFGPATH "" ; set ::LEXDIR "data/lexicons" ; set ::SERIESDIR "data/series"
 array set ::BPATH {}
 set ::BASELEX ""
 set ::SERIES "" ; set ::RUNNING 0 ; set ::PIPE "" ; set ::SERVEPID ""
-set ::SERVEPIPE "" ; set ::STATUS "ready" ; set ::LIMIT 10 ; set ::SYNC_ALL 0
+set ::SERVEPIPE "" ; set ::STATUS "ready" ; set ::LIMIT 10 ; set ::SYNC_SCOPE @all
 array set ::EDIT {}          ;# tab -> path / mtime / dirty
 array set ::MD {}            ;# chapter row id -> text_path / status, from refresh
 array set ::HLAFTER {}       ;# tab -> pending re-highlight, coalesced
@@ -538,6 +538,62 @@ proc do_priority {w slug} {
     refresh_series
 }
 
+# Deleting a series removes its whole library directory: rendered audio,
+# chapter text, the hand-tuned lexicon. The site can be re-fetched but none of
+# that can be regenerated for free, so show exactly what the CLI's dry run
+# reports and make "Yes" a deliberate click -- "No" holds the focus.
+proc dlg_delete {} {
+    set slug [selected_series]
+    if {$slug eq ""} return
+    if {$::RUNNING} { log "! busy: wait for the running command before deleting $slug" ; return }
+    set d [run_json series forget --scope $slug --purge --dry-run]
+    if {$d eq ""} return
+    set w .del ; catch {destroy $w}
+    toplevel $w ; wm title $w "Delete series" ; wm transient $w .
+    ttk::label $w.h -text "Delete [dict get $d title] ($slug)?" -font TkHeadingFont
+    set lines {}
+    if {[json::get $d exists] eq "0"} {
+        lappend lines "nothing on disk at [dict get $d would_remove]"
+    } else {
+        lappend lines "remove [dict get $d would_remove]" \
+            "  [json::get $d files] files, [dict get $d human] freed" ""
+        foreach p [dict get $d parts] {
+            lappend lines [format "  %-14s %9s  %s files" [dict get $p name] \
+                [dict get $p human] [json::get $p files]]
+        }
+    }
+    lappend lines "" "stop tracking it: [json::get $d chapters] chapters ([json::get $d rendered] rendered)\
+        leave the state DB" \
+        "the series lexicon and cast config are deleted with it"
+    ttk::label $w.l -text [join $lines \n] -font TkFixedFont -justify left
+    ttk::label $w.q -text "Really delete $slug?" -font TkHeadingFont
+    ttk::frame $w.b
+    ttk::button $w.b.yes -text "Yes, delete" -command [list do_delete $w $slug]
+    ttk::button $w.b.no  -text "No" -command [list destroy $w]
+    pack $w.b.yes $w.b.no -side left -padx 6
+    grid $w.h -row 0 -padx 12 -pady {12 4} -sticky w
+    grid $w.l -row 1 -padx 12 -pady 4 -sticky w
+    grid $w.q -row 2 -padx 12 -pady {10 4} -sticky w
+    grid $w.b -row 3 -pady 10
+    focus $w.b.no
+    bind $w <Escape> [list destroy $w]
+}
+
+proc do_delete {w slug} {
+    destroy $w
+    if {$::RUNNING} { log "! busy: wait for the running command before deleting $slug" ; return }
+    status "deleting $slug…" ; update idletasks
+    set d [run_json series forget --scope $slug --purge --yes]
+    if {$d eq ""} { status "delete failed" ; return }
+    log "$slug: deleted, freed [expr {[json::get $d freed_bytes] / 1048576}] MB"
+    if {$::SERIES eq $slug} { set ::SERIES "" }
+    refresh_series
+    if {![llength [.top.tv children {}]]} {
+        .bl.tv delete [.bl.tv children {}]
+        status "no series"
+    }
+}
+
 proc series_ctx {X Y x y} {
     set id [.top.tv identify row $x $y]
     if {$id ne ""} { .top.tv selection set $id }
@@ -702,27 +758,18 @@ proc do_reset_errors {} {
 
 # ---------------------------------------------------------------- sync --------
 ;# `@all` is the CLI's own spelling for "every enabled series" (`sync` with no
-;# --scope means the same thing) -- the checkbox just switches which one this
-;# dialog passes, no per-series looping needed on the UI side.
-proc sync_scope {} {
-    return [expr {$::SYNC_ALL ? "@all" : $::SERIES}]
-}
-
-proc dlg_sync {} {
-    if {$::SERIES eq ""} {
-        set ::SYNC_ALL 1
-    } elseif {[series_paused $::SERIES]} {
-        log "! $::SERIES is paused — right-click the series to resume it"
-        status "$::SERIES is paused"
+;# --scope means the same thing), so the dialog never loops over series itself.
+;# The toolbar button syncs all of them; a series' right-click menu passes its
+;# own slug, which is kept in ::SYNC_SCOPE while the dialog is open.
+proc dlg_sync {{scope @all}} {
+    if {$scope ne "@all" && [series_paused $scope]} {
+        log "! $scope is paused — right-click the series to resume it"
+        status "$scope is paused"
         return
-    } else {
-        set ::SYNC_ALL 0
     }
+    set ::SYNC_SCOPE $scope
     set w .sync ; catch {destroy $w}
     toplevel $w ; wm title $w "Sync" ; wm transient $w .
-    ttk::checkbutton $w.all -text "All series" -variable ::SYNC_ALL \
-        -command [list sync_estimate $w]
-    if {$::SERIES eq ""} { $w.all state disabled }
     ttk::label $w.l -text "chapters to render:"
     ttk::spinbox $w.n -from 0 -to 999 -width 5 -textvariable ::LIMIT
     ttk::label $w.h -text "(0 = everything outstanding)"
@@ -731,12 +778,11 @@ proc dlg_sync {} {
     ttk::button $w.b.ok -text "Sync" -command [list do_sync $w]
     ttk::button $w.b.cx -text "Cancel" -command [list destroy $w]
     pack $w.b.ok $w.b.cx -side left -padx 4
-    grid $w.all -row 0 -column 0 -columnspan 3 -padx 10 -pady {10 4} -sticky w
-    grid $w.l -row 1 -column 0 -columnspan 3 -padx 10 -sticky w
-    grid $w.n -row 2 -column 0 -padx 10 -sticky w
-    grid $w.h -row 2 -column 1 -sticky w
-    grid $w.est -row 3 -column 0 -columnspan 3 -padx 10 -pady 6 -sticky w
-    grid $w.b -row 4 -column 0 -columnspan 3 -pady 8
+    grid $w.l -row 0 -column 0 -columnspan 3 -padx 10 -pady {10 0} -sticky w
+    grid $w.n -row 1 -column 0 -padx 10 -sticky w
+    grid $w.h -row 1 -column 1 -sticky w
+    grid $w.est -row 2 -column 0 -columnspan 3 -padx 10 -pady 6 -sticky w
+    grid $w.b -row 3 -column 0 -columnspan 3 -pady 8
     bind $w <Escape> [list destroy $w]
     trace add variable ::LIMIT write [list sync_estimate $w]
     sync_estimate $w
@@ -744,10 +790,10 @@ proc dlg_sync {} {
 
 proc sync_estimate {w args} {
     if {![winfo exists $w]} return
-    set txt [expr {$::SYNC_ALL ? "Sync all series — chapters to render:"
-                                : "Sync $::SERIES — chapters to render:"}]
+    set txt [expr {$::SYNC_SCOPE eq "@all" ? "Sync all series — chapters to render:"
+                                           : "Sync $::SYNC_SCOPE — chapters to render:"}]
     $w.l configure -text $txt
-    set a [list sync --scope [sync_scope] --estimate]
+    set a [list sync --scope $::SYNC_SCOPE --estimate]
     if {$::LIMIT > 0} { lappend a --limit $::LIMIT }
     set d [run_json {*}$a]
     if {$d eq ""} { $w.est configure -text "estimate unavailable" ; return }
@@ -755,7 +801,7 @@ proc sync_estimate {w args} {
 }
 
 proc do_sync {w} {
-    set lim $::LIMIT ; set scope [sync_scope] ; destroy $w
+    set lim $::LIMIT ; set scope $::SYNC_SCOPE ; destroy $w
     set a [list sync --scope $scope --yes]
     if {$lim > 0} { lappend a --limit $lim }
     run_cmd $a
@@ -1241,7 +1287,7 @@ ttk::frame .tool -padding {6 5}
 ttk::button .tool.add     -text "Add series…" -command dlg_add
 ttk::button .tool.refresh -text "Refresh"     -command {refresh_series ; refresh_chapters}
 ttk::separator .tool.s1 -orient vertical
-ttk::button .tool.sync    -text "Sync…"       -command dlg_sync
+ttk::button .tool.sync    -text "Sync…"       -command {dlg_sync @all}
 ttk::button .tool.stop    -text "Stop"        -command stop_cmd
 ttk::separator .tool.s2 -orient vertical
 ttk::button .tool.srv     -text "Start server" -command server_toggle
@@ -1307,12 +1353,17 @@ bind .top.tv $::CTXBUT {series_ctx %X %Y %x %y}
 menu .sctx -tearoff 0
 .sctx add command -label "Pause sync" -command toggle_pause
 .sctx add separator
+.sctx add command -label "Sync…" -command {
+    if {[selected_series] ne ""} { dlg_sync [selected_series] }
+}
 .sctx add command -label "Refresh chapter list" -command {
     if {[selected_series] ne ""} { run_cmd [list series refresh --scope [selected_series]] }
 }
 .sctx add command -label "Set priority…" -command dlg_priority
 .sctx add command -label "Edit cast"    -command {.br select .br.cast}
 .sctx add command -label "Edit lexicon" -command {.br select .br.lex}
+.sctx add separator
+.sctx add command -label "Delete series…" -command dlg_delete
 
 # -- horizontal split: chapters | notebook
 ttk::panedwindow .bot -orient horizontal

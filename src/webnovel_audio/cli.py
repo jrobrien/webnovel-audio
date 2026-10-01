@@ -1800,13 +1800,28 @@ def _cmd_series(args) -> int:
                     bdir = bundle.bundle_dir(cfg, s)
                     st = bundle.status(cfg, s)
                     if args.dry_run:
+                        plan = bundle.purge_plan(cfg, s)
+                        rows = db.chapters(s["id"])
                         info = {"ok": True, "dry_run": True, "slug": s["slug"],
-                                "would_remove": bdir, "bundle": st}
+                                "title": s["title"], "would_remove": bdir,
+                                "bundle": st, "exists": plan["exists"],
+                                "bytes": plan["bytes"],
+                                "human": bundle.human_bytes(plan["bytes"]),
+                                "files": plan["files"], "parts": plan["parts"],
+                                "chapters": len(rows),
+                                "rendered": sum(1 for r in rows
+                                                if r["status"] == "rendered")}
                         if want_json:
                             _jprint(info)
                         else:
-                            print(f"would remove {bdir}")
-                            print(f"would forget {s['title']}")
+                            print(f"would remove {bdir}"
+                                  f"  ({plan['files']} files, {info['human']})")
+                            for p in plan["parts"]:
+                                print(f"  {p['name']:<16}{p['human']:>10}"
+                                      f"  {p['files']} files")
+                            print(f"would forget {s['title']} "
+                                  f"({info['chapters']} chapters tracked, "
+                                  f"{info['rendered']} rendered)")
                         return 0
                     if not args.yes:
                         if want_json or not sys.stdin.isatty():

@@ -492,3 +492,36 @@ def test_segments_tab_shows_what_was_rendered(tmp_path):
     assert val("raw_first") == "[" and val("raw_key_tagged") == "1"
     assert "no segments file" in val("missing") and "disabled" in val("missing_ext")
     assert "segments" in val("menu1") and val("menu5") == "Render"   # indices shifted by one
+
+
+@needs_display
+def test_series_menu_sync_and_delete(tmp_path):
+    """Toolbar Sync is series-wide; the series menu syncs one series and deletes
+    one behind a confirmation that shows what goes and how much space it frees."""
+    out = tmp_path / "menu.log"
+    r = _run(os.path.join(ROOT, "tests", "ui", "probe_series_menu.tcl"), str(out),
+             ui_conf=tmp_path / "ui.conf")
+    log = out.read_text() if out.exists() else ""
+    assert r.returncode == 0, f"{r.stderr}\n{log}"
+    assert "DONE" in log and "ERROR" not in log and "BGERROR" not in log, log
+
+    def val(key):
+        m = re.search(rf"^{re.escape(key)} (.*)$", log, re.M)
+        assert m, f"no {key!r} in:\n{log}"
+        return m.group(1)
+
+    assert "Sync…" in val("sctx") and "Delete series…" in val("sctx")
+    # toolbar: all series, no per-series checkbox, runs `sync --scope @all`
+    assert val("tb_scope") == "@all" and val("tb_all_checkbox") == "0"
+    assert "all series" in val("tb_label") and "--scope @all" in val("tb_run")
+    assert val("one_scope") == "probe" and "probe" in val("one_label")
+    # delete: lists what goes and the space freed, asks plainly, defaults to No
+    assert val("del_exists") == "1"
+    text = val("del_text")
+    assert "/lib/probe" in text and "2.7 GB freed" in text and ".cache" in text
+    assert "107 chapters" in text
+    assert val("del_q") == "Really delete probe?"
+    assert val("del_focus") == ".del.b.no"
+    assert val("del_after_no") == "0" and val("forgot_after_no") == "0"
+    assert val("del_after_yes") == "0"
+    assert "--purge --yes" in val("forget_call")
