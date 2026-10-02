@@ -159,3 +159,4 @@ uh-huh,,uh huh,hyphenated form reads flatter than spaced
 hm,,hmm,"single hm has no vowel, g2p spells it out"
 hmmmmmm,,hmm,long run breaks the g2p's short-hmm handling
 yeah,,ya,default g2p adds a trailing h; ya is a short yuh without it
+twilit,,twylit,lit by twilight; g2p reads it TWIH-liht with a short i
