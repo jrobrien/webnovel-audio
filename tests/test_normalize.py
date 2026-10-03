@@ -113,3 +113,19 @@ def test_allcaps_shouting_is_calmed():
     assert "IV" in normalize_text("Chapter IV: The Return")
     # stat boxes keep their acronyms
     assert "DR" in normalize_system("DR: 5  Block: 10")
+
+
+def test_tight_number_hyphen_is_a_range_not_subtraction():
+    assert normalize_text("pages 1-4") == "pages one to four"
+    assert normalize_text("1–4 days") == "one to four days"
+    assert normalize_text("a 10-15% gain") == "a ten to fifteen percent gain"
+    assert normalize_text("1,000-2,000 men") == "one thousand to two thousand men"
+    assert normalize_text("rank 3-4-5") == "rank three to four to five"
+    # spaced is arithmetic; compounds with a letter are left alone
+    assert normalize_text("he lost 5 - 3") == "he lost five minus three"
+    assert normalize_text("a 10-year-old") == "a ten-year-old"
+
+
+def test_leading_sign_is_spoken():
+    assert normalize_text("Strength +2, Speed -1") == "Strength plus two, Speed minus one"
+    assert normalize_text("-4 degrees") == "minus four degrees"

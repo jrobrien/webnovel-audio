@@ -47,6 +47,10 @@ _SPACED_ELLIPSIS_RE = re.compile(r"\.\s\.\s\.|\. \. \.")
 _DECIMAL_RE = re.compile(r"(?<![\w.])(\d{1,4})\.(\d{1,4})(?![\w.])")
 _HASHNUM_RE = re.compile(r"#\s?(\d{1,4})\b")
 _PLUSMINUS_RE = re.compile(r"(?<=\d)\s*([+\-])\s*(?=\d)")
+# 1-4, 10–15%, 2020-2021: written tight, a range far more often than arithmetic
+_RANGE_RE = re.compile(r"(?<=\d)[-–](?=\d)")
+# a leading sign (`Speed -1`, `+2 Strength`) is spoken, not dropped
+_SIGN_RE = re.compile(r"(?<![\w.])([+\-])(?=\d)")
 
 # Prose-level abbreviation / symbol expansions (applied before number-to-words).
 _TEXT_SUBS: list[tuple[re.Pattern[str], str]] = [
@@ -209,11 +213,13 @@ def normalize_text(s: str, *, dampen_caps: bool = True) -> str:
     s = _SPACED_ELLIPSIS_RE.sub("…", s)
     s = s.replace("...", "…")
     s = _THOUSANDS_RE.sub("", s)
+    s = _RANGE_RE.sub(" to ", s)
     s = s.replace("—", " — ").replace("–", " – ").replace("--", " — ")
     for pattern, repl in _TEXT_SUBS:
         s = pattern.sub(repl, s)
     s = _HASHNUM_RE.sub(lambda m: f"number {int_to_words(int(m.group(1)))}", s)
     s = _PLUSMINUS_RE.sub(lambda m: " plus " if m.group(1) == "+" else " minus ", s)
+    s = _SIGN_RE.sub(lambda m: "plus " if m.group(1) == "+" else "minus ", s)
     s = _LVL_RE.sub("level", s)
     s = _DECIMAL_RE.sub(_decimal_words, s)
     s = _ORD_RE.sub(lambda m: _ordinal_words(m.group(1)), s)
