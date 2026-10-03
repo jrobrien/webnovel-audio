@@ -271,11 +271,15 @@ _SYSTEM_SUBS: list[tuple[re.Pattern[str], str]] = [
 ]
 _RATIO_RE = re.compile(r"\b(\d{1,5})\s*/\s*(\d{1,5})\b")
 _ARROW_RE = re.compile(r"\s*(?:->|=>|→|➔|➜)\s*")
+_PIPE_PAIR_RE = re.compile(r"(\d)\s*\|\s*(?=\d)")
+_TRAILING_ARROW_RE = re.compile(r"\s*(?:->|=>|→|➔|➜)\s*$")
 
 
 def normalize_system(s: str) -> str:
     """Extra spoken-form rules for LitRPG status boxes / stat lines."""
+    s = _TRAILING_ARROW_RE.sub("", s)       # `Level 1 ->` with nothing after it: not "level one to"
     s = _ARROW_RE.sub(" to ", s)
+    s = _PIPE_PAIR_RE.sub(r"\1, ", s)       # `6|30`: two numbers, not a time
     s = s.replace("[", " ").replace("]", " ")
     for pattern, repl in _SYSTEM_SUBS:
         s = pattern.sub(repl, s)

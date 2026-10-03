@@ -63,3 +63,31 @@ def test_stat_box_br_lines_become_separate_system_clauses():
     assert blocks[0].text == (
         "Level: 7. Archetype: Watcher. Attributes: Strength: 15.5. Speed: 19.25"
     )
+
+
+def test_stat_box_lines_are_system_not_chat_and_headers_are_titled():
+    # revolver-chronicles #12: every `[Label: value ->]` line was read by its own
+    # chat voice, a trailing arrow became "to", and `<<ATTRIBUTES>>` reached the
+    # narrator with its brackets
+    html = (
+        "<div>"
+        "<p>[Karmic Level 1 -&gt; ]</p>"
+        "<p>&lt;&lt;ATTRIBUTES&gt;&gt;</p>"
+        "<p>[Ambition: 15 -&gt; ]</p>"
+        "<p>[Attunement: 9 -&gt; ]</p>"
+        "<p>[HP: 577 -&gt; ]</p>"
+        "</div>"
+    )
+    blocks = blocks_from_container(BeautifulSoup(html, "lxml").div)
+    assert [b.kind for b in blocks] == ["system"] * 5
+    assert [b.text for b in blocks] == [
+        "Karmic Level 1 ->", "Attributes.", "Ambition: 15 ->", "Attunement: 9 ->",
+        "HP: 577 ->"]
+
+    from webnovel_audio.config import Config
+    from webnovel_audio.segment import build_segments
+    segs = build_segments(blocks, Config())
+    assert {s.style for s in segs} == {"system"} and len({s.voice for s in segs}) == 1
+    assert [s.text for s in segs] == [
+        "Karmic Level one", "Attributes.", "Ambition: fifteen", "Attunement: nine",
+        "hit points: five hundred seventy-seven"]

@@ -91,3 +91,16 @@ _SYNTH = """<html><head><meta property="og:title" content="Ch 1 - Test"></head><
 <p>[1000yearsofdeath (Earth): The laptop is password-protected.]</p>
 <p>[Scan complete. Evidence located.]</p>
 </div></body></html>"""
+
+
+def test_parse_chat_rejects_single_word_stat_lines():
+    """`[HP: 577/577]` has a one-word label like a chat handle, but a value that
+    is only numbers and symbols is a stat, not a viewer's message."""
+    for line in ("[HP: 577/577]", "[Ambition: 15 -> ]", "[Cartridge: 6|30]",
+                 "[Burden: 0/27 (Light)]", "[Liminal: 2,384 क]", "[Poise: 65 ->]",
+                 "[Designation: SERAC EDIN]"):
+        assert _parse_chat(line) is None, line
+    # real chat still parses: prose, a location, or a handle with digits
+    assert _parse_chat("[Viewer (Earth): 69]")["user"] == "Viewer"
+    assert _parse_chat("[Noobkiller9000: lol]")["user"] == "Noobkiller9000"
+    assert _parse_chat("[Justiceistruth: we want justice]")["user"] == "Justiceistruth"

@@ -45,8 +45,19 @@ _SYSTEM_KEYWORDS = {
     "target", "objective", "quest", "mission", "system", "warning", "alert",
     "error", "notice", "status", "update", "analysis", "scan", "scanning",
     "affirmative", "negative", "ping", "alarm", "alert", "note", "task",
+    "designation", "species", "race", "class", "rank", "level", "skill", "title",
 }
 _HANDLE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_. ]*$")
+_PAREN_OR_NON_ASCII_RE = re.compile(r"\([^)]*\)|[^\x00-\x7f]")
+_STAT_VALUE_RE = re.compile(r"[\d\s.,/|%+\-:=<>]*")
+_HEADER_RE = re.compile(r"^<<\s*([^<>]+?)\s*>>$")
+
+
+def _is_stat_value(message: str) -> bool:
+    """`15 ->`, `577/577`, `6|30`, `0/27 (Light)`, `2,384 क`: numbers and symbols
+    only, once parenthesised notes and non-ASCII glyphs are set aside."""
+    core = _PAREN_OR_NON_ASCII_RE.sub(" ", message)
+    return any(ch.isdigit() for ch in core) and bool(_STAT_VALUE_RE.fullmatch(core))
 
 
 def soup_of(html: str) -> BeautifulSoup:
@@ -73,6 +84,8 @@ def parse_chat(text: str) -> dict | None:
         return None  # [Target: ...] etc. -> a system line, not chat
     if not location and " " in user:
         return None  # a sentence, not a handle
+    if not location and user.isalpha() and _is_stat_value(message):
+        return None  # [HP: 577/577], [Ambition: 15 ->]: a stat line, not a viewer
     return {"user": user, "location": location.strip(), "message": message.strip()}
 
 
@@ -228,6 +241,12 @@ def blocks_from_container(content: Tag) -> list[Block]:
         flat = collapse_inline_ws(raw)
         if _BREAK_GLYPHS_RE.match(flat):
             blocks.append(Block("scene_break"))
+            continue
+
+        header = _HEADER_RE.match(flat)
+        if header:      # `<<ATTRIBUTES>>`: a stat-box section title
+            title = header.group(1)
+            blocks.append(Block("system", (title.title() if title.isupper() else title) + "."))
             continue
 
         chat = parse_chat(flat)
