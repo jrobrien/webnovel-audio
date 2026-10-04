@@ -18,8 +18,10 @@ no GPU, no cloud, no account required.
 - **Three outputs per chapter** — mastered Opus, a **readable Markdown** copy
   (decoys stripped, structure kept, YAML provenance — feeds `pandoc … -o epub`),
   and the internal narration script.
-- **Delivery** — a localhost/LAN server with a per-series **podcast RSS feed**
-  (real dates, durations, cover art, HTTP Range), or a chapterised **`.m4b`**.
+- **Listening** — a phone-friendly **web player** served from the same machine
+  (no login, remembers your place, counts what's new, plays on to the next
+  chapter with the screen off), per-series **podcast RSS feeds** (real dates,
+  durations, cover art, HTTP Range) for podcast apps, or a chapterised **`.m4b`**.
 - **Faithful text handling** — anti-piracy decoy paragraphs removed, LitRPG
   number/stat normalization, and one pronunciation table that covers both names
   the g2p mangles (`Montgomery`, `Eleanor`) and heteronyms the grammar decides
@@ -66,7 +68,7 @@ uv run webnovel-audio lex edit <slug>          # fix pronunciations
 uv run webnovel-audio render <slug> 1-10
 
 # 5. listen
-uv run webnovel-audio serve                    # http://<this-machine>:8080/
+uv run webnovel-audio serve                    # http://<this-machine>:8080/  (the web player)
 ```
 
 Then the steady state is one command — `webnovel-audio sync` pulls, parses and
@@ -83,7 +85,7 @@ uv run webnovel-audio ui
 
 The same steps in one window — series across the top, chapters bottom-left, a
 notebook bottom-right (Cast, Lexicon, Markdown, Log). Select chapters and
-right-click to run `fetch` / `parse` / `check` / `render` over exactly that
+right-click to run `fetch` / `parse` / `render` over exactly that
 selection; double-click to play one.
 
 ![the control UI](docs/img/ui.png)
@@ -91,6 +93,37 @@ selection; double-click to play one.
 It shells the same CLI and parses its `--json`, with no DB or network access
 of its own — so every capability here is one you also have from a terminal.
 Full details in [Control UI](#control-ui) below.
+
+### From the web player
+
+`serve` is also a player. Open `http://<this-machine>:8080/` on a phone or a
+computer (Chrome or any Chromium browser; the audio is Opus) — `serve` prints a
+QR code for it, and a second one for your Tailscale address if you set
+`tailnet_url`.
+
+<p align="center">
+  <img src="docs/img/web-player-guest.jpg" alt="The web player on a phone, as a guest: the library grid, then a series page with a collapsed podcast panel and the chapter list" width="640">
+</p>
+
+- **No login.** The first visit asks *Who's listening?* — pick or add a name, or
+  choose *Just browsing* (the whole library, nothing saved).
+- **Your place follows you.** Per series it keeps where you are now and the
+  furthest chapter you have reached, on the server, so it follows you between
+  devices and between the LAN and Tailscale addresses. Going back to an older
+  chapter moves *where you are* but not *furthest*; **Back to #N** jumps back.
+- **What's new.** Each series shows how many chapters lie beyond your furthest,
+  and the count grows when you refresh or come back to the tab.
+- **Plays on its own.** Chapters continue one after another (also with the
+  screen locked), with lock-screen controls, ±15/+30 s, speed and a sleep timer.
+- **Podcast apps too.** Each series page has a **Podcast feed** panel with the
+  feed URL, *Add to AntennaPod* and *Copy URL*.
+
+Removing someone is a command, not a button: `webnovel-audio profile list`
+shows who has a place saved, `profile remove <name>` deletes a name and the
+places it saved (it asks first; `-y` skips that, `-n` previews), and
+`profile add <name>` creates one ahead of time. A browser that still remembers a
+removed name quietly falls back to guest. Forgetting a series
+(`series forget`) removes its saved places too.
 
 ## The pipeline
 
@@ -179,13 +212,21 @@ them first.
 | `series enable\|disable <slug>` | include / exclude from `sync` — the UI calls this Pause/Resume |
 | `series priority <slug> <n>` | render order: higher goes first, 100 default. Orders `sync`, the CLI listing and the UI together. Separate from pause, so a paused series keeps its priority |
 | `series refresh [slug]` | re-fetch chapter lists **and series metadata** (tags, rating, status) |
-| `series forget <slug> [--purge]` | untrack; `--purge` deletes the whole bundle — audio, text, raw and cache |
+| `series forget <slug> [--purge]` | untrack (and drop everyone's saved places in it); `--purge` deletes the whole bundle — audio, text, raw and cache. `-n` lists what `--purge` would remove and the space freed |
 | `series path <slug>` | print the bundle directory, bare — `cd "$(… series path x)"` |
 | `series archive <slug> [-o F]` | tar the bundle; `--with-cache` to include `.cache/` |
 | `series import <path>` \| `series scan [root]` | adopt a bundle / re-locate moved ones |
 | `series export [slug]` | rewrite `manifest.toml` + `state.json` now |
 | `series migrate [slug]` | move a pre-bundle series into the layout |
 | `series reclaim` | drop shared-cache links now duplicated inside bundles |
+
+**Web player people** — names picked in the player (no accounts):
+
+| command | what |
+|---|---|
+| `profile list` | who has a place saved, in how many series, and when they last listened |
+| `profile add <name>` | create a name ahead of time |
+| `profile remove <name> [-y] [-n]` | delete a name and every place it saved. Asks first; `--json` does **not** imply consent; `-n` previews |
 
 **Cache** — the synthesized-segment store (see [Segment cache](#segment-cache)):
 
@@ -407,7 +448,11 @@ the default; leave gaps so you can insert between). Pausing is a separate
 axis: a paused series sinks to the bottom but keeps its priority, and gets it
 back on resume.
 
-**Sync…** shows a live CPU estimate before it starts. The Cast and Lexicon tabs
+**Sync…** in the toolbar covers every series; right-click a series for **Sync…**
+on just that one. Either shows a live CPU estimate before it starts, and while a
+command runs the chapter and series lists update as each chapter finishes.
+Right-click a series → **Delete series…** lists what would be removed and the
+disk space it frees, then asks *Really delete <slug>?* before touching anything. The Cast and Lexicon tabs
 edit the bundle's `config.toml` and `lexicon.csv` in place, with an
 mtime check so a file that `cast update` changed underneath is never silently
 clobbered; **Open in $EDITOR** hands off to `$WEBNOVEL_AUDIO_EDITOR` / `$VISUAL`
@@ -594,11 +639,33 @@ head (`[Scan complete…]`) stay `system` — the in-fiction AI.
 
 ### Delivery
 
-`serve` runs a `http.server` (localhost/LAN, read-only): `/` lists tracked series
-with a copyable feed URL, `/feed/<slug>.xml` is a live RSS 2.0 + iTunes feed,
-`/audio/…` and `/cover/…` serve files with single-range support. Opus-in-Ogg
-works in AntennaPod / Podcast Addict / gPodder; Apple Podcasts and Overcast
-don't — use `book` for a `.m4b`.
+`serve` runs a `http.server` (localhost/LAN) with one process and one port:
+
+- `/` is the **web player** (`/player/` is an alias), backed by a small JSON api
+  under `/api/` — `library`, `profiles` and `positions`. Its only writes are
+  creating a name and saving a place; both take `application/json` only and the
+  server sends no CORS headers, so another website cannot write through a
+  visitor's browser.
+- `/feed/<slug>.xml` is a live RSS 2.0 + iTunes feed; `/audio/…` and `/cover/…`
+  serve files with single-range support. Opus-in-Ogg works in AntennaPod /
+  Podcast Addict / gPodder; Apple Podcasts and Overcast don't — use `book` for
+  a `.m4b`.
+
+The server and a running render share one SQLite state DB. Reads never wait
+(WAL); a position save waits at most two seconds for the renderer's write lock,
+then answers `503` with `Retry-After` and the page retries.
+
+Everything is read-only for the library and unauthenticated, so keep it on the
+LAN or a tailnet. `[serve] access_log` writes one line per request (client,
+path, status, bytes, redirect target) to a rotating file of about 4 MB; audio and
+cover fetches are collapsed to one line per client per file per ten minutes.
+
+**Tailscale.** Set `tailnet_url` to this machine's tailnet address and the web
+player is reachable away from home; feed and enclosure URLs follow whichever
+address the client used. To move a podcast app's existing subscriptions onto the
+tailnet address, turn on `redirect_to_tailnet` for one refresh: every feed asked
+for on any other host answers `301`, which AntennaPod follows and remembers.
+Turn it off again afterwards.
 
 ## Configuration
 
@@ -610,13 +677,13 @@ per-series casting (`seed_chapters` = `check`'s default sample window) · `[chat
 (`thought_threshold`, `system_rate`) · `[pauses]` · `[audio]` loudness ·
 `[dsp.*]` effect chains keyed by speaker / voice / style · `[library]`
 (`library_dir`, `state_db`) · one table per provider (`[royalroad]`,
-`[scribblehub]`: `request_delay`) · `[serve]` (`host`, `port`) ·
+`[scribblehub]`: `request_delay`) · `[serve]` (`host`, `port`, `base_url`, `tailnet_url`, `redirect_to_tailnet`, `access_log`) ·
 `[book]` bitrate.
 
 ## Development
 
 ```sh
-uv run pytest -q            # ~250 tests, fully offline
+uv run pytest -q            # ~330 tests, fully offline (the web player's JS tests run if `node` is installed)
 uv run python -m compileall -q src/
 ```
 
