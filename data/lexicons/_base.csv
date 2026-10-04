@@ -16,9 +16,11 @@
 # `d=` in the notes is edit distance to the reference pronunciation in Google's
 # WikipediaHomographData, 0 being exact.
 #
-# Deliberately absent: `lead` `bass` `row` `tear` `bow` and the other readings
-# that split on meaning rather than grammar. A tag cannot choose those; pin
-# them per series with a phrase, e.g.  a tear in,,a tair in
+# Deliberately absent: bare `lead` `bass` `row` `tear` `bow` and the other
+# readings that split on meaning rather than grammar. A tag cannot choose those
+# (the tagger gives the metal and the position/modifier senses of `lead` the
+# same NN/JJ); pin them per series with a phrase, e.g.  a tear in,,a tair in
+# Only the metal collocations of `lead` are pinned, as phrases, at the end.
 surface,pos,respell,notes
 
 # --- names and loanwords -------------------------------------------
@@ -161,3 +163,49 @@ hmmmmmm,,hmm,long run breaks the g2p's short-hmm handling
 yeah,,ya,default g2p adds a trailing h; ya is a short yuh without it
 twilit,,twylit,lit by twilight; g2p reads it TWIH-liht with a short i
 goodby,,goodbye,variant spelling of goodbye; g2p reads it GUUD-BEE
+
+# --- lead, the metal (said LED): collocations only ----------------------
+lead bullet,,led bullet,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead bullets,,led bullets,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead pellet,,led pellet,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead pellets,,led pellets,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead poisoning,,led poisoning,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead shot,,led shot,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead slug,,led slug,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead slugs,,led slugs,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead pipe,,led pipe,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead pipes,,led pipes,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead paint,,led paint,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead weight,,led weight,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead weights,,led weights,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead sinker,,led sinker,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead sinkers,,led sinkers,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead shielding,,led shielding,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead lining,,led lining,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead mine,,led mine,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead mines,,led mines,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead brick,,led brick,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead bricks,,led bricks,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead blanket,,led blanket,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead blankets,,led blankets,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead tablet,,led tablet,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead tablets,,led tablets,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead cauldron,,led cauldron,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead cauldrons,,led cauldrons,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead plate,,led plate,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead plates,,led plates,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead sheet,,led sheet,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead sheets,,led sheets,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead ore,,led ore,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead-lined,,led-lined,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+hot lead,,hot led,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+molten lead,,molten led,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+boiling lead,,boiling led,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+powdered lead,,powdered led,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+heavy as lead,,heavy as led,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+full of lead,,full of led,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+made of lead,,made of led,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+taste of lead,,taste of led,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+tin or lead,,tin or led,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+lead and mercury,,led and mercury,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
+coughed lead,,coughed led,"the metal, said LED; the tagger cannot tell it from lead the position/verb"
