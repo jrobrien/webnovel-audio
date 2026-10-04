@@ -1,29 +1,42 @@
-"""A tiny LAN server: podcast feeds + audio files for the library.
+"""A tiny LAN server: the web player, podcast feeds and audio files for the library.
 
-Point a podcast app on your phone at  http://<this-machine>:<port>/  and it lists
-every tracked series with a one-tap feed URL to subscribe. New chapters appear in
-the feed as `sync` renders them.
+Open http://<this-machine>:<port>/ on any device: the player is the home page (browse,
+play, resume, see what's new). Each series page has its podcast feed for apps such as
+AntennaPod. New chapters appear everywhere as `sync` renders them.
 """
 from __future__ import annotations
 
+import json
 import logging
 import logging.handlers
 import os
 import re
 import shutil
 import socket
+import sqlite3
 import ssl
 import subprocess
 import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from xml.sax.saxutils import escape
 
 from .config import Config
-from . import bundle
+from . import bundle, player
 from .db import DB
 from .feed import audio_mime, build_feed
 from .safepath import safe_slug as _safe_slug
+
+WEB_DIR = os.path.join(os.path.dirname(__file__), "web")
+_WEB_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+_WEB_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=utf-8",
+              ".mjs": "text/javascript; charset=utf-8", ".js": "text/javascript; charset=utf-8",
+              ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon",
+              ".webmanifest": "application/manifest+json"}
+_MAX_BODY = 4096
+#: how long a request waits for the renderer's write lock before answering 503.
+#: Reads never wait (WAL); only position saves can, and the page just retries.
+DB_BUSY_MS = 2000
+_BAD = object()          # _read_json's "I already sent the error response"
 
 _HOST_RE = re.compile(r"[^A-Za-z0-9.\-:\[\]]")
 
@@ -43,66 +56,9 @@ def _host_port(value: str) -> tuple[str, int] | None:
         return None
 
 
-def _h(value) -> str:
-    """HTML-escape for both text and quoted-attribute contexts."""
-    return escape(str(value), {'"': "&quot;", "'": "&#39;"})
-
 # Phones/browsers open speculative + HTTPS-probe connections and drop them; these
 # surface here as noisy but harmless socket errors.
 _QUIET_ERRORS = (ConnectionError, BrokenPipeError, TimeoutError, ssl.SSLError)
-
-_INDEX_CSS = """
-:root{--bg:#fafaf9;--card:#fff;--fg:#1c1917;--dim:#78716c;--line:#e7e5e4;
-  --accent:#4f46e5;--on-accent:#fff;--code:#f5f5f4;--ok:#059669}
-@media (prefers-color-scheme:dark){:root{--bg:#161618;--card:#202024;--fg:#e7e5e4;
-  --dim:#a1a1aa;--line:#33333a;--accent:#818cf8;--on-accent:#16161a;--code:#27272b;--ok:#34d399}}
-*{box-sizing:border-box}
-body{margin:0;background:var(--bg);color:var(--fg);
-  font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
-main{max-width:44rem;margin:0 auto;padding:2rem 1.1rem 3rem}
-h1{font-size:1.4rem;margin:0 0 .3rem}
-.lead{color:var(--dim);margin:.2rem 0 1.6rem}
-.lead code,.empty code{background:var(--code);padding:.1em .35em;border-radius:5px;font-size:.9em}
-.grid{display:flex;flex-direction:column;gap:1rem}
-.card{display:flex;align-items:flex-start;gap:1rem;background:var(--card);
-  border:1px solid var(--line);border-radius:14px;padding:1rem;
-  box-shadow:0 1px 2px #0000000d}
-.cover{flex:none;align-self:flex-start;width:88px;aspect-ratio:2/3;object-fit:cover;
-  border-radius:8px;background:var(--code)}
-.cover.ph{display:flex;align-items:center;justify-content:center;font-size:2rem;
-  font-weight:700;color:var(--dim)}
-.body{min-width:0;display:flex;flex-direction:column;gap:.35rem;flex:1}
-.body h2{font-size:1.05rem;margin:0;line-height:1.3}
-.by{color:var(--dim);font-size:.85rem;margin-top:-.2rem}
-.meta{color:var(--dim);font-size:.85rem}
-.dim{opacity:.7}
-.url{display:block;font:.8rem/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
-  background:var(--code);border:1px solid var(--line);border-radius:8px;
-  padding:.45rem .55rem;word-break:break-all;user-select:all;cursor:pointer;
-  margin:.15rem 0 .1rem}
-.url:focus{outline:2px solid var(--accent);outline-offset:1px}
-.url[data-copied]::after{content:" — copied";color:var(--ok);user-select:none}
-.actions{display:flex;flex-wrap:wrap;gap:.5rem;margin-top:.35rem}
-.btn{text-decoration:none;font-size:.82rem;font-weight:600;padding:.4rem .75rem;
-  border-radius:8px;background:var(--accent);color:var(--on-accent);
-  border:1px solid transparent;white-space:nowrap}
-.btn.ghost{background:transparent;color:var(--fg);border-color:var(--line)}
-.btn:active{transform:translateY(1px)}
-.empty{color:var(--dim)}
-""".strip()
-
-_INDEX_JS = """
-for(const el of document.querySelectorAll('.url')){
- el.addEventListener('click',()=>{
-  const r=document.createRange();r.selectNodeContents(el);
-  const s=getSelection();s.removeAllRanges();s.addRange(r);
-  if(navigator.clipboard)navigator.clipboard.writeText(el.textContent).then(()=>{
-   el.setAttribute('data-copied','');setTimeout(()=>el.removeAttribute('data-copied'),1400);
-  }).catch(()=>{});
- });
-}
-""".strip()
-
 
 def _lan_ip() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -232,7 +188,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         path = self.path.split("?", 1)[0]
         client = self.client_address[0]
-        if path.startswith(("/audio/", "/cover/")):
+        if path.startswith(("/audio/", "/cover/", "/player/", "/api/")):
             recent, now = self.server.recent, time.monotonic()  # type: ignore[attr-defined]
             if now - recent.get((client, path), -_ACCESS_DEDUP_S) < _ACCESS_DEDUP_S:
                 return
@@ -268,8 +224,12 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             if "\x00" in path:
                 return self._send(400, b"bad request\n", "text/plain")
-            if path in ("/", "/index.html"):
-                return self._index()
+            if path in ("/", "/index.html", "/player", "/player/"):
+                return self._static("player.html")
+            if path.startswith("/player/"):
+                return self._static(path[len("/player/"):])
+            if path.startswith("/api/"):
+                return self._api_get(path)
             if path.startswith("/feed/") and path.endswith(".xml"):
                 return self._feed(_safe_slug(path[len("/feed/"):-len(".xml")], ""))
             if path.startswith("/audio/"):
@@ -288,11 +248,112 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._file(bundle.artifact(bdir, "covers", "cover.jpg"),
                                   root=bdir, fallback_mime="image/jpeg")
             self._send(404, b"not found\n", "text/plain")
+        except sqlite3.OperationalError:
+            self._busy()
         except (ValueError, OSError, *_QUIET_ERRORS):
             self._send(404, b"not found\n", "text/plain")
 
+    def do_POST(self):
+        self._api_write(urllib.parse.unquote(self.path.split("?", 1)[0]))
+
+    do_PUT = do_POST
+
+    # -- web player: static files and the JSON api --------------------------------
+    def _json(self, code: int, obj) -> None:
+        self._send(code, json.dumps(obj, ensure_ascii=False).encode(),
+                   "application/json; charset=utf-8", {"Cache-Control": "no-store"})
+
+    def _static(self, name: str) -> None:
+        ext = os.path.splitext(name)[1].lower()
+        path = os.path.join(WEB_DIR, name)
+        if not _WEB_NAME_RE.match(name) or ext not in _WEB_TYPES or not os.path.isfile(path):
+            return self._send(404, b"not found\n", "text/plain")
+        with open(path, "rb") as fh:
+            self._send(200, fh.read(), _WEB_TYPES[ext], {"Cache-Control": "no-cache"})
+
+    def _profile_in(self, db: DB, raw: str) -> str | None:
+        name = player.valid_profile_name(raw)
+        return name if name and name in db.list_profiles() else None
+
+    def _api_get(self, path: str) -> None:
+        parts = [p for p in path.split("/") if p][1:]               # drop "api"
+        db = self._db()
+        try:
+            if parts == ["library"]:
+                return self._json(200, player.library(self.cfg, db))
+            if parts == ["profiles"]:
+                return self._json(200, {"profiles": db.list_profiles()})
+            if len(parts) == 2 and parts[0] == "positions":
+                profile = self._profile_in(db, parts[1])
+                if not profile:
+                    return self._json(404, {"error": "unknown profile"})
+                return self._json(200, player.positions(db, profile))
+            self._json(404, {"error": "not found"})
+        finally:
+            db.close()
+
+    def _read_json(self):
+        """The request's JSON body, or `_BAD` after sending the error response.
+
+        Only `application/json` is accepted, and no CORS headers are ever sent, so
+        a web page on some other site cannot make a visitor's browser write here
+        (that would need a preflight this server never approves).
+        """
+        if not (self.headers.get("Content-Type") or "").lower().startswith("application/json"):
+            self._json(415, {"error": "send application/json"})
+            return _BAD
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if not 0 < n <= _MAX_BODY:
+            self._json(413 if n > _MAX_BODY else 400, {"error": "bad body size"})
+            return _BAD
+        try:
+            return json.loads(self.rfile.read(n))
+        except ValueError:
+            self._json(400, {"error": "bad json"})
+            return _BAD
+
+    def _api_write(self, path: str) -> None:
+        try:
+            parts = [p for p in path.split("/") if p]
+            if parts[:1] != ["api"]:
+                return self._json(404, {"error": "not found"})
+            body = self._read_json()
+            if body is _BAD:
+                return
+            db = self._db()
+            try:
+                if self.command == "POST" and parts == ["api", "profiles"]:
+                    name = player.valid_profile_name(body.get("name") if isinstance(body, dict) else "")
+                    if not name:
+                        return self._json(400, {"error": "use 1-24 letters, digits, spaces . _ ' -"})
+                    return self._json(200, {"profile": db.add_profile(name)})
+                if self.command == "PUT" and len(parts) == 4 and parts[1] == "positions":
+                    profile = self._profile_in(db, parts[2])
+                    if not profile:
+                        return self._json(404, {"error": "unknown profile"})
+                    saved = player.save_position(db, profile, _safe_slug(parts[3], ""), body)
+                    if saved is None:
+                        return self._json(400, {"error": "unknown series or chapter"})
+                    return self._json(200, saved)
+                self._json(404, {"error": "not found"})
+            finally:
+                db.close()
+        except sqlite3.OperationalError:       # "database is locked": the renderer has it
+            self._busy()
+        except (*_QUIET_ERRORS, OSError):
+            pass
+
     def _db(self) -> DB:
-        return DB(self.cfg.library.state_db)
+        # no schema pass per request: `serve()` initialised the DB once, and a
+        # request that rewrote nothing must never take the write lock
+        return DB(self.cfg.library.state_db, init=False, busy_ms=DB_BUSY_MS)
+
+    def _busy(self) -> None:
+        self._send(503, b'{"error": "busy, try again"}', "application/json; charset=utf-8",
+                   {"Retry-After": "2", "Cache-Control": "no-store"})
 
     def _bundle(self, slug: str) -> str | None:
         """The series' bundle directory, or None if it isn't tracked. Files are
@@ -304,61 +365,6 @@ class _Handler(BaseHTTPRequestHandler):
             return bundle.bundle_dir(self.cfg, s) if s else None
         finally:
             db.close()
-
-    def _index(self):
-        db = self._db()
-        base = self._base_url()
-        cards = []
-        for s in db.list_series():
-            chs = db.chapters(s["id"])
-            done = sum(1 for c in chs if c["status"] == "rendered")
-            pend = sum(1 for c in chs if c["status"] in ("new", "fetched",
-                                                         "parsed", "error"))
-            slug = _safe_slug(s["slug"], "")
-            if not slug:
-                continue
-            feed = f"{base}/feed/{slug}.xml"
-            tail = feed.split("://", 1)[1]
-            if os.path.exists(bundle.artifact(
-                    bundle.bundle_dir(self.cfg, s), "covers", "cover.jpg")):
-                art = f'<img class=cover src="{_h(base)}/cover/{slug}.jpg" alt="" loading=lazy>'
-            else:
-                art = f'<div class="cover ph">{_h((s["title"] or "?")[:1].upper())}</div>'
-            meta = f"{done} episode{'s' * (done != 1)}"
-            if pend:
-                meta += f' <span class=dim>· {pend} pending</span>'
-            author = s["author"] or ""
-            cards.append(
-                f'<article class=card>{art}<div class=body>'
-                f"<h2>{_h(s['title'])}</h2>"
-                + (f"<div class=by>{_h(author)}</div>" if author else "")
-                + f"<div class=meta>{meta}</div>"
-                f'<code class=url tabindex=0>{_h(feed)}</code>'
-                f'<div class=actions><a class=btn href="pcast://{_h(tail)}">Add to AntennaPod</a>'
-                f'<a class="btn ghost" href="{_h(feed)}">View feed</a></div>'
-                "</div></article>"
-            )
-        db.close()
-
-        body = (
-            "".join(cards) if cards else
-            "<p class=empty>No series yet. On the server:<br>"
-            "<code>webnovel-audio series add &lt;fiction-url&gt;</code> then "
-            "<code>webnovel-audio sync</code>.</p>"
-        )
-        html = (
-            "<!doctype html><html lang=en><meta charset=utf-8>"
-            "<meta name=viewport content='width=device-width,initial-scale=1'>"
-            "<title>webnovel-audio</title>"
-            f"<style>{_INDEX_CSS}</style>"
-            "<main><h1>webnovel-audio</h1>"
-            "<p class=lead>Paste a feed's <code>http://</code> URL into your podcast app's "
-            "<b>Add by RSS / URL</b> field — AntennaPod, Podcast Addict or gPodder "
-            "(they play Opus; Apple Podcasts and Overcast don't).</p>"
-            f"<div class=grid>{body}</div></main>"
-            f"<script>{_INDEX_JS}</script></html>"
-        )
-        self._send(200, html.encode(), "text/html; charset=utf-8")
 
     def _feed(self, slug: str):
         if not slug:
@@ -445,6 +451,7 @@ def serve(cfg: Config, host: str | None = None, port: int | None = None, log=pri
     port = int(port or cfg.serve.port)
     httpd = _Server((host, port), _Handler)
     httpd.cfg = cfg  # type: ignore[attr-defined]
+    DB(cfg.library.state_db).close()           # create/migrate once; requests then skip it
     httpd.access = _access_logger(cfg.serve.access_log)
     _banner(cfg, port, log)
     try:

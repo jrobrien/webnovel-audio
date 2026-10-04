@@ -91,26 +91,49 @@ CREATE TABLE IF NOT EXISTS volumes (
     UNIQUE (series_id, source_id)
 );
 CREATE INDEX IF NOT EXISTS chapters_series_ord ON chapters(series_id, ord);
+-- web player: a "profile" is just a name someone picks (no login). Positions are
+-- per profile and series; they go with the series if it is forgotten.
+CREATE TABLE IF NOT EXISTS profiles (
+    name       TEXT PRIMARY KEY COLLATE NOCASE,
+    created_at TEXT
+);
+CREATE TABLE IF NOT EXISTS positions (
+    profile          TEXT NOT NULL REFERENCES profiles(name) ON DELETE CASCADE,
+    series_id        INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE,
+    current_chapter  TEXT,                -- chapters.source_id: where they are now
+    current_t        REAL DEFAULT 0,      -- seconds into it
+    furthest_chapter TEXT,                -- chapters.source_id: the furthest they have reached
+    furthest_t       REAL DEFAULT 0,      -- seconds into it when they last left it
+    updated_at       TEXT,
+    PRIMARY KEY (profile, series_id)
+);
 """
 
 
 class DB:
-    def __init__(self, path: str):
+    def __init__(self, path: str, *, init: bool = True, busy_ms: int = 10_000):
+        """`init=False` skips the schema/migration pass: for a long-running process
+        (the web server) that opens a connection per request and has already
+        initialised the DB once. `busy_ms` is how long a write waits for another
+        process's write lock before failing; the server keeps it short."""
         path = os.path.expanduser(path)
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        self.con = sqlite3.connect(path, timeout=10.0)
+        self.con = sqlite3.connect(path, timeout=busy_ms / 1000)
         self.con.row_factory = sqlite3.Row
         self.con.execute("PRAGMA foreign_keys = ON")
         self.con.execute("PRAGMA journal_mode = WAL")   # UI can read while sync writes
-        self.con.execute("PRAGMA busy_timeout = 10000")
-        self.con.executescript(_SCHEMA)
-        self._migrate()
-        self.con.commit()
+        self.con.execute(f"PRAGMA busy_timeout = {int(busy_ms)}")
+        if init:
+            self.con.executescript(_SCHEMA)
+            self._migrate()
+            self.con.commit()
 
     def _cols(self, table: str) -> set[str]:
         return {r["name"] for r in self.con.execute(f"PRAGMA table_info({table})")}
 
     def _migrate(self) -> None:
+        if "furthest_t" not in self._cols("positions"):
+            self.con.execute("ALTER TABLE positions ADD COLUMN furthest_t REAL DEFAULT 0")
         cols = self._cols("chapters")
         # a pre-0.3 DB still has the old volume column name; add under that
         # name so the rename below carries it over
@@ -536,6 +559,87 @@ class DB:
         self.con.execute("UPDATE series SET enabled=? WHERE id=?",
                          (1 if enabled else 0, series_id))
         self.con.commit()
+
+    # -- web player: profiles and listening positions -------------------------
+    def list_profiles(self) -> list[str]:
+        return [r["name"] for r in self.con.execute(
+            "SELECT name FROM profiles ORDER BY name COLLATE NOCASE")]
+
+    def add_profile(self, name: str) -> str:
+        """Create `name` if it is new (case-insensitively); returns the stored spelling."""
+        self.con.execute("INSERT OR IGNORE INTO profiles (name, created_at) VALUES (?, ?)",
+                         (name, time.strftime("%Y-%m-%dT%H:%M:%S")))
+        self.con.commit()
+        return self.con.execute("SELECT name FROM profiles WHERE name = ?", (name,)).fetchone()["name"]
+
+    def profile_summary(self) -> list[dict]:
+        """Each profile with how many series they have a saved place in, and when
+        they last listened to anything."""
+        return [dict(r) for r in self.con.execute(
+            """SELECT p.name, p.created_at, COUNT(x.series_id) AS series, MAX(x.updated_at) AS last
+               FROM profiles p LEFT JOIN positions x ON x.profile = p.name
+               GROUP BY p.name ORDER BY p.name COLLATE NOCASE""")]
+
+    def remove_profile(self, name: str) -> dict | None:
+        """Delete a profile and (by cascade) every place they had saved. None if
+        there is no such profile; the name matches case-insensitively."""
+        row = self.con.execute("SELECT name FROM profiles WHERE name = ?", (name,)).fetchone()
+        if not row:
+            return None
+        n = self.con.execute("SELECT COUNT(*) AS n FROM positions WHERE profile = ?",
+                             (row["name"],)).fetchone()["n"]
+        self.con.execute("DELETE FROM profiles WHERE name = ?", (row["name"],))
+        self.con.commit()
+        return {"name": row["name"], "positions": n}
+
+    def get_positions(self, profile: str) -> dict[int, dict]:
+        """{series_id: {chapter, t, furthest, updated}} for one profile."""
+        rows = self.con.execute(
+            "SELECT series_id, current_chapter, current_t, furthest_chapter, furthest_t, "
+            "updated_at FROM positions WHERE profile = ?", (profile,))
+        return {r["series_id"]: {"chapter": r["current_chapter"], "t": r["current_t"],
+                                 "furthest": r["furthest_chapter"],
+                                 "furthest_t": r["furthest_t"] or 0, "updated": r["updated_at"]}
+                for r in rows}
+
+    def save_position(self, profile: str, series_id: int, chapter: str, t: float,
+                      furthest: str | None = None) -> dict | None:
+        """Record where `profile` is in a series. `current` is last-write-wins;
+        `furthest` only ever moves forward (by chapter order), so two devices
+        racing can never wind it back. None if the chapter is not in the series."""
+        order = {r["source_id"]: r["ord"] for r in self.con.execute(
+            "SELECT source_id, ord FROM chapters WHERE series_id = ?", (series_id,))}
+        if chapter not in order or (furthest is not None and furthest not in order):
+            return None
+        # Read-modify-write, so take the write lock *first*: two devices saving at
+        # once must not both read the old `furthest` and let the older one win.
+        self.con.execute("BEGIN IMMEDIATE")
+        try:
+            prev = self.con.execute(
+                "SELECT furthest_chapter, furthest_t FROM positions "
+                "WHERE profile = ? AND series_id = ?", (profile, series_id)).fetchone()
+            old = prev["furthest_chapter"] if prev else None
+            best = old
+            if furthest and (best not in order or order[furthest] > order[best]):
+                best = furthest
+            # where they were in the furthest chapter: live while they are in it,
+            # reset when it advances, and left alone while they listen to older ones
+            best_t = t if best == chapter else (
+                0.0 if best != old else (prev["furthest_t"] if prev else 0.0))
+            self.con.execute(
+                """INSERT INTO positions (profile, series_id, current_chapter, current_t,
+                                          furthest_chapter, furthest_t, updated_at)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(profile, series_id) DO UPDATE SET
+                     current_chapter=excluded.current_chapter, current_t=excluded.current_t,
+                     furthest_chapter=excluded.furthest_chapter, furthest_t=excluded.furthest_t,
+                     updated_at=excluded.updated_at""",
+                (profile, series_id, chapter, t, best, best_t, time.strftime("%Y-%m-%dT%H:%M:%S")))
+            self.con.commit()
+        except BaseException:
+            self.con.rollback()
+            raise
+        return self.get_positions(profile)[series_id]
 
     def forget(self, series_id: int) -> None:
         self.con.execute("DELETE FROM chapters WHERE series_id=?", (series_id,))

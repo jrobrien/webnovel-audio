@@ -6,7 +6,6 @@ import os.path
 from webnovel_audio.providers.http import fetch_asset
 from webnovel_audio.providers.royalroad import ASSET_HOSTS, _safe_id, parse_fiction
 from webnovel_audio.safepath import safe_slug as _safe_slug
-from webnovel_audio.serve import _h
 from webnovel_audio.textout import _yaml
 
 
@@ -52,10 +51,21 @@ def test_fetch_asset_rejects_other_hosts():
     assert fetch_asset("not a url", ASSET_HOSTS) is None
 
 
-def test_serve_html_escape_covers_quotes_and_angles():
-    out = _h('x"><script>alert(1)</script>')
-    assert '"' not in out and "<" not in out and ">" not in out
-    assert "&quot;" in out and "&lt;script&gt;" in out
+def test_player_never_parses_site_text_as_html():
+    """Series and chapter titles come from other people's web pages. The server no
+    longer builds HTML from them; the player renders them, and must only ever do
+    so as text (textContent / text nodes), never through an HTML-parsing sink."""
+    import glob
+    import os
+    import re
+
+    web = os.path.join(os.path.dirname(__file__), "..", "src", "webnovel_audio", "web")
+    sinks = re.compile(r"innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function|srcdoc")
+    files = glob.glob(os.path.join(web, "*.mjs")) + glob.glob(os.path.join(web, "*.html"))
+    assert files
+    for path in files:
+        for n, line in enumerate(open(path, encoding="utf-8"), 1):
+            assert not sinks.search(line), f"{os.path.basename(path)}:{n}: {line.strip()}"
 
 
 def test_yaml_strips_control_chars():

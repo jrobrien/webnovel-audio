@@ -139,12 +139,25 @@ uv run webnovel-audio serve            # binds 0.0.0.0:8080 by default
 
 You can also start/stop the server from the control UI (Feed server → Start).
 On startup `serve` prints a **scannable QR** of the URL (needs `qrencode`; point
-your phone camera at it). Or open `http://<this-machine-ip>:8080/` by hand — it
-lists each tracked series with a feed URL. Add that feed URL in a podcast app
-that supports **Opus** (AntennaPod, Podcast Addict, gPodder; Apple Podcasts and
-Overcast do not — use `book` for those). New chapters appear in the feed as
-`sync` renders them, dated to their real Royal Road publish time so a backlog
-sorts into reading order. The server supports HTTP Range, so seek/resume works.
+your phone camera at it), one for the local address and, if `tailnet_url` is
+set, one for Tailscale. Or open `http://<this-machine-ip>:8080/` by hand.
+
+That page is the **web player**: browse every series, play in the browser with
+lock-screen controls and automatic next-chapter, and see how many chapters are
+new since you last listened. There is no login: the first visit asks "Who's
+listening?" and you pick or add a name, or choose *Just browsing*. Positions
+(where you are, and the furthest chapter you have reached) are stored per name
+on the server, so they follow you across devices and across the LAN and
+Tailscale addresses. Chrome or any Chromium browser plays the Opus files; Safari
+may not. Its API is under `/api/` (`library`, `profiles`, `positions`).
+
+To use a podcast app instead, open a series and expand **Podcast feed**: it has
+the feed URL (on the address you opened the page from), *Add to AntennaPod*,
+*Copy URL* and *View feed*. Use an app that supports **Opus** (AntennaPod,
+Podcast Addict, gPodder; Apple Podcasts and Overcast do not — use `book` for
+those). New chapters appear in the feed as `sync` renders them, dated to their
+real Royal Road publish time so a backlog sorts into reading order. The server
+supports HTTP Range, so seek/resume works.
 
 Standalone QR helper (installed at `~/.local/bin/qr`, uses `qrencode` +
 `img2sixel`): `qr <text>` for a block QR, `qr -s <text>` for a sixel image,
