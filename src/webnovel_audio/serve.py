@@ -6,12 +6,15 @@ the feed as `sync` renders them.
 """
 from __future__ import annotations
 
+import logging
+import logging.handlers
 import os
 import re
 import shutil
 import socket
 import ssl
 import subprocess
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from xml.sax.saxutils import escape
@@ -23,6 +26,21 @@ from .feed import audio_mime, build_feed
 from .safepath import safe_slug as _safe_slug
 
 _HOST_RE = re.compile(r"[^A-Za-z0-9.\-:\[\]]")
+
+#: never redirected: the owner's own machine, whatever the feed's canonical host
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _host_port(value: str) -> tuple[str, int] | None:
+    """(hostname, port) from a Host header or a URL's netloc; None if unusable.
+    A missing port is 80, so `host` and `host:80` compare equal."""
+    try:
+        parts = urllib.parse.urlsplit("//" + value.strip())
+        if not parts.hostname:
+            return None
+        return parts.hostname.lower(), parts.port or 80
+    except ValueError:
+        return None
 
 
 def _h(value) -> str:
@@ -97,9 +115,44 @@ def _lan_ip() -> str:
         s.close()
 
 
+#: audio and cover fetches arrive as a burst of range requests per play; log
+#: one per client and file per this many seconds so the log stays small
+_ACCESS_DEDUP_S = 600
+_ACCESS_LOG_BYTES, _ACCESS_LOG_KEEP = 1_000_000, 3
+_UNPRINTABLE_RE = re.compile(r"[^\x20-\x7e]")
+
+
+def _access_logger(path: str) -> logging.Logger | None:
+    """A size-capped rotating log (about 4 MB in total), or None if `path` is empty.
+
+    A private Logger rather than `logging.getLogger`, so repeated `serve()`
+    calls (and tests) never stack handlers on a shared one.
+    """
+    if not path:
+        return None
+    path = os.path.expanduser(path)
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        path, maxBytes=_ACCESS_LOG_BYTES, backupCount=_ACCESS_LOG_KEEP, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%dT%H:%M:%S"))
+    lg = logging.Logger("webnovel_audio.access", logging.INFO)
+    lg.addHandler(handler)
+    return lg
+
+
+def _clean(value, limit: int) -> str:
+    """Client-controlled text made safe for a one-line log entry."""
+    return _UNPRINTABLE_RE.sub("?", str(value or "-"))[:limit]
+
+
 class _Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
+    access: logging.Logger | None = None
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.recent: dict[tuple[str, str], float] = {}     # (client, path) -> last logged
 
     def handle_error(self, request, client_address):
         import sys
@@ -134,6 +187,64 @@ class _Handler(BaseHTTPRequestHandler):
         if not host:
             host = f"{_lan_ip()}:{self.server.server_address[1]}"
         return f"http://{host}"
+
+    def _feed_redirect(self, dslug: str) -> bool:
+        """301 a feed request that arrived on a host other than the canonical one.
+
+        AntennaPod (and most podcast apps) rewrite a subscription's stored URL
+        when its feed answers with a permanent redirect; they cannot be edited
+        by hand. Only feeds redirect: `/audio`, `/cover` and the index are left
+        alone, and the target is built from config + the validated slug, never
+        from the request, so there is no open redirect.
+        """
+        target = self.cfg.serve.tailnet_url.strip().rstrip("/") \
+            if self.cfg.serve.redirect_to_tailnet else ""
+        want = _host_port(urllib.parse.urlsplit(target).netloc) if target else None
+        got = _host_port(self.headers.get("Host") or "")
+        if want is None or got is None or got[0] in _LOCAL_HOSTS or got == want:
+            return False
+        self.send_response(301)
+        self.send_header("Location", f"{target}/feed/{dslug}.xml")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+        return True
+
+    # -- access log: one line per response, written when its headers are done ----
+    def send_response(self, code, message=None):
+        self._code, self._clen, self._loc = int(code), "", ""
+        super().send_response(code, message)
+
+    def send_header(self, keyword, value):
+        low = keyword.lower()
+        if low == "content-length":
+            self._clen = str(value)
+        elif low == "location":
+            self._loc = str(value)
+        super().send_header(keyword, value)
+
+    def end_headers(self):
+        super().end_headers()
+        self._access()
+
+    def _access(self) -> None:
+        lg = self.server.access  # type: ignore[attr-defined]
+        if lg is None:
+            return
+        path = self.path.split("?", 1)[0]
+        client = self.client_address[0]
+        if path.startswith(("/audio/", "/cover/")):
+            recent, now = self.server.recent, time.monotonic()  # type: ignore[attr-defined]
+            if now - recent.get((client, path), -_ACCESS_DEDUP_S) < _ACCESS_DEDUP_S:
+                return
+            if len(recent) > 500:
+                recent.clear()
+            recent[(client, path)] = now
+        line = (f"{client} {self.command} {_clean(path, 160)} {self._code}"
+                + (f" {self._clen}B" if self._clen and self.command != "HEAD" else "")
+                + (f" -> {_clean(self._loc, 200)}" if self._loc else "")
+                + f" host={_clean(self.headers.get('Host'), 80)}"
+                + f' ua="{_clean(self.headers.get("User-Agent"), 60)}"')
+        lg.info(line)
 
     def _send(self, code: int, body: bytes, ctype: str, extra: dict | None = None) -> None:
         self.send_response(code)
@@ -257,8 +368,11 @@ class _Handler(BaseHTTPRequestHandler):
         if not s:
             db.close()
             return self._send(404, b"unknown series\n", "text/plain")
-        base = self._base_url()
         dslug = _safe_slug(s["slug"], slug)
+        if self._feed_redirect(dslug):
+            db.close()
+            return
+        base = self._base_url()
         cover_local = os.path.exists(bundle.artifact(
             bundle.bundle_dir(self.cfg, s), "covers", "cover.jpg"))
         xml = build_feed(s, db.chapters(s["id"]), base,
@@ -307,16 +421,32 @@ def _print_qr(url: str, log) -> None:
     log("(install 'qrencode' for a scannable QR of this URL)")
 
 
+def _banner(cfg: Config, port: int, log) -> None:
+    """Where the server can be reached, with a scannable QR for each address."""
+    local = cfg.serve.base_url or f"http://{_lan_ip()}:{port}"
+    tailnet = cfg.serve.tailnet_url.strip().rstrip("/")
+    log(f"serving library on:   (Ctrl-C to stop)\n  local      {local}"
+        + (f"\n  tailscale  {tailnet}" if tailnet else ""))
+    if tailnet and cfg.serve.redirect_to_tailnet:
+        log("! redirect_to_tailnet is ON: every feed requested on another host "
+            f"is redirected (301) to {tailnet}. Turn it off once the phone has refreshed.")
+    if cfg.serve.access_log:
+        log(f"access log: {os.path.expanduser(cfg.serve.access_log)} "
+            f"(rotates at {_ACCESS_LOG_BYTES // 1_000_000} MB, {_ACCESS_LOG_KEEP} kept)")
+    if cfg.serve.qr:
+        for label, url in (("local", local), ("tailscale", tailnet)):
+            if url:
+                log(f"scan for {label}:")
+                _print_qr(url, log)
+
+
 def serve(cfg: Config, host: str | None = None, port: int | None = None, log=print) -> None:
     host = host or cfg.serve.host
     port = int(port or cfg.serve.port)
     httpd = _Server((host, port), _Handler)
     httpd.cfg = cfg  # type: ignore[attr-defined]
-    shown = cfg.serve.base_url or f"http://{_lan_ip()}:{port}"
-    log(f"serving library on {shown}   (Ctrl-C to stop)")
-    log("open that on your phone, or scan:")
-    if cfg.serve.qr:
-        _print_qr(shown, log)
+    httpd.access = _access_logger(cfg.serve.access_log)
+    _banner(cfg, port, log)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

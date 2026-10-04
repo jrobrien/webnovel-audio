@@ -126,6 +126,18 @@ class Serve:
     host: str = "0.0.0.0"
     port: int = 8080
     base_url: str = ""              # override the auto-detected http://<lan-ip>:<port>
+    # This machine's Tailscale address, e.g. "http://host.tailnet.ts.net:8080".
+    # `serve` prints a second QR code for it at startup.
+    tailnet_url: str = ""
+    # Temporary: 301 every feed requested on any other host to `tailnet_url`.
+    # Podcast apps (AntennaPod) rewrite a subscription's stored URL on a
+    # permanent redirect, which is how an existing one is moved. Turn it off
+    # again once the phone has refreshed.
+    redirect_to_tailnet: bool = False
+    # One line per request (feeds, the index, redirects; audio and cover fetches
+    # once per client per 10 minutes), in a rotating file capped near 4 MB.
+    # "" turns it off.
+    access_log: str = "~/.local/state/webnovel-audio/access.log"
     qr: bool = True                # print a scannable QR of the URL on startup
 
 

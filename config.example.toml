@@ -126,6 +126,15 @@ host = "0.0.0.0"                                        # `webnovel-audio serve`
 port = 8080
 qr   = true                                             # print a scannable QR of the URL on startup
 # base_url = "http://192.168.1.50:8080"                # else auto-detected from the request
+# This machine's Tailscale address: `serve` prints a second QR code for it.
+# tailnet_url = "http://host.tailnet-name.ts.net:8080"
+# Temporary, to move an existing podcast subscription onto it: every feed asked
+# for on any other host answers 301 to tailnet_url, and AntennaPod rewrites its
+# stored URL. Turn it off again once the phone has refreshed. Leave base_url unset.
+# redirect_to_tailnet = false
+# Access log: one line per feed/index request or redirect (audio and cover fetches
+# once per client per 10 minutes), rotating, about 4 MB at most. "" disables it.
+# access_log = "~/.local/state/webnovel-audio/access.log"
 
 [book]
 bitrate = "64k"                                         # AAC bitrate for `webnovel-audio book` (.m4b)

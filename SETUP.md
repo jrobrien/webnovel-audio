@@ -57,7 +57,7 @@ most likely to touch:
 | `[library] library_dir` | where rendered chapters are written (default `library/` under the working dir) |
 | `[library] state_db` | SQLite tracking file (default `~/.local/state/webnovel-audio/state.db`) |
 | `[royalroad] request_delay`, `[scribblehub] request_delay` | seconds between requests to that site (be polite; default 2.5) |
-| `[serve] port` / `base_url` | the LAN feed server |
+| `[serve] port` / `base_url` / `tailnet_url` / `redirect_to_tailnet` | the feed server. `tailnet_url` adds a second (Tailscale) address and QR code at startup; `redirect_to_tailnet = true` temporarily 301s every feed on another host there, to move an existing podcast subscription. `access_log` (default `~/.local/state/webnovel-audio/access.log`, `""` = off) records who fetched what, rotating at about 4 MB |
 | `[general] base_lexicon` | always-on respelling CSV (`data/lexicons/_base.csv`) applied to every series; a per-series row for the same word wins. `""` to disable |
 | `[general] lexicon_dir` / `series_config_dir` | pre-bundle fallbacks, still read for a tree that has not been migrated |
 
