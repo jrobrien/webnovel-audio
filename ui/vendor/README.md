@@ -2,14 +2,14 @@
 
 `clamx` is the ttk theme this UI runs on: clam's geometry and element layout,
 with the palette read from the X resource database. Upstream is
-[tk-omarchy-theme](https://github.com/jro/tk-omarchy-theme) — `lib/clamx.tcl`,
-copied verbatim. **Do not edit it here**; fix it upstream and re-copy.
+[tk-omarchy-theme](https://github.com/jrobrien/tk-omarchy-theme) (0BSD) —
+`lib/clamx.tcl`, copied verbatim. **Do not edit it here**; fix it upstream and re-copy.
 
 ```sh
 cp ~/Projects/tk-omarchy-theme/lib/clamx.tcl ui/vendor/clamx.tcl
 ```
 
-**Vendored version: 1.2.** `ui/xres.tcl` checks
+**Vendored version: 1.3** (upstream `a6f42a6`). `ui/xres.tcl` checks
 `$ttk::theme::clamx::version` against the version it was written for and logs
 if they differ, so a copy that drifts says so instead of going quietly wrong.
 Upstream's policy is that the version bumps on every change that alters what

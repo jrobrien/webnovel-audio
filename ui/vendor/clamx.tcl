@@ -8,10 +8,44 @@
 #   source clamx.tcl
 #   ttk::setTheme clamx        ;# not `ttk::style theme use` -- see below
 #
-# Reads the X resources Tk 9's `default` theme reads, so a machine set up for
-# one is set up for the other. Where a resource is absent every value falls back
-# to clam's own, and the result is ordinary clam -- so this is safe to ship in
-# an application that also runs where nobody themed anything.
+# ---------------------------------------------------------------------------
+# THE API IS THE X RESOURCE DATABASE
+# ---------------------------------------------------------------------------
+#
+# These eight resources are the entire input. Nothing else is read, and no
+# desktop environment, distribution or palette generator is assumed: set these
+# by any means you like -- xrdb, a RESOURCE_MANAGER property, ~/.Xdefaults, or
+# `option add` before sourcing this file -- and clamx follows.
+#
+#   RESOURCE              CLASS               DRIVES
+#   background            Background          window and widget ground
+#   foreground            Foreground          text, caret, arrows
+#   windowColor           Background          entry/treeview/text field ground
+#   selectBackground      SelectBackground    selected rows and text
+#   selectForeground      SelectForeground    text on a selection
+#   disabledForeground    DisabledForeground  insensitive text
+#   troughColor           TroughColor         scale/scrollbar troughs, tabs
+#   activeBackground      ActiveBackground    hover
+#
+# They are the same eight Tk 9's own built-in `default` theme reads, so a
+# display set up for one is set up for the other, and clamx gives Tk 8.6 the
+# appearance Tk 9 gets for free.
+#
+# HOW MANY YOU SUPPLY MATTERS:
+#
+#   none of the eight   plain clam, unchanged. A machine with no resources is
+#                       entitled to look like an unthemed machine, and clam's
+#                       own palette is at least self-consistent.
+#   some of the eight   the rest are DERIVED from background and foreground.
+#                       A half-supplied palette is worse than none -- four
+#                       values arriving dark while four default light gives
+#                       white entry fields carrying pale text -- so clamx
+#                       never mixes supplied values with clam's literals.
+#   all eight           used as given.
+#
+# Supplying all eight is strongly preferred: derivation keeps a window
+# coherent but cannot guess intent, and a derived selection colour in
+# particular is a desaturated blend rather than an accent.
 #
 # No images and no new elements: -parent clam inherits clam's element
 # definitions and layouts.
@@ -40,11 +74,11 @@ package require Tk 8.6-
 #
 # Version: bumped on every change that alters what this file produces, so a
 # vendored copy can be compared against the original:
-#     package require ttk::theme::clamx        ;# -> 1.2
-#     set ttk::theme::clamx::version           ;# -> 1.2
+#     package require ttk::theme::clamx        ;# -> 1.3
+#     set ttk::theme::clamx::version           ;# -> 1.3
 
 namespace eval ttk::theme::clamx {
-    variable version 1.2
+    variable version 1.3
     variable colors
 
     # --- helpers ----------------------------------------------------------
@@ -67,28 +101,133 @@ namespace eval ttk::theme::clamx {
             [expr {int($ab + ($bb - $ab) * $frac + 0.5)}]]
     }
 
+    # The eight structural resources, with the class each is looked up under.
+    variable STRUCTURAL {
+        background Background
+        foreground Foreground
+        windowColor Background
+        selectBackground SelectBackground
+        selectForeground SelectForeground
+        disabledForeground DisabledForeground
+        troughColor TroughColor
+        activeBackground ActiveBackground
+    }
+
     # --- palette ----------------------------------------------------------
     # Re-read the resources and restate every colour. Safe to call again after
     # an `option add` override: Tk reads the database once at startup, so an
     # application that changes theme at runtime must drive this itself.
+    #
+    # Three cases, because a HALF-supplied palette is worse than none. Each
+    # resource falling back independently to clam's own literal is coherent
+    # when nothing is set and when everything is, and incoherent in between:
+    # four values arriving dark and four defaulting light produces white entry
+    # fields with pale text on them.
+    #
+    #   nothing supplied -> clam's own palette, unchanged. Self-consistent.
+    #   some supplied    -> derive the rest from background and foreground.
+    #   all supplied     -> use them.
     proc refresh {} {
         variable colors
-        set bg     [Res background Background             #dcdad5]
-        set fg     [Res foreground Foreground             #000000]
-        set field  [Res windowColor Background            #ffffff]
-        set sel    [Res selectBackground SelectBackground #4a6984]
-        set selfg  [Res selectForeground SelectForeground #ffffff]
-        set dim    [Res disabledForeground DisabledForeground #999999]
-        set trough [Res troughColor TroughColor           [Mix $bg $fg 0.12]]
-        set active [Res activeBackground ActiveBackground [Mix $bg $fg 0.08]]
+        variable STRUCTURAL
+
+        array set have {}
+        foreach {res class} $STRUCTURAL {
+            set v [option get . $res $class]
+            if {$v ne ""} { set have($res) $v }
+        }
+        set supplied [array size have]
+
+        if {$supplied == 0} {
+            # Plain clam. Its palette is internally consistent, and a machine
+            # with no resources is entitled to look like an unthemed machine.
+            set bg #dcdad5; set fg #000000; set field #ffffff
+            set sel #4a6984; set selfg #ffffff; set dim #999999
+            set trough [Mix $bg $fg 0.12]; set active [Mix $bg $fg 0.08]
+        } else {
+            # Derived shades use the same ratios themed/tk.Xresources.tpl
+            # uses, so an inferred palette and a generated one agree.
+            set bg [expr {[info exists have(background)] ? $have(background) : "#dcdad5"}]
+            set fg [expr {[info exists have(foreground)] ? $have(foreground) : "#000000"}]
+            # Selection is the weak one: mixing background toward foreground
+            # cannot invent a hue, so a derived selection is a desaturated
+            # blend rather than an accent. That is a reason to supply
+            # selectBackground, not a reason for this file to go looking for
+            # a colour under some other name.
+            set D(windowColor)        [Mix $bg $fg 0.06]
+            set D(selectBackground)   [Mix $bg $fg 0.25]
+            set D(selectForeground)   $fg
+            set D(disabledForeground) [Mix $bg $fg 0.50]
+            set D(troughColor)        [Mix $bg $fg 0.12]
+            set D(activeBackground)   [Mix $bg $fg 0.16]
+            foreach n {windowColor selectBackground selectForeground
+                       disabledForeground troughColor activeBackground} {
+                set V($n) [expr {[info exists have($n)] ? $have($n) : $D($n)}]
+            }
+            set field  $V(windowColor);        set sel    $V(selectBackground)
+            set selfg  $V(selectForeground);   set dim    $V(disabledForeground)
+            set trough $V(troughColor);        set active $V(activeBackground)
+        }
 
         array set colors [list \
             -bg $bg -fg $fg -field $field -sel $sel -selfg $selfg \
             -dim $dim -trough $trough -active $active \
             -border [Mix $bg $fg 0.30] \
-            -bevel  [Mix $bg $fg 0.06]]
+            -bevel  [Mix $bg $fg 0.06] \
+            -supplied $supplied]
 
+        if {$supplied > 0} { FillClassic }
         Apply
+    }
+
+    # ttk::style cannot reach a classic widget's caret, selection, disabled
+    # box or trough: those come from the option database. Without them a
+    # partially themed desktop leaves a black caret on a dark field and a
+    # light grey selection, which no amount of ttk work fixes.
+    #
+    # Priority 19 is deliberate and is the whole reason this is safe. It sits
+    # just below widgetDefault(20), so:
+    #
+    #   - it beats Tk's compiled-in defaults, which is the point;
+    #   - it loses to anything the desktop put in RESOURCE_MANAGER, which
+    #     lands at userDefault(60), so a supplied value always wins;
+    #   - it loses to the application's own `option add` at any standard
+    #     priority, whether that runs before or after this file -- at equal
+    #     priority the later call would win, and being one below removes the
+    #     ordering question entirely;
+    #   - an explicit per-widget option beats the database outright, at any
+    #     priority, so an application that colours its own widgets is
+    #     untouched.
+    #
+    # The database is per-interpreter and in memory. Nothing here reaches the
+    # X server or any other process.
+    proc FillClassic {} {
+        variable colors
+        set bg $colors(-bg);      set fg     $colors(-fg)
+        set field $colors(-field); set sel   $colors(-sel)
+        set selfg $colors(-selfg); set dim   $colors(-dim)
+        set trough $colors(-trough); set active $colors(-active)
+
+        foreach {pat val} [list \
+            *selectBackground           $sel \
+            *selectForeground           $selfg \
+            *insertBackground           $fg \
+            *troughColor                $trough \
+            *activeBackground           $active \
+            *activeForeground           $fg \
+            *highlightBackground        $bg \
+            *highlightColor             $sel \
+            *disabledForeground         $dim \
+            *selectColor                $field \
+            *Text.background            $field \
+            *Entry.background           $field \
+            *Listbox.background         $field \
+            *Spinbox.background         $field \
+            *Entry.disabledBackground   $bg \
+            *Entry.readonlyBackground   $bg \
+            *Spinbox.readonlyBackground $bg \
+            *Spinbox.buttonBackground   $trough \
+        ] { option add $pat $val 19 }
     }
 
     proc Apply {} {
@@ -214,4 +353,4 @@ if {[lsearch -exact [ttk::style theme names] clamx] < 0} {
 }
 ttk::theme::clamx::refresh
 
-package provide ttk::theme::clamx 1.2
+package provide ttk::theme::clamx 1.3

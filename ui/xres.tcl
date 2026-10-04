@@ -43,7 +43,7 @@ source [file join $xres::SELF_DIR vendor clamx.tcl]
 ;# change that alters what the file produces, so an unequal version is the
 ;# signal to re-read its notes -- a silently drifting vendored copy being the
 ;# failure mode worth designing against.
-set xres::CLAMX_VERSION 1.2
+set xres::CLAMX_VERSION 1.3
 if {$ttk::theme::clamx::version ne $::xres::CLAMX_VERSION} {
     puts stderr "note: vendored clamx is $ttk::theme::clamx::version,\
                  this UI was written for $::xres::CLAMX_VERSION"

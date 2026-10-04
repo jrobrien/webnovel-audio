@@ -407,7 +407,8 @@ replacing a theme. **Reload colours** re-reads whichever fragment is current,
 which is how an `omarchy theme set` made after the UI started gets picked up —
 X resources are read once at startup and there is no change signal.
 
-The ttk side is `clamx` (`ui/vendor`, vendored from `tk-omarchy-theme`): clam's
+The ttk side is `clamx` (`ui/vendor`, vendored from
+[`tk-omarchy-theme`](https://github.com/jrobrien/tk-omarchy-theme)): clam's
 geometry with its palette read from those same resources. It is what makes the
 three modes work at all — ttk reads the database once at startup on *every* Tk
 version, so an override loaded later is invisible to it until
