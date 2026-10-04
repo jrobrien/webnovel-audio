@@ -283,20 +283,22 @@ One table now, one pass, most specific first:
 flowchart TD
     T["sentence"] --> N["spaCy tag<br/>pos · tag · lemma"]
     N --> M{"rules for this<br/>word or phrase?"}
-    M -->|no| K["leave it — espeak decides"]
-    M -->|yes| S1{"multi-word phrase?"}
-    S1 -->|yes| A["apply — phrases ignore pos"]
-    S1 -->|no| S2{"fine tag + lemma?<br/>wound/VBD+wind"}
-    S2 -->|match| A
-    S2 -->|no| S3{"fine tag?<br/>read/VBD"}
-    S3 -->|match| A
-    S3 -->|no| S4{"coarse POS?<br/>live/VERB"}
-    S4 -->|match| A
-    S4 -->|no| S5{"rule with no pos?"}
-    S5 -->|yes| A
-    S5 -->|no| S6{"tagged ADJ/ADV/NUM<br/>and exactly one noun rule?"}
-    S6 -->|yes| A
-    S6 -->|no| K
+    M --> e1(["no"]) --> K["leave it — espeak decides"]
+    M --> e2(["yes"]) --> S1{"multi-word phrase?"}
+    S1 --> e3(["yes"]) --> A["apply — phrases ignore pos"]
+    S1 --> e4(["no"]) --> S2{"fine tag + lemma?<br/>wound/VBD+wind"}
+    S2 --> e5(["match"]) --> A
+    S2 --> e6(["no"]) --> S3{"fine tag?<br/>read/VBD"}
+    S3 --> e7(["match"]) --> A
+    S3 --> e8(["no"]) --> S4{"coarse POS?<br/>live/VERB"}
+    S4 --> e9(["match"]) --> A
+    S4 --> e10(["no"]) --> S5{"rule with no pos?"}
+    S5 --> e11(["yes"]) --> A
+    S5 --> e12(["no"]) --> S6{"tagged ADJ/ADV/NUM<br/>and exactly one noun rule?"}
+    S6 --> e13(["yes"]) --> A
+    S6 --> e14(["no"]) --> K
+    classDef lbl fill:none,stroke:none,color:#8b949e
+    class e1,e2,e3,e4,e5,e6,e7,e8,e9,e10,e11,e12,e13,e14 lbl
 ```
 
 An empty `pos` is the default reading — what applies when no part-of-speech

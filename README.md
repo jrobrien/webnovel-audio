@@ -149,8 +149,8 @@ flowchart TD
     TAG(["spaCy POS tagger<br/>required"]) --> R
     R --> OP[/"NNN-slug.opus<br/>+ NNN-slug.segments.json"/]
     OP --> D["serve · feed · book · archive"]
-    D -.->|"hear a problem"| ED
-    ED -.->|"render &lt;slug&gt; &lt;range&gt;"| R
+    D -.-> HP(["hear a problem"])
+    HP -.-> ED
 ```
 
 | stage | cost per chapter | network | writes |
