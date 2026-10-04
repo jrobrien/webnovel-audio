@@ -313,3 +313,13 @@ def test_trimming_only_touches_the_edges():
     assert _trim_edges("qi", 0) == ("qi", 0)        # nothing to do
     assert _trim_edges("n't", 2) == ("n't", 2)      # apostrophe is internal
     assert _trim_edges("--", 0)[0] == ""            # punctuation only: dropped
+
+
+def test_hyphenated_surface_matches_verbatim_not_by_token():
+    """The tagger splits "Lead-Out" into three tokens, so a one-word rule for it
+    could never fire; a hyphen in the surface makes it a phrase."""
+    lex = Lexicon([Rule(surface="lead-out", respell="led-out"),
+                   Rule(surface="lead-lined", respell="led-lined")])
+    assert lex.apply("Tolerate the Lead-Out just fine.") == "Tolerate the Led-out just fine."
+    assert lex.apply("a lead-lined box") == "a led-lined box"
+    assert lex.apply("lead outside") == "lead outside"

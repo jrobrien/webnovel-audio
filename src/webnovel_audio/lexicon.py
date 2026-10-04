@@ -75,7 +75,9 @@ class Rule:
 
     @property
     def is_phrase(self) -> bool:
-        return " " in self.surface.strip()
+        # A hyphen inside counts like a space: the tagger splits "Lead-Out" into
+        # three tokens, so only a verbatim match can ever find it.
+        return bool(re.search(r"[\s-]", self.surface.strip(" -")))
 
     @property
     def specificity(self) -> int:
