@@ -1402,6 +1402,76 @@ def _cmd_cast(args) -> int:
     return 0
 
 
+def _cmd_profile(args) -> int:
+    """The names people pick in the web player. There are no accounts: a profile is
+    just a name plus the places it has saved, so removing one is removing both."""
+    import sys
+
+    from . import player
+    from .db import DB
+
+    cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
+    db = DB(cfg.library.state_db)
+    try:
+        if args.action == "list":
+            rows = db.profile_summary()
+            if want_json:
+                _jprint({"ok": True, "profiles": rows})
+                return 0
+            if not rows:
+                print("no profiles yet (the web player creates one when someone picks a name)")
+            for r in rows:
+                last = f", last listened {r['last']}" if r["last"] else ""
+                print(f"{r['name']:<24} {r['series']} series{last}")
+            return 0
+
+        if args.action == "add":
+            name = player.valid_profile_name(args.name)
+            if not name:
+                return _fail("bad_name", f"{args.name!r} is not a usable name",
+                             hint="1-24 letters, digits, spaces and . _ ' -",
+                             json_mode=want_json)
+            name = db.add_profile(name)
+            if want_json:
+                _jprint({"ok": True, "profile": name})
+            else:
+                print(f"added {name}")
+            return 0
+
+        # remove
+        found = next((r for r in db.profile_summary()
+                      if r["name"].lower() == args.name.strip().lower()), None)
+        if not found:
+            return _fail("unknown_profile", f"no profile named {args.name!r}",
+                         hint="webnovel-audio profile list", json_mode=want_json)
+        info = {"ok": True, "profile": found["name"], "positions": found["series"]}
+        if args.dry_run:
+            if want_json:
+                _jprint({**info, "dry_run": True})
+            else:
+                print(f"would remove {found['name']} and {found['series']} saved place(s)")
+            return 0
+        if not args.yes:
+            if want_json or not sys.stdin.isatty():
+                return _fail("needs_confirmation",
+                             f"removing {found['name']} deletes {found['series']} saved place(s)",
+                             hint=f"webnovel-audio profile remove {found['name']!r} --yes",
+                             json_mode=want_json)
+            if input(f"remove {found['name']} and {found['series']} saved place(s)? [y/N] "
+                     ).strip().lower() not in ("y", "yes"):
+                print("aborted.")
+                return 0
+        db.remove_profile(found["name"])
+        if want_json:
+            _jprint(info)
+        else:
+            print(f"removed {found['name']} ({found['series']} saved place(s))")
+        return 0
+    finally:
+        db.close()
+
+
 def _cmd_state(args) -> int:
     from .db import DB, STATUSES
 
@@ -2375,6 +2445,21 @@ def _build_parser():
                     with_cache=False)
 
     # -- state (plumbing) ---------------------------------------------------
+    pf = sub.add_parser("profile", help="the names people pick in the web player")
+    pf_sub = pf.add_subparsers(dest="action")
+    pl = pf_sub.add_parser("list", help="who has a place saved, and where")
+    _cfg_json(pl)
+    pa = pf_sub.add_parser("add", help="create a name ahead of time")
+    pa.add_argument("name", help="1-24 letters, digits, spaces and . _ ' -")
+    _cfg_json(pa)
+    pr = pf_sub.add_parser("remove", help="delete a name and every place it saved")
+    pr.add_argument("name", help="case-insensitive; see `profile list`")
+    _dry(pr, what="be removed")
+    _yes(pr, what="removing a person's saved places")
+    _cfg_json(pr)
+    _cfg_json(pf)
+    pf.set_defaults(func=_cmd_profile, action="list")
+
     stt = sub.add_parser("state", help="the per-chapter stage machine, by hand")
     stt_sub = stt.add_subparsers(dest="action")
     ss = stt_sub.add_parser("show", help="per-chapter stage table")

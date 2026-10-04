@@ -399,3 +399,60 @@ def test_the_series_argument_reads_the_same_everywhere():
     for h in helps:
         assert ("the series to" in h or "which lexicon to act on" in h
                 or "also apply this series" in h), h
+
+
+def _profile_cfg(tmp_path):
+    from webnovel_audio.db import DB
+    from webnovel_audio.providers import ChapterRef, SeriesInfo
+
+    cfgp = tmp_path / "cfg.toml"
+    cfgp.write_text(f'[library]\nstate_db = "{tmp_path / "s.db"}"\n'
+                    f'library_dir = "{tmp_path / "lib"}"\n')
+    db = DB(str(tmp_path / "s.db"))
+    sid = db.upsert_series(SeriesInfo(provider="royalroad", source_id="1", slug="demo",
+                                      title="Demo", url="https://rr/x"))
+    db.replace_chapters(sid, [ChapterRef(source_id="c1", order=0, title="t", slug="c",
+                                         url="u", published_at="", unlocked=True)])
+    db.add_profile("Jon")
+    db.add_profile("Mia")
+    db.save_position("Jon", sid, "c1", 12.0, "c1")
+    db.close()
+    return str(cfgp)
+
+
+def test_profile_list_add_and_remove(tmp_path, capsys, monkeypatch):
+    import json
+    import sys
+
+    from webnovel_audio import cli
+
+    cfgp = _profile_cfg(tmp_path)
+
+    def run(*argv):
+        rc = cli.main(["profile", *argv, "--json", "--config", cfgp])
+        return rc, json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+
+    rc, out = run("list")
+    assert rc == 0 and [(p["name"], p["series"]) for p in out["profiles"]] == [("Jon", 1), ("Mia", 0)]
+
+    assert run("add", "Zoe")[1] == {"ok": True, "profile": "Zoe"}
+    rc, out = run("add", "<script>")
+    assert rc == 1 and out["error"]["code"] == "bad_name"
+
+    # a dry run changes nothing; removal needs consent, which --json does not imply
+    rc, out = run("remove", "jon", "-n")
+    assert rc == 0 and out["dry_run"] is True and out["positions"] == 1
+    rc, out = run("remove", "jon")
+    assert rc == 1 and out["error"]["code"] == "needs_confirmation"
+    assert run("list")[1]["profiles"][0]["name"] == "Jon"
+
+    rc, out = run("remove", "JON", "-y")                       # case-insensitive
+    assert rc == 0 and out == {"ok": True, "profile": "Jon", "positions": 1}
+    names = [p["name"] for p in run("list")[1]["profiles"]]
+    assert names == ["Mia", "Zoe"]
+    assert run("remove", "Jon", "-y")[1]["error"]["code"] == "unknown_profile"
+
+    # their saved places went with them (nothing orphaned)
+    import sqlite3
+    con = sqlite3.connect(str(tmp_path / "s.db"))
+    assert con.execute("SELECT COUNT(*) FROM positions").fetchone()[0] == 0
