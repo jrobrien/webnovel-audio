@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, field
 
 import numpy as np
 import soundfile as sf
@@ -33,6 +34,7 @@ class Report:
     size_bytes: int = 0
     cached_segments: int = 0     # segments served from the cache, not synthesized
     total_segments: int = 0
+    skipped: bool = False        # nothing that affects the audio changed: left as it was
 
 
 def write_markdown(doc: Document | None, stem: str, *, stage: str,
@@ -215,7 +217,58 @@ def build_script(source: str | Document, cfg: Config):
     return blocks, segs, meta, doc
 
 
-def render(
+@dataclass
+class Job:
+    """A chapter that has been synthesized and assembled but not yet mastered.
+
+    `prepare` (synthesis, cache, DSP, assembly) uses every core; `master` (the
+    ffmpeg loudness + Opus pass) is single-threaded. Splitting them lets one
+    chapter master while the next is still synthesizing.
+    """
+    out_path: str
+    report: Report
+    wav: np.ndarray | None = None      # None: a dry run, or an unchanged chapter
+    sr: int = 0
+    meta: dict = field(default_factory=dict)
+    bitrate: str = "56k"
+    loud: tuple = (-19.0, -3.0, 11.0)
+    mastering: str = "fast"
+    recipe: str = ""
+    prepare_seconds: float = 0.0
+
+
+def audio_recipe(segs: list[Segment], cfg: Config, backend: str, fingerprint: str) -> str:
+    """A hash of everything that decides what a chapter's audio sounds like: the
+    segment script plus every setting between it and the file. If it matches the
+    one stored beside the .opus, re-rendering would produce the same audio."""
+    audio = asdict(cfg.audio)
+    audio.pop("master_jobs", None)                 # how it is scheduled, not how it sounds
+    material = {"v": 1, "segs": [asdict(s) for s in segs], "audio": audio, "dsp": cfg.dsp,
+                "pauses": asdict(cfg.pauses), "sr": cfg.synth.sample_rate,
+                "backend": backend, "fp": fingerprint}
+    return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode()).hexdigest()[:32]
+
+
+def _recipe_path(out_path: str) -> str:
+    return os.path.splitext(out_path)[0] + ".recipe"
+
+
+def _recipe_matches(out_path: str, recipe: str) -> bool:
+    try:
+        with open(_recipe_path(out_path), encoding="utf-8") as fh:
+            return os.path.exists(out_path) and fh.read().strip() == recipe
+    except OSError:
+        return False
+
+
+def _write_recipe(out_path: str, recipe: str) -> None:
+    tmp = _recipe_path(out_path) + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(recipe + "\n")
+    os.replace(tmp, _recipe_path(out_path))
+
+
+def prepare(
     source: str | Document,
     out_path: str,
     cfg: Config,
@@ -226,7 +279,13 @@ def render(
     md_meta: dict | None = None,
     tags: dict | None = None,
     log=print,
-) -> Report:
+    skip_unchanged: bool = False,
+    fingerprint: str = "",
+) -> Job:
+    """Everything up to (not including) mastering. See `render` for the arguments;
+    `skip_unchanged` (with the synth `fingerprint`) leaves a chapter alone when its
+    stored recipe matches, which a chapter rendered before recipes existed never
+    does, so it is re-rendered once and skippable from then on."""
     blocks, segs, doc_meta, doc = build_script(source, cfg)
 
     stem = os.path.splitext(out_path)[0]
@@ -247,7 +306,17 @@ def render(
     log(f"script: {script_path}")
 
     if dry_run:
-        return Report(len(blocks), len(segs), len(speech), est_seconds, 0.0, 0.0, script_path)
+        return Job(out_path, Report(len(blocks), len(segs), len(speech), est_seconds, 0.0, 0.0,
+                                    script_path))
+
+    recipe = audio_recipe(segs, cfg, backend, fingerprint)
+    if skip_unchanged and fingerprint and _recipe_matches(out_path, recipe):
+        log("unchanged: the audio recipe matches, not re-rendering")
+        return Job(out_path, Report(len(blocks), len(segs), len(speech), 0.0, 0.0, 0.0,
+                                    script_path, out_path=out_path,
+                                    size_bytes=os.path.getsize(out_path),
+                                    cached_segments=len(speech), total_segments=len(speech),
+                                    skipped=True), recipe=recipe)
 
     # ONNX Runtime already parallelises across all cores, so extra worker threads
     # just oversubscribe the 8-core APU (measured: jobs>1 raises wall time and heat
@@ -309,27 +378,55 @@ def render(
         ]
 
     wav = assemble(segs, renders, sr, lead_ms=cfg.pauses.lead_ms, tail_ms=cfg.pauses.tail_ms)
-    audio_seconds = wav.size / sr
     default_title = os.path.splitext(os.path.basename(out_path))[0]
-    write_opus(
-        wav, sr, out_path,
+    report = Report(
+        blocks=len(blocks), segments=len(segs), speech_segments=len(speech),
+        audio_seconds=wav.size / sr, wall_seconds=0.0, realtime_factor=0.0,
+        script_path=script_path, out_path=out_path,
+        cached_segments=hits[0], total_segments=len(speech),
+    )
+    return Job(
+        out_path, report, wav=wav, sr=sr,
+        meta={**cfg.metadata, "title": default_title, **doc_meta, **(tags or {})},
         bitrate=cfg.audio.opus_bitrate,
         loud=(cfg.audio.loudness_i, cfg.audio.loudness_tp, cfg.audio.loudness_lra),
-        meta={**cfg.metadata, "title": default_title, **doc_meta, **(tags or {})},
+        mastering=cfg.audio.mastering, recipe=recipe, prepare_seconds=time.time() - t0,
     )
 
-    wall = time.time() - t0
-    size = os.path.getsize(out_path)
-    return Report(
-        blocks=len(blocks),
-        segments=len(segs),
-        speech_segments=len(speech),
-        audio_seconds=audio_seconds,
-        wall_seconds=wall,
-        realtime_factor=(audio_seconds / wall if wall else 0.0),
-        script_path=script_path,
-        out_path=out_path,
-        size_bytes=size,
-        cached_segments=hits[0],
-        total_segments=len(speech),
-    )
+
+def master(job: Job) -> Report:
+    """Loudness-master and encode a prepared chapter. Safe to run on a thread:
+    it touches only its own audio, a temp dir and its own output file."""
+    rep = job.report
+    if job.wav is None:                       # a dry run, or an unchanged chapter
+        return rep
+    t0 = time.time()
+    write_opus(job.wav, job.sr, job.out_path, bitrate=job.bitrate, loud=job.loud,
+               meta=job.meta, mastering=job.mastering)
+    if job.recipe:
+        _write_recipe(job.out_path, job.recipe)
+    wall = job.prepare_seconds + (time.time() - t0)
+    rep.wall_seconds = wall
+    rep.realtime_factor = rep.audio_seconds / wall if wall else 0.0
+    rep.size_bytes = os.path.getsize(job.out_path)
+    job.wav = None                            # free ~150 MB per chapter
+    return rep
+
+
+def render(
+    source: str | Document,
+    out_path: str,
+    cfg: Config,
+    *,
+    backend: str = "kokoro",
+    dry_run: bool = False,
+    jobs: int = 1,
+    md_meta: dict | None = None,
+    tags: dict | None = None,
+    log=print,
+    skip_unchanged: bool = False,
+    fingerprint: str = "",
+) -> Report:
+    return master(prepare(source, out_path, cfg, backend=backend, dry_run=dry_run, jobs=jobs,
+                          md_meta=md_meta, tags=tags, log=log,
+                          skip_unchanged=skip_unchanged, fingerprint=fingerprint))
