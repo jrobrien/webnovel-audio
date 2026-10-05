@@ -63,7 +63,7 @@ most likely to touch:
 
 Pass `-c /path/to/other.toml` to any command to use a different config. A
 tracked series keeps its own `config.toml` and `lexicon.csv` inside its bundle
-directory (`webnovel-audio series path <slug>`), and `sync` merges that config
+directory (`webnovel-audio series path --scope <slug>`), and `sync` merges that config
 over the global one automatically — `cast edit <slug>` and `lex edit <slug>`
 open them.
 
@@ -72,9 +72,9 @@ open them.
 Point `render` at a chapter URL, a saved `.html`, or a `.txt` file:
 
 ```sh
-uv run webnovel-audio render samples/salvage-run-ch1.html -o out/test.opus
+uv run webnovel-audio render --target samples/salvage-run-ch1.html -o out/test.opus
 
-uv run webnovel-audio parse <same input> --explain   # how it parsed, no audio
+uv run webnovel-audio parse --target <same-input> --explain   # how it parsed, no audio
 ```
 
 `out/test.opus` is mono Opus, loudness-normalised, with a `.segments.json` beside
@@ -84,7 +84,7 @@ it showing every line's voice/style/pause.
 
 ```sh
 # start tracking a fiction; --from says where you already are
-uv run webnovel-audio series add <royal-road-fiction-url> --from start
+uv run webnovel-audio series add --url <royal-road-fiction-url>
 #   --from start   (default) nothing skipped
 #   --from latest  you're caught up; skip everything that exists now
 #   --from 42      you've already read through chapter 42
@@ -93,15 +93,15 @@ uv run webnovel-audio series add <royal-road-fiction-url> --from start
 uv run webnovel-audio series list
 
 # the cheap stages first, so you can configure before spending CPU
-uv run webnovel-audio fetch <slug> 1-10       # ~2.5 s/chapter, politeness delay
-uv run webnovel-audio parse <slug> 1-10       # ~30 ms/chapter
-uv run webnovel-audio check <slug> 2-10       # report only, writes nothing
-uv run webnovel-audio cast update <slug> 2-10 # add the speakers it found
-uv run webnovel-audio cast edit <slug>        # tune the voices by ear
-uv run webnovel-audio render <slug> 1-10      # the expensive one
+uv run webnovel-audio fetch --target <slug> --range 1-10       # ~2.5 s/chapter, politeness delay
+uv run webnovel-audio parse --target <slug> --range 1-10       # ~30 ms/chapter
+uv run webnovel-audio check --target <slug> --range 2-10       # report only, writes nothing
+uv run webnovel-audio cast update --scope <slug> --range 2-10 # add the speakers it found
+uv run webnovel-audio cast edit --scope <slug>        # tune the voices by ear
+uv run webnovel-audio render --target <slug> --range 1-10      # the expensive one
 
 # then the steady state
-uv run webnovel-audio sync <series-slug> --limit 3       # cap this run
+uv run webnovel-audio sync --scope <series-slug> --limit 3       # cap this run
 uv run webnovel-audio sync --dry-run                     # show what all series would do
 uv run webnovel-audio sync                               # everything, every enabled series
 ```
@@ -171,8 +171,8 @@ Open the port if you have a firewall: `sudo ufw allow 8080/tcp` (or equivalent).
 ## 7. Audiobook file
 
 ```sh
-uv run webnovel-audio book <series-slug>                 # whole series -> one .m4b
-uv run webnovel-audio book <series-slug> 1-3 -o out/arc1.m4b
+uv run webnovel-audio book --scope <series-slug>                 # whole series -> one .m4b
+uv run webnovel-audio book --scope <series-slug> --range 1-3 -o out/arc1.m4b
 ```
 
 Produces a single AAC `.m4b` with a chapter marker + title per chapter and the
@@ -191,7 +191,7 @@ Cast / Lexicon / Log notebook bottom-right, status bar along the bottom.
 - Select chapters (shift/ctrl) and **right-click** to **Play**, or to run
   fetch / parse / check / render over that selection, or mark skipped/new and
   clear errors. A scattered pick becomes one comma range, e.g.
-  `render <slug> 1-3,7,20-21`. Double-click plays; set
+  `render --target <slug> --range 1-3,7,20-21`. Double-click plays; set
   `WEBNOVEL_AUDIO_PLAYER` (e.g. `mpv --no-video`) to choose the player,
   otherwise `xdg-open` decides.
 - A re-render that finishes suspiciously fast is usually a full cache hit —
@@ -248,7 +248,7 @@ Personal use only — respect authors who sell their own audiobooks.
 |---|---|---|
 | `config.toml` | your settings | no (that's your config) |
 | `~/.local/state/webnovel-audio/state.db` | tracked series + per-chapter status | no (loses progress) |
-| `library/<slug>/*.opus` + `.m4b` | rendered audio | yes (re-render with `render <slug> <range>`) |
+| `library/<slug>/*.opus` + `.m4b` | rendered audio | yes (re-render with `render --target <slug> --range <range>`) |
 | `library/<slug>/*.md` | readable story text (archive / ebook source) | yes, but it's the cheapest thing to keep |
 | `library/<slug>/*.segments.json` | internal narration script | yes |
 | `library/<slug>/.raw/*.html` | cached chapter HTML (provenance) | yes (re-fetched on next `sync`) |
@@ -315,14 +315,14 @@ paths above. Nothing else is touched; no system packages are installed.
   itself is fine — check the podcast app actually added it (test from a laptop:
   `curl -sI http://<ip>:8080/feed/<slug>.xml` → `200`).
 - **A chapter mis-attributes dialogue or mispronounces a name** — that's per
-  series: `webnovel-audio check <slug> <range>` for a `[cast.voices]` starter,
-  `webnovel-audio cast update <slug> <range>` to queue pronunciations into the
+  series: `webnovel-audio check --target <slug> --range <range>` for a `[cast.voices]` starter,
+  `webnovel-audio cast update --scope <slug> --range <range>` to queue pronunciations into the
   series' `lexicon.csv`. See `README.md`.
 - **Fixing a pronunciation** — for a word that's wrong everywhere (e.g.
   `Montgomery`, `lapis`), add a row to `data/lexicons/_base.csv` — it applies to
   every series. For a name specific to one series, use that series'
   `<bundle>/lexicon.csv` (a row there overrides `_base.csv` for the same word);
-  `webnovel-audio lex edit <slug>` opens it, and `lex promote <slug> <word>`
+  `webnovel-audio lex edit --scope <slug>` opens it, and `lex promote --scope <slug> --surface <word>`
   moves a row from there into the base file once it turns out to be general.
   One row per rule, `surface,pos,respell,notes`. Leave `pos` blank to apply
   always; set it (`NOUN`, `VERB`, `ADJ`, a Penn tag like `VBD`, or `TAG+lemma`)
@@ -334,7 +334,7 @@ paths above. Nothing else is touched; no system packages are installed.
   rough gloss, then the same after the lexicon; `webnovel-audio pron --check`
   audits every row (add `--series <slug>` for that series' file). The UI's
   `pron` from a terminal does the same. To hear the fix in chapters you already
-  rendered, just name them: `webnovel-audio render <slug> 12-15`. An explicit
+  rendered, just name them: `webnovel-audio render --target <slug> --range 12-15`. An explicit
   range is imperative — it re-renders whatever the recorded state, so there's no
   separate "mark these dirty" step.
 - **`sync` re-renders something you already have** — its status is `error` or its

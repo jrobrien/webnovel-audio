@@ -151,7 +151,7 @@ dropped — with the CLI and data model settled, wiring a timer later is trivial
   `/feed/<slug>.xml` = live feed, `/audio/...` and `/cover/...` = files with
   single-range HTTP support. `package.py` builds a `.m4b` via `ffmpeg` concat +
   an `;FFMETADATA1` chapters file (cumulative START/END from durations) + AAC
-  transcode + embedded cover. CLI: `serve`, `book [--from N] [--to M]`, `feed`
+  transcode + embedded cover. CLI: `serve`, `book --scope S [--range R]`, `feed`
   (static files for an external server). `sync` now caches `cover.jpg` per series
   and records each chapter's duration.
 - **Phase 6 — premium (opt)**: overnight XTTS-v2 / StyleTTS2 narrator, A/B.
@@ -159,7 +159,7 @@ dropped — with the CLI and data model settled, wiring a timer later is trivial
 - **Tooling** *(done)*: `pron <text>` — the exact phoneme string Kokoro will use
   (via `kokoro_onnx.Tokenizer`, no model load) plus a rough ASCII gloss, raw and
   after the lexicon; `--check` audits every lexicon row. `voices` lists the 28
-  ids; `voices --demo` renders one chaptered `.opus` (one chapter per voice, an
+  ids; `voices demo` renders one chaptered `.opus` (one chapter per voice, an
   announcer reads the id, then that voice reads a sample) — `write_opus` grew an
   optional `chapters=` arg that muxes an `;FFMETADATA1` file. `ui` launches the
   Tcl/Tk control app (execs `wish`, else Python's bundled Tk). Bare
@@ -332,7 +332,7 @@ costs milliseconds. `fetch`'s cost is politeness (`request_delay`), not compute.
 
 **Range mood.** An explicit range is imperative (do exactly these, whatever their
 status); no range is declarative (do what's outstanding). That's why `redo` is
-gone — `render <slug> 20-30` *is* the re-render. Stages pull their own inputs, so
+gone — `render --target <slug> --range 20-30` *is* the re-render. Stages pull their own inputs, so
 `render` on an unfetched chapter fetches and parses it first; `force` applies
 only to the named stage, so a re-render never re-downloads.
 

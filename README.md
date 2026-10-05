@@ -52,20 +52,20 @@ cp config.example.toml config.toml
 
 ```sh
 # 1. track it (metadata only — no chapter downloads)
-uv run webnovel-audio series add <royal-road-fiction-url> --from start
+uv run webnovel-audio series add --url <royal-road-fiction-url>
 
 # 2. pull + parse the first 10 (cheap: ~25 s, almost all politeness delay)
-uv run webnovel-audio fetch <slug> 1-10
-uv run webnovel-audio parse <slug> 1-10
+uv run webnovel-audio fetch --target <slug> --range 1-10
+uv run webnovel-audio parse --target <slug> --range 1-10
 
 # 3. see what needs configuring, then apply what you want
-uv run webnovel-audio check <slug> 2-10        # report only, writes nothing
-uv run webnovel-audio cast update <slug> 2-10  # add the speakers it found
-uv run webnovel-audio cast edit <slug>         # adjust voices by ear
-uv run webnovel-audio lex edit <slug>          # fix pronunciations
+uv run webnovel-audio check --target <slug> --range 2-10   # report only, writes nothing
+uv run webnovel-audio cast update --scope <slug> --range 2-10   # add the speakers it found
+uv run webnovel-audio cast edit --scope <slug>     # adjust voices by ear
+uv run webnovel-audio lex edit --scope <slug>      # fix pronunciations
 
 # 4. render (the only expensive step, ~3–5 min/chapter)
-uv run webnovel-audio render <slug> 1-10
+uv run webnovel-audio render --target <slug> --range 1-10
 
 # 5. listen
 uv run webnovel-audio serve                    # http://<this-machine>:8080/  (the web player)
@@ -74,7 +74,7 @@ uv run webnovel-audio serve                    # http://<this-machine>:8080/  (t
 Then the steady state is one command — `webnovel-audio sync` pulls, parses and
 renders everything new across every enabled series, after showing you how much
 CPU that will cost. When a new character shows up 40 chapters later, drop back to step 3
-with `cast update <slug> 50-55`; it only ever *adds* speakers, never rewrites
+with `cast update --scope <slug> --range 50-55`; it only ever *adds* speakers, never rewrites
 the ones you've tuned.
 
 ### From the control UI
@@ -133,17 +133,17 @@ while iteration costs milliseconds, not minutes.
 
 ```mermaid
 flowchart TD
-    A["series add &lt;url&gt; --from N"] --> DB[("state.db<br/>series + chapter list")]
-    DB --> F["fetch &lt;target&gt; [range]"]
+    A["series add --url &lt;url&gt; [--from N]"] --> DB[("state.db<br/>series + chapter list")]
+    DB --> F["fetch --target &lt;t&gt; [--range R]"]
     F --> RAW[/".raw/&lt;id&gt;.html"/]
-    RAW --> P["parse &lt;target&gt; [range]"]
+    RAW --> P["parse --target &lt;t&gt; [--range R]"]
     P --> MD[/"NNN-slug.md<br/>blocks + provenance"/]
-    MD --> CK["check &lt;target&gt; [range]"]
+    MD --> CK["check --target &lt;t&gt; [--range R]"]
     CK --> REP{{"report — writes nothing<br/>cast · heteronyms · unknown names"}}
-    REP --> AP["cast update &lt;slug&gt; [range]<br/>lex add · lex ignore"]
+    REP --> AP["cast update --scope &lt;slug&gt; [--range R]<br/>lex add · lex ignore"]
     AP --> CFG[/"&lt;bundle&gt;/config.toml<br/>&lt;bundle&gt;/lexicon.csv"/]
     CFG --> ED["cast edit · lex edit<br/>pron · tagger test · voices demo"]
-    ED --> R["render &lt;target&gt; [range]"]
+    ED --> R["render --target &lt;t&gt; [--range R]"]
     MD --> R
     LEX[/"_base.csv + &lt;bundle&gt;/lexicon.csv<br/>surface · pos · respell"/] --> R
     TAG(["spaCy POS tagger<br/>required"]) --> R
@@ -166,58 +166,64 @@ enabled series — the daily driver, not a special code path.
 
 ## Calling convention
 
-Every pipeline verb takes the same two positional arguments:
+Every pipeline verb takes the same two flags (there are no positional
+arguments, so the order never matters):
 
 ```
-webnovel-audio <verb> <target> [range]
+webnovel-audio <verb> --target <target> [--range <range>]
 ```
 
-**`<target>`** is a tracked series (slug, id, or title substring) *or* a path /
-URL for a one-off — the same way `git show` accepts a ref or a path.
+**`--target`** is a tracked series (slug, id, or title substring) *or* a path /
+URL for a one-off. The commands that only ever act on a tracked series (`series`,
+`state`, `cast`, `lex`, `cache`, `sync`, `book`, `feed`, …) call the same thing
+`--scope`; where it is optional, omitting it (or `@all`) means every enabled
+series, and `lex` also accepts `@base` for the always-on lexicon.
 
-**`[range]`** is `N`, `N-M`, `N-`, or `-M`, and its presence changes the mood:
+**`--range`** is `N`, `N-M`, `N-`, `-M`, or a comma list (`1-3,7,20-25`), and its
+presence changes the mood:
 
 | | with a range | without |
 |---|---|---|
-| `render <s> 20-30` | **imperative** — render those, whatever their recorded state | **declarative** — render whatever is outstanding |
-| `fetch <s> 20-30` | re-fetch those | fetch what's missing |
-| `parse <s> 20-30` | re-parse those | parse what's unparsed |
+| `render --target <s> --range 20-30` | **imperative** — render those, whatever their recorded state | **declarative** — render whatever is outstanding |
+| `fetch --target <s> --range 20-30` | re-fetch those | fetch what's missing |
+| `parse --target <s> --range 20-30` | re-parse those | parse what's unparsed |
 
-So re-rendering after a config change is just `render <slug> 20-30` — there's no
-separate "mark these dirty" step, and no `--force`. Stages also pull their own
-inputs: `render <slug> 20-30` on chapters you never fetched will fetch and parse
-them first.
+So re-rendering after a config change is just `render --target <slug> --range 20-30`
+— there's no separate "mark these dirty" step. (A chapter whose audio recipe is
+unchanged is skipped even then; `render --force` overrides that.) Stages also pull
+their own inputs: rendering chapters you never fetched will fetch and parse them
+first.
 
 ## Commands
 
-**Pipeline** — all take `<target> [range]`:
+**Pipeline** — all take `--target <target> [--range R]`:
 
 | command | what |
 |---|---|
-| `fetch <target> [range]` | download chapter source into the raw cache |
-| `parse <target> [range]` | raw → blocks → readable `.md`. `--explain` dumps the parse |
-| `check <target> [range]` | cast / heteronyms / unknown names report. **Never writes** |
-| `render <target> [range]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only. Reports how many segments came from cache. A chapter whose audio recipe (segments + audio settings) is unchanged is left alone; `--force` re-renders it anyway |
-| `sync [series] [--limit N]` | refresh + render everything outstanding; shows a size estimate and confirms first (`-y` to skip) |
+| `fetch --target T [--range R] [--limit N]` | download chapter source into the raw cache |
+| `parse --target T [--range R]` | raw → blocks → readable `.md`. `--explain` dumps the parse |
+| `check --target T [--range R]` | cast / heteronyms / unknown names report. **Never writes** |
+| `render --target T [--range R]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only. Reports how many segments came from cache. A chapter whose audio recipe (segments + audio settings) is unchanged is left alone; `--force` re-renders it anyway |
+| `sync [--scope S] [--limit N]` | refresh + render everything outstanding; shows a size estimate and confirms first (`-y` to skip) |
 | `tagger status` \| `install` \| `test` | the spaCy POS tagger the rules resolve against. **Required to render**, so `--extra kokoro` installs it and the small model; `install --model en_core_web_md` (or `_lg`) upgrades |
-| `progress [series] [--watch]` | what a running sync is doing, from the live state DB. **Read-only**, safe mid-render |
+| `progress [--scope S] [--watch [N]] [--recent]` | what a running sync is doing, from the live state DB. **Read-only**, safe mid-render |
 
 **Series** (porcelain):
 
 | command | what |
 |---|---|
-| `series add <url> [--from N]` | start tracking — metadata only; `--from` marks 1..N `skipped` |
+| `series add --url U [--from N]` | start tracking — metadata only; `--from` marks 1..N `skipped` |
 | `series list` | dashboard: per-stage counts, what's next, errors |
-| `series show <slug>` | one series in detail |
-| `series enable\|disable <slug>` | include / exclude from `sync` — the UI calls this Pause/Resume |
-| `series priority <slug> <n>` | render order: higher goes first, 100 default. Orders `sync`, the CLI listing and the UI together. Separate from pause, so a paused series keeps its priority |
-| `series refresh [slug]` | re-fetch chapter lists **and series metadata** (tags, rating, status) |
-| `series forget <slug> [--purge]` | untrack (and drop everyone's saved places in it); `--purge` deletes the whole bundle — audio, text, raw and cache. `-n` lists what `--purge` would remove and the space freed |
-| `series path <slug>` | print the bundle directory, bare — `cd "$(… series path x)"` |
-| `series archive <slug> [-o F]` | tar the bundle; `--with-cache` to include `.cache/` |
-| `series import <path>` \| `series scan [root]` | adopt a bundle / re-locate moved ones |
-| `series export [slug]` | rewrite `manifest.toml` + `state.json` now |
-| `series migrate [slug]` | move a pre-bundle series into the layout |
+| `series show --scope S` | one series in detail |
+| `series enable\|disable --scope S` | include / exclude from `sync` — the UI calls this Pause/Resume |
+| `series priority --scope S --priority N` | render order: higher goes first, 100 default. Orders `sync`, the CLI listing and the UI together. Separate from pause, so a paused series keeps its priority |
+| `series refresh [--scope S]` | re-fetch chapter lists **and series metadata** (tags, rating, status) |
+| `series forget --scope S [--purge]` | untrack (and drop everyone's saved places in it); `--purge` deletes the whole bundle — audio, text, raw and cache. `-n` lists what `--purge` would remove and the space freed |
+| `series path --scope S` | print the bundle directory, bare — `cd "$(… series path x)"` |
+| `series archive --scope S [-o F]` | tar the bundle; `--with-cache` to include `.cache/` |
+| `series import --path DIR` \| `series scan [--root DIR]` | adopt a bundle / re-locate moved ones |
+| `series export [--scope S]` | rewrite `manifest.toml` + `state.json` now |
+| `series migrate [--scope S]` | move a pre-bundle series into the layout |
 | `series reclaim` | drop shared-cache links now duplicated inside bundles |
 
 **Web player people** — names picked in the player (no accounts):
@@ -225,17 +231,17 @@ them first.
 | command | what |
 |---|---|
 | `profile list` | who has a place saved, in how many series, and when they last listened |
-| `profile add <name>` | create a name ahead of time |
-| `profile remove <name> [-y] [-n]` | delete a name and every place it saved. Asks first; `--json` does **not** imply consent; `-n` previews |
+| `profile add NAME` | create a name ahead of time |
+| `profile remove NAME [-y] [-n]` | delete a name and every place it saved. Asks first; `--json` does **not** imply consent; `-n` previews |
 
 **Cache** — the synthesized-segment store (see [Segment cache](#segment-cache)):
 
 | command | what |
 |---|---|
-| `cache status [slug]` | size, generations, per-series totals, what's reclaimable |
-| `cache compact [slug]` | re-encode float32 wav → FLAC under the current generation |
-| `cache prune [slug]` | delete unreachable entries; `--stale` drops old generations |
-| `cache clear [slug]` | delete everything, reachable or not — quotes the CPU cost first |
+| `cache status [--scope S]` | size, generations, per-series totals, what's reclaimable |
+| `cache compact [--scope S]` | re-encode float32 wav → FLAC under the current generation |
+| `cache prune [--scope S]` | delete unreachable entries; `--stale` drops old generations |
+| `cache clear [--scope S]` | delete everything, reachable or not — quotes the CPU cost first |
 
 `prune` and `clear` need explicit consent: `-y`, or "yes" at a terminal.
 `--json` does **not** imply it. `-n` previews.
@@ -244,34 +250,35 @@ them first.
 
 | command | what |
 |---|---|
-| `state show <series> [range]` | per-chapter stage table |
-| `state set <series> <range> <status>` | `new` \| `fetched` \| `parsed` \| `rendered` \| `skipped` |
-| `state reset <series> [range]` | errors → `new`, to retry them |
+| `state show --scope S [--range R]` | per-chapter stage table |
+| `state set --scope S --range R --status X` | `new` \| `fetched` \| `parsed` \| `rendered` \| `skipped` |
+| `state reset --scope S [--range R]` | errors → `new`, to retry them |
 
 **Lexicon / config / voices:**
 
 | command | what |
 |---|---|
-| `cast edit <slug>` | open the series config (voices) in `$EDITOR` |
-| `cast update <slug> [range]` | merge in speakers found in that range (`--diff` to preview) |
-| `cast set <slug> <speaker> <voice>` | assign one voice without an editor (`""` = unassigned) |
-| `cast show <slug>` | the effective cast, including unassigned speakers |
-| `lex edit <slug>` / `lex edit --base` | open the per-series / always-on CSV in `$EDITOR` |
-| `lex ignore <slug> <word>…` | mark words "reads fine", so `check` stops listing them |
-| `lex add <slug> <surface> <respell>` | append a row without opening an editor (`--pos` to scope it, `--base` to write the always-on file) |
-| `lex promote <slug> <surface>` | move a row from the series file into the always-on base, once it turns out not to be series-specific |
-| `lex list [slug]` | show effective entries (base + series, merged) |
+| `cast edit --scope S` | open the series config (voices) in `$EDITOR` |
+| `cast update --scope S [--range R]` | merge in speakers found in that range (`--diff` to preview) |
+| `cast set --scope S --speaker NAME [--voice ID]` | assign one voice without an editor (`""` = unassigned) |
+| `cast show --scope S` | the effective cast, including unassigned speakers |
+| `lex edit --scope S` / `lex edit --scope @base` | open the per-series / always-on CSV in `$EDITOR` |
+| `lex ignore --scope S --words W [W…]` | mark words "reads fine", so `check` stops listing them |
+| `lex add --scope S --surface W --respell R` | append a row without opening an editor (`--pos` to scope it, `--note` to say why, `--scope @base` to write the always-on file) |
+| `lex promote --scope S --surface W [--pos P]` | move a row from the series file into the always-on base, once it turns out not to be series-specific |
+| `lex list [--scope S]` | show effective entries (base + series, merged) |
 | `config show` / `config edit` | resolved paths / open `config.toml` |
-| `pron <text> [--series S]` | how the TTS will say it: phonemes + a rough gloss |
+| `pron TEXT [--scope S]` | how the TTS will say it: phonemes + a rough gloss |
 | `voices list` / `voices demo` | the 28 ids / a chaptered audition file |
 
-**Delivery + misc:** `serve`, `feed <series>`, `book <series> [range]`,
-`retag [series]` (refresh Opus tags with no re-encode), `schema` (the command
-surface as JSON), `models fetch|path`, `login`, `ui`.
+**Delivery + misc:** `serve [--host H] [--port N]`, `feed [--scope S]`,
+`book --scope S [--range R] [-o FILE]`, `retag [--scope S]` (refresh Opus tags
+with no re-encode), `schema` (the command surface as JSON), `models fetch|path`,
+`login --provider P`, `ui`.
 
 ### Driving it from a script or an agent
 
-`schema --json` emits every command, argument and choice, walked out of argparse
+`schema` emits every command, argument and choice, walked out of argparse
 so it can't drift from the real parser — enough to plan against without reading
 `--help`. Failures under `--json` are structured rather than prose:
 
@@ -319,45 +326,45 @@ with exit 2 rather than fighting for the CPU. Bare `webnovel-audio` prints help
 
 ```sh
 # start tracking; --from 40 means "I've already read 40, skip them"
-webnovel-audio series add https://www.royalroad.com/fiction/12345/some-fiction --from 40
+webnovel-audio series add --url https://www.royalroad.com/fiction/12345/some-fiction --from 40
 
 # what's tracked, where each one is
 webnovel-audio series list
-webnovel-audio state show some-fiction 1-20      # per-chapter detail
+webnovel-audio state show --scope some-fiction --range 1-20      # per-chapter detail
 
 # the cheap stages, ahead of time
-webnovel-audio fetch some-fiction 41-50
-webnovel-audio parse some-fiction 41-50
-webnovel-audio check some-fiction 41-50           # report: what needs deciding
-webnovel-audio cast update some-fiction 41-50    # add the speakers it found
+webnovel-audio fetch --target some-fiction --range 41-50
+webnovel-audio parse --target some-fiction --range 41-50
+webnovel-audio check --target some-fiction --range 41-50  # report: what needs deciding
+webnovel-audio cast update --scope some-fiction --range 41-50  # add the speakers it found
 
 # tune, then render
-webnovel-audio cast edit some-fiction            # adjust voices by ear
-webnovel-audio lex edit some-fiction             # pronunciations
-webnovel-audio render some-fiction 41-50
+webnovel-audio cast edit --scope some-fiction      # adjust voices by ear
+webnovel-audio lex edit --scope some-fiction       # pronunciations
+webnovel-audio render --target some-fiction --range 41-50
 
 # heard a problem in 44-46? fix, then just render them again
-webnovel-audio lex add some-fiction Kaelith kay-lith
-webnovel-audio render some-fiction 44-46
+webnovel-audio lex add --scope some-fiction --surface Kaelith --respell kay-lith
+webnovel-audio render --target some-fiction --range 44-46
 
 # the steady state
 webnovel-audio sync                              # everything new, everywhere
-webnovel-audio sync some-fiction --limit 3
+webnovel-audio sync --scope some-fiction --limit 3
 
 # one-off file or URL, no tracking involved
-webnovel-audio check ./some-chapter.html
-webnovel-audio render ./some-chapter.html -o out.opus
+webnovel-audio check --target ./some-chapter.html
+webnovel-audio render --target ./some-chapter.html -o out.opus
 
 # hear how a name will be said before committing to a respelling
-webnovel-audio pron Kaelith --series some-fiction
+webnovel-audio pron Kaelith --scope some-fiction
 webnovel-audio voices demo -o voices.opus
 
 # delivery
 webnovel-audio serve
-webnovel-audio book some-fiction 1-40 -o some-fiction.m4b
+webnovel-audio book --scope some-fiction --range 1-40 -o some-fiction.m4b
 
 # done with a series? stop syncing it
-webnovel-audio series disable some-fiction
+webnovel-audio series disable --scope some-fiction
 
 # script against it
 webnovel-audio series list --json | jq '.series[] | {slug, pending}'
@@ -440,7 +447,7 @@ Beyond running a stage over the selection, the right-click menu marks chapters
 skipped/new and clears errors; shift/ctrl select ranges and scattered picks.
 Playback uses `$WEBNOVEL_AUDIO_PLAYER` (e.g. `mpv --no-video`) if set, else
 `xdg-open`. The selection becomes one comma range —
-picking 1, 2, 3, 7, 20, 21 runs `render <slug> 1-3,7,20-21`.
+picking 1, 2, 3, 7, 20, 21 runs `render --target <slug> --range 1-3,7,20-21`.
 
 Right-click a series to pause/resume it or **set its priority** — one number
 that orders `sync`, this list and the CLI together, so what renders first and
@@ -540,10 +547,10 @@ rewritten on every sync, so hand edits there are lost.
 ### Moving, archiving, deleting
 
 ```sh
-webnovel-audio series path sky-pride                # where is it?
-mv library/sky-pride /mnt/big/ && webnovel-audio series scan /mnt/big
-webnovel-audio series archive sky-pride -o sp.tar.zst   # cache excluded
-webnovel-audio series forget sky-pride --purge      # bundle and all
+webnovel-audio series path --scope sky-pride                # where is it?
+mv library/sky-pride /mnt/big/ && webnovel-audio series scan --root /mnt/big
+webnovel-audio series archive --scope sky-pride -o sp.tar.zst   # cache excluded
+webnovel-audio series forget --scope sky-pride --purge      # bundle and all
 ```
 
 A bundle that has gone missing is a **supported state**, not an error —
@@ -582,7 +589,7 @@ HTML ingest keeps italic character ranges. A sentence that is ≥
 
 ### Casting
 
-`check <target>` runs the attributor and prints `character → Kokoro voice id`
+`check --target <target>` runs the attributor and prints `character → Kokoro voice id`
 with line counts and a gender guess; paste into `config.toml`, adjust. Speakers
 referred to only descriptively ("the old woman") become a lowercase key
 (`woman`) you map like any other. `[cast] protagonist` catches untagged
@@ -599,7 +606,7 @@ different voice than 11 and 13. Same reasoning as a lockfile. (Timing and DSP
 are *not* pinned — those are global taste, and a change there is one you want
 everywhere.)
 
-`cast update <slug> [range]` then samples the range and appends a
+`cast update --scope <slug> [--range R]` then samples the range and appends a
 `[cast.voices]` entry per speaker it hasn't seen, commented with line count and
 gender — `"Mara" = "af_heart"   # 48 line(s), female`. Run it again on a later
 range once new characters appear; it **only ever adds**, never rewrites what
@@ -619,8 +626,8 @@ made; an empty value reads as unfinished.
   matters, a **multi-word lexicon entry** (`a tear in,a tair in`) pins just that
   phrase.
 - **Unknown proper nouns** — names in no lexicon yet, most frequent first
-  (`--top N`). Fix one with `lex add <slug> <word> <respell>`; silence one you've
-  checked with `lex ignore <slug> <word>…`, which records it as "reads fine" so
+  (`--top N`). Fix one with `lex add --scope <slug> --surface <word> --respell <spelling>`; silence one you've
+  checked with `lex ignore --scope <slug> --words <word>…`, which records it as "reads fine" so
   the list shrinks toward zero. Bulk-dumping candidates into the CSV was worse
   than nothing — a spell-checker's allowlist, not a to-do list.
 
