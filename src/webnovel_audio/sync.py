@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import contextlib
 import copy
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from dataclasses import dataclass
 import fcntl
 import os
 import json
@@ -728,25 +730,66 @@ def _opus_tags(scfg, series_row, c, vol_info=None, rendered_at=None,
     return {k: v for k, v in out.items() if v}
 
 
-def _do_render(cfg, db, prov, ctx, scfg, bdir, c, raw_path, *, backend="kokoro",
-               series_row=None, vol_info=None) -> tuple[str, float]:
+@dataclass
+class _RenderJob:
+    job: "pipeline.Job"
+    out_path: str
+    started: str
+    fp: str
+    scfg: Config
+
+
+@dataclass
+class _Deferred:
+    """A chapter whose audio is being mastered on a worker thread; `run_stage`
+    settles it (marks the stage, emits the event) once the future is done."""
+    ev: dict
+    c: object
+    rj: _RenderJob
+    fut: object
+
+
+def _prepare_render(cfg, db, prov, ctx, scfg, bdir, c, raw_path, *, backend="kokoro",
+                    series_row=None, vol_info=None, skip_unchanged=False) -> _RenderJob:
+    """Synthesize and assemble a chapter (every core); mastering is `pipeline.master`."""
     out_path = _out_stem(bdir, c) + ".opus"
     started = time.strftime("%Y-%m-%dT%H:%M:%S")
     from . import cache as _cache
     fp = _cache.current_fingerprint(scfg, backend)
-    rep = pipeline.render(_load_doc(prov, ctx, c, raw_path), out_path, scfg, backend=backend,
-                          md_meta=_md_extra(prov, c),
-                          tags=(_opus_tags(scfg, series_row, c, vol_info,
-                                           rendered_at=started, fingerprint=fp)
-                                if series_row is not None else None),
-                          log=lambda *_: None)
-    db.mark_stage(c["id"], "rendered", audio_path=out_path,
+    job = pipeline.prepare(_load_doc(prov, ctx, c, raw_path), out_path, scfg, backend=backend,
+                           md_meta=_md_extra(prov, c),
+                           tags=(_opus_tags(scfg, series_row, c, vol_info,
+                                            rendered_at=started, fingerprint=fp)
+                                 if series_row is not None else None),
+                           log=lambda *_: None, skip_unchanged=skip_unchanged, fingerprint=fp)
+    return _RenderJob(job, out_path, started, fp, scfg)
+
+
+def _finish_render(db, c, rj: _RenderJob, rep) -> tuple[str, float, object]:
+    """Record a mastered chapter in the DB. An unchanged one was left as it was."""
+    if rep.skipped:
+        if c["status"] != "rendered":
+            db.mark_stage(c["id"], "rendered", audio_path=rj.out_path)
+        return rj.out_path, c["duration_s"] or 0.0, rep
+    db.mark_stage(c["id"], "rendered", audio_path=rj.out_path,
                   duration_s=rep.audio_seconds or None,
-                  narrator=scfg.cast.narrator or scfg.voices.narrator,
-                  synth_fingerprint=fp,
-                  render_started_at=started,
+                  narrator=rj.scfg.cast.narrator or rj.scfg.voices.narrator,
+                  synth_fingerprint=rj.fp,
+                  render_started_at=rj.started,
                   render_ended_at=time.strftime("%Y-%m-%dT%H:%M:%S"))
-    return out_path, rep.audio_seconds, rep
+    return rj.out_path, rep.audio_seconds, rep
+
+
+def _fill_render_event(ev: dict, db, c, rj: _RenderJob, rep) -> None:
+    path, secs, rep = _finish_render(db, c, rj, rep)
+    ev["path"] = path
+    ev["audio_seconds"] = round(secs, 1)
+    # a fully cached re-render finishes in seconds; say so, or it looks wrong
+    ev["cached_segments"] = rep.cached_segments
+    ev["total_segments"] = rep.total_segments
+    if rep.skipped:
+        ev["unchanged"] = True
+    ev["result"] = "ok"
 
 
 def _status_of(db, chapter_id: int) -> str:
@@ -755,8 +798,9 @@ def _status_of(db, chapter_id: int) -> str:
 
 
 def _advance(cfg, db, prov, ctx, scfg, bdir, c, *, upto, force=False, backend="kokoro",
-             series_row=None, vol_map=None):
-    """Walk one chapter up to `upto`. Returns an event dict for the caller."""
+             series_row=None, vol_map=None, master_pool=None, skip_unchanged=False):
+    """Walk one chapter up to `upto`. Returns an event dict for the caller, or a
+    `_Deferred` when mastering was handed to `master_pool`."""
     from .db import stage_rank
 
     have = stage_rank(c["status"])
@@ -777,13 +821,11 @@ def _advance(cfg, db, prov, ctx, scfg, bdir, c, *, upto, force=False, backend="k
             ev["text_path"] = md
     if want >= stage_rank("rendered"):
         vol = (vol_map or {}).get(c["volume_source_id"]) if c["volume_source_id"] else None
-        path, secs, rep = _do_render(cfg, db, prov, ctx, scfg, bdir, c, raw, backend=backend,
-                                     series_row=series_row, vol_info=vol)
-        ev["path"] = path
-        ev["audio_seconds"] = round(secs, 1)
-        # a fully cached re-render finishes in seconds; say so, or it looks wrong
-        ev["cached_segments"] = rep.cached_segments
-        ev["total_segments"] = rep.total_segments
+        rj = _prepare_render(cfg, db, prov, ctx, scfg, bdir, c, raw, backend=backend,
+                             series_row=series_row, vol_info=vol, skip_unchanged=skip_unchanged)
+        if master_pool is not None and rj.job.wav is not None:
+            return _Deferred(ev, c, rj, master_pool.submit(pipeline.master, rj.job))
+        _fill_render_event(ev, db, c, rj, pipeline.master(rj.job))
     ev["result"] = "ok"
     return ev
 
@@ -792,11 +834,17 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
               spans=None, lo: int | None = None, hi: int | None = None,
               limit: int | None = None,
               backend: str | None = None, dry_run: bool = False,
-              refresh_first: bool = False, log=print, emit=None) -> SyncResult:
+              refresh_first: bool = False, force_render: bool = False,
+              log=print, emit=None) -> SyncResult:
     """Run one pipeline stage over a series (or every enabled series).
 
     An explicit range is imperative: those exact chapters, whatever their state.
     No range is declarative: whatever hasn't reached `stage` yet.
+
+    Rendering is overlapped: while one chapter is being loudness-mastered (one
+    thread of ffmpeg) the next is already synthesizing, up to `[audio] master_jobs`
+    in flight. A chapter whose audio recipe is unchanged is left alone unless
+    `force_render`.
     """
     _emit = emit or (lambda _d: None)
     if spans is None:
@@ -805,6 +853,55 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
     backend = backend or cfg.synth.backend
     db = _db(cfg)
     res = SyncResult()
+    jobs = max(1, int(cfg.audio.master_jobs))
+    pool = ThreadPoolExecutor(max_workers=jobs) if stage == "rendered" and not dry_run and jobs > 1 \
+        else None
+    pending: list[tuple] = []                     # (_Deferred, slug, number, started_at)
+
+    def finish_ok(c, slug, num, t0, ev):
+        res.rendered += 1
+        ev["was"], ev["status"] = c["status"], _status_of(db, c["id"])
+        hit, tot = ev.get("cached_segments"), ev.get("total_segments")
+        if ev.get("unchanged"):
+            log(f"      #{num} unchanged: nothing that affects the audio changed, not re-rendered")
+        elif hit:
+            # a fully cached re-render finishes in seconds; without this it just
+            # looks like the render silently skipped. Numbered because mastering
+            # overlaps: this line can arrive after the next chapter's header.
+            log(f"      #{num}: {hit}/{tot} segments from cache")
+        _emit({"event": "chapter", "slug": slug,
+               "elapsed_seconds": round(time.time() - t0, 1), **ev})
+
+    def finish_err(c, slug, num, exc):
+        db.mark(c["id"], "error", error=str(exc)[:400], error_stage=stage)
+        res.errors += 1
+        log(f"    ! error: {exc}")
+        _emit({"event": "chapter", "slug": slug, "number": num,
+               "title": c["title"], "result": "error", "stage": stage,
+               "was": c["status"], "status": "error", "error": str(exc)[:400]})
+
+    def settle(item):
+        d, slug, num, t0 = item
+        try:
+            _fill_render_event(d.ev, db, d.c, d.rj, d.fut.result())
+            finish_ok(d.c, slug, num, t0, d.ev)
+        except Exception as exc:  # noqa: BLE001 - keep the batch going
+            finish_err(d.c, slug, num, exc)
+
+    def drain(limit: int = 0):
+        """Settle every chapter whose mastering has finished, then wait until at
+        most `limit` are still in flight. DB writes stay on this thread."""
+        while pending:
+            done = [p for p in pending if p[0].fut.done()]
+            if done:
+                for p in done:
+                    pending.remove(p)
+                    settle(p)
+                continue
+            if len(pending) <= limit:
+                return
+            wait([p[0].fut for p in pending], return_when=FIRST_COMPLETED)
+
     try:
         if key:
             s = db.get_series(key)
@@ -856,26 +953,18 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                 t0 = time.time()
                 try:
                     log(f"  #{num} {c['title']}")
-                    ev = _advance(cfg, db, prov, ctx, scfg, bdir, c, upto=stage,
-                                  force=explicit, backend=backend, series_row=s,
-                                  vol_map=vol_map)
-                    res.rendered += 1
-                    ev["was"], ev["status"] = c["status"], _status_of(db, c["id"])
-                    hit, tot = ev.get("cached_segments"), ev.get("total_segments")
-                    if hit:
-                        # a fully cached re-render finishes in seconds; without
-                        # this it just looks like the render silently skipped
-                        log(f"      {hit}/{tot} segments from cache")
-                    _emit({"event": "chapter", "slug": slug,
-                           "elapsed_seconds": round(time.time() - t0, 1), **ev})
+                    r = _advance(cfg, db, prov, ctx, scfg, bdir, c, upto=stage,
+                                 force=explicit, backend=backend, series_row=s,
+                                 vol_map=vol_map, master_pool=pool,
+                                 skip_unchanged=not force_render)
+                    if isinstance(r, _Deferred):
+                        pending.append((r, slug, num, t0))
+                        drain(limit=jobs)          # the next chapter synthesizes meanwhile
+                    else:
+                        finish_ok(c, slug, num, t0, r)
                 except Exception as exc:  # noqa: BLE001 - keep the batch going
-                    db.mark(c["id"], "error", error=str(exc)[:400], error_stage=stage)
-                    res.errors += 1
-                    log(f"    ! error: {exc}")
-                    _emit({"event": "chapter", "slug": slug, "number": num,
-                           "title": c["title"], "result": "error", "stage": stage,
-                           "was": c["status"], "status": "error",
-                           "error": str(exc)[:400]})
+                    finish_err(c, slug, num, exc)
+        drain()
         if not dry_run:
             for row in filter(None, (db.series_by_id(k) for k in touched)):
                 bundle.sync_bundle(cfg, db, row)
@@ -883,6 +972,8 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                "errors": res.errors, "skipped": res.skipped})
         return res
     finally:
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
         db.close()
 
 

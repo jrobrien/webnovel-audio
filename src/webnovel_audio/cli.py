@@ -189,6 +189,7 @@ def _stage_cmd(stage: str):
                     cfg, stage, args.target, spans=spans,
                     limit=getattr(args, "limit", None),
                     dry_run=getattr(args, "dry_run", False),
+                    force_render=getattr(args, "force", False),
                     log=(lambda *_: None) if want_json else print, emit=emit)
         except sync.SyncLocked as exc:
             if want_json:
@@ -2344,6 +2345,8 @@ def _build_parser():
     rd = _stage_parser("render", "synthesize -> mastered .opus")
     rd.add_argument("-o", "--out", help="output path (file/URL target only)")
     rd.add_argument("--dry-run", action="store_true", help="plan only, no audio")
+    rd.add_argument("--force", action="store_true",
+                    help="re-render even if nothing that affects the audio changed")
     rd.set_defaults(func=_stage_cmd("rendered"))
 
     sy = sub.add_parser("sync", help="refresh + render everything outstanding")

@@ -159,7 +159,7 @@ flowchart TD
 | `fetch` | ~2.5 s (politeness delay, not work) | **yes** | `.raw/<id>.html` |
 | `parse` | ~30 ms | no | `chapters/NNN-slug.md` |
 | `check` | ~50 ms | no | nothing — report only (`cast update` / `lex add` apply) |
-| `render` | **~40 s per 3.6 min of audio** (88% TTS, 12% loudness) | no | `chapters/NNN-slug.opus` |
+| `render` | cold: ~40 s per 3.6 min of audio (88% TTS). Re-rendering a mostly-cached chapter: **~3 s** (mastering overlapped with the next chapter's synthesis) | no | `chapters/NNN-slug.opus` |
 
 `sync` is just `series refresh` + `render` with an implicit range, over every
 enabled series — the daily driver, not a special code path.
@@ -197,7 +197,7 @@ them first.
 | `fetch <target> [range]` | download chapter source into the raw cache |
 | `parse <target> [range]` | raw → blocks → readable `.md`. `--explain` dumps the parse |
 | `check <target> [range]` | cast / heteronyms / unknown names report. **Never writes** |
-| `render <target> [range]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only. Reports how many segments came from cache |
+| `render <target> [range]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only. Reports how many segments came from cache. A chapter whose audio recipe (segments + audio settings) is unchanged is left alone; `--force` re-renders it anyway |
 | `sync [series] [--limit N]` | refresh + render everything outstanding; shows a size estimate and confirms first (`-y` to skip) |
 | `tagger status` \| `install` \| `test` | the spaCy POS tagger the rules resolve against. **Required to render**, so `--extra kokoro` installs it and the small model; `install --model en_core_web_md` (or `_lg`) upgrades |
 | `progress [series] [--watch]` | what a running sync is doing, from the live state DB. **Read-only**, safe mid-render |
@@ -675,7 +675,7 @@ directory; `-c` for a different one):
 
 `[general]` `base_lexicon` (always-on) + cache/model paths · `[voices]` fallback voices · `[cast]` + `[cast.voices]`
 per-series casting (`seed_chapters` = `check`'s default sample window) · `[chat]` livestream-chat behaviour · `[synth]`
-(`thought_threshold`, `system_rate`) · `[pauses]` · `[audio]` loudness ·
+(`thought_threshold`, `system_rate`) · `[pauses]` · `[audio]` loudness, `mastering` (`fast` | `loudnorm`), `master_jobs` ·
 `[dsp.*]` effect chains keyed by speaker / voice / style · `[library]`
 (`library_dir`, `state_db`) · one table per provider (`[royalroad]`,
 `[scribblehub]`: `request_delay`) · `[serve]` (`host`, `port`, `base_url`, `tailnet_url`, `redirect_to_tailnet`, `access_log`) ·

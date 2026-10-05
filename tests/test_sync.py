@@ -808,3 +808,126 @@ def test_priority_column_is_added_to_an_existing_db(tmp_path):
     assert dict(db.list_series()[0])["priority"] == 100, "existing rows get the default"
     db.set_priority(sid, 300)
     assert dict(db.list_series()[0])["priority"] == 300
+
+
+def _offline_library(tmp_path, monkeypatch, master_jobs=3):
+    """The offline RoyalRoad fixture library, every chapter pending, null backend."""
+    from webnovel_audio import providers
+
+    fiction_html = open(FICTION_FIXTURE, encoding="utf-8").read()
+    monkeypatch.setattr(
+        providers.RoyalRoadProvider, "_get",
+        lambda self, url, ctx: fiction_html if "/chapter/" not in url else CHAPTER_STUB)
+    monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
+    cfg = Config()
+    cfg.library.state_db = str(tmp_path / "state.db")
+    cfg.library.library_dir = str(tmp_path / "lib")
+    cfg.general.cache_dir = str(tmp_path / "cache")
+    cfg.audio.master_jobs = master_jobs
+    info = sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run",
+                           start="1", log=lambda *_: None)
+    return cfg, info["pending"]
+
+
+def _chapter_events(events):
+    return [e for e in events if e["event"] == "chapter"]
+
+
+@pytest.mark.skipif(not os.path.exists(FICTION_FIXTURE), reason="needs the fixture")
+def test_masters_overlap_and_every_chapter_still_completes(tmp_path, monkeypatch):
+    import threading
+    import time
+
+    from webnovel_audio import pipeline
+
+    cfg, pending = _offline_library(tmp_path, monkeypatch, master_jobs=3)
+    assert pending >= 4
+    real, live, peak, lock = pipeline.master, [0], [0], threading.Lock()
+
+    def slow_master(job):
+        with lock:
+            live[0] += 1
+            peak[0] = max(peak[0], live[0])
+        time.sleep(0.25)                              # stands in for ffmpeg
+        try:
+            return real(job)
+        finally:
+            with lock:
+                live[0] -= 1
+
+    monkeypatch.setattr(pipeline, "master", slow_master)
+    events = []
+    res = sync.run_sync(cfg, backend="null", log=lambda *_: None, emit=events.append, refresh_first=False)
+    assert res.rendered == pending and res.errors == 0
+    assert peak[0] >= 2                               # mastering really did overlap
+    chs = _chapter_events(events)
+    assert len(chs) == pending and all(e["result"] == "ok" and e["status"] == "rendered" for e in chs)
+    assert events[-1]["event"] == "done" and events[-1]["done"] == pending
+    db = DB(cfg.library.state_db)
+    s = db.get_series("424242")
+    rendered = [c for c in db.chapters(s["id"]) if c["status"] == "rendered"]
+    assert len(rendered) == pending
+    assert all(c["duration_s"] and os.path.exists(c["audio_path"]) for c in rendered)
+    assert sorted(e["number"] for e in chs) == sorted(c["ord"] + 1 for c in rendered)   # each once
+    db.close()
+
+
+@pytest.mark.skipif(not os.path.exists(FICTION_FIXTURE), reason="needs the fixture")
+def test_one_failed_master_marks_only_that_chapter(tmp_path, monkeypatch):
+    from webnovel_audio import pipeline
+
+    cfg, pending = _offline_library(tmp_path, monkeypatch)
+    real, calls = pipeline.master, [0]
+
+    def flaky(job):
+        calls[0] += 1
+        if calls[0] == 2:
+            raise RuntimeError("ffmpeg exploded")
+        return real(job)
+
+    monkeypatch.setattr(pipeline, "master", flaky)
+    events = []
+    res = sync.run_sync(cfg, backend="null", log=lambda *_: None, emit=events.append, refresh_first=False)
+    assert res.errors == 1 and res.rendered == pending - 1
+    bad = [e for e in _chapter_events(events) if e["result"] == "error"]
+    assert len(bad) == 1 and "ffmpeg exploded" in bad[0]["error"] and bad[0]["status"] == "error"
+    db = DB(cfg.library.state_db)
+    s = db.get_series("424242")
+    statuses = sorted(c["status"] for c in db.chapters(s["id"]))
+    assert statuses.count("error") == 1 and statuses.count("rendered") == pending - 1
+    db.close()
+
+
+@pytest.mark.skipif(not os.path.exists(FICTION_FIXTURE), reason="needs the fixture")
+def test_re_rendering_unchanged_chapters_does_nothing_unless_forced(tmp_path, monkeypatch):
+    cfg, pending = _offline_library(tmp_path, monkeypatch)
+    sync.run_sync(cfg, backend="null", log=lambda *_: None, refresh_first=False)
+    db = DB(cfg.library.state_db)
+    s = db.get_series("424242")
+    done = [c for c in db.chapters(s["id"]) if c["status"] == "rendered"]
+    nums = sorted(c["ord"] + 1 for c in done)
+    span = [(nums[0], nums[-1])]
+    before = {c["ord"]: (c["rendered_at"], os.stat(c["audio_path"]).st_mtime_ns) for c in done}
+    db.close()
+
+    events = []
+    res = sync.run_stage(cfg, "rendered", "424242", spans=span, backend="null",
+                         log=lambda *_: None, emit=events.append)
+    chs = _chapter_events(events)
+    assert res.errors == 0 and len(chs) == len(done)
+    assert all(e["result"] == "ok" and e.get("unchanged") is True for e in chs)
+    db = DB(cfg.library.state_db)
+    after = {c["ord"]: (c["rendered_at"], os.stat(c["audio_path"]).st_mtime_ns)
+             for c in db.chapters(s["id"]) if c["status"] == "rendered"}
+    db.close()
+    assert after == before                              # nothing rewritten, nothing re-stamped
+
+    events.clear()
+    sync.run_stage(cfg, "rendered", "424242", spans=span, backend="null",
+                   log=lambda *_: None, emit=events.append, force_render=True)
+    assert not any(e.get("unchanged") for e in _chapter_events(events))
+    db = DB(cfg.library.state_db)
+    forced = {c["ord"]: os.stat(c["audio_path"]).st_mtime_ns
+              for c in db.chapters(s["id"]) if c["status"] == "rendered"}
+    db.close()
+    assert all(forced[o] > before[o][1] for o in before)    # every file really was rewritten

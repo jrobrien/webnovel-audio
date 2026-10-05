@@ -768,6 +768,8 @@ proc handle_event {ev {raw ""}} {
                 log "    #$n ERROR: [json::get $ev error]"
             } elseif {$r eq "would-run"} {
                 log "    #$n would [json::get $ev stage] — [json::get $ev title]"
+            } elseif {[json::get $ev unchanged] eq "1"} {
+                log "    #$n unchanged — nothing that affects the audio changed, left as it was"
             } else {
                 set detail ""
                 set a [json::get $ev audio_seconds]

@@ -196,9 +196,13 @@ Cast / Lexicon / Log notebook bottom-right, status bar along the bottom.
   otherwise `xdg-open` decides.
 - A re-render that finishes suspiciously fast is usually a full cache hit —
   the log says `[194/194 segments cached]`. The per-segment cache is keyed on
-  text+voice+style+rate+pitch, so re-rendering unchanged audio only re-runs
-  loudness normalisation and encoding (~16 s for a 12-minute chapter, vs ~2.5
-  min cold).
+  text+voice+style+rate+pitch, so re-rendering a chapter only synthesizes what
+  changed. Mastering (loudness + Opus) is the fixed cost: ~6 s for a 25-minute
+  chapter with `[audio] mastering = "fast"` (the default; ~30 s with
+  `"loudnorm"`), and `master_jobs` chapters master at once while the next one
+  synthesizes. A chapter whose segments and audio settings are unchanged since
+  its last render is skipped outright (`render --force` re-renders anyway); one
+  rendered before this existed is rendered once, then skippable.
 - **Sync…** shows a CPU estimate before starting.
 - Cast and Lexicon are edited in place, with an mtime guard so a file changed
   underneath (by `cast update`) is never silently overwritten. **Open in

@@ -65,8 +65,9 @@ RSS feed the phone subscribes to)
 
 Per-voice EQ/comp; `thought` voice gets high-pass + gentle comp + a touch of
 short reverb. Pauses: ~260 ms sentence, ~380 ms paragraph, ~1100 ms scene break,
-+220 ms on a trailing ellipsis. Loudness: two-pass ffmpeg `loudnorm` to
-−19 LUFS / −3 dBTP. Encode: Opus 56 kbit/s mono; optional M4B per arc with
++220 ms on a trailing ellipsis. Loudness: to −19 LUFS / −3 dBTP, either by
+measuring with `ebur128` and applying one gain plus a peak limiter (`mastering = "fast"`, the
+default) or by ffmpeg's two-pass `loudnorm`. Encode: Opus 56 kbit/s mono; optional M4B per arc with
 chapter markers.
 
 ## Delivery
