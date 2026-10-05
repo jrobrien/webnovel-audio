@@ -1,9 +1,10 @@
 """Assembly + mastering: concatenate segment renders, insert pauses,
-two-pass loudness-normalize, encode to Opus."""
+loudness-normalize, encode to Opus."""
 from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -206,35 +207,85 @@ def write_opus(
     loud: tuple[float, float, float] = (-19.0, -3.0, 11.0),
     meta: dict | None = None,
     chapters: list[tuple[float, str]] | None = None,
+    mastering: str = "loudnorm",
 ) -> None:
+    """Master `wav` to `loud` = (integrated LUFS, true-peak dB, LRA) and write Opus.
+
+    `mastering="loudnorm"` is ffmpeg's two-pass `loudnorm`: accurate, but its
+    true-peak oversampling makes the two passes cost ~30 s per 25 minutes of audio
+    (the Opus encode itself is ~4 s). `"fast"` measures integrated loudness with
+    `ebur128` (~0.5 s), applies one gain and a peak limiter, and encodes: the same
+    target loudness within ~0.4 LU, about five times quicker.
+
+    The file is written beside `out_path` and renamed into place, so a player
+    streaming the chapter never sees it half-written.
+    """
     meta = meta or {}
-    i, tp, lra = loud
     os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+    tmp_out = os.path.join(os.path.dirname(os.path.abspath(out_path)),
+                           "." + os.path.basename(out_path) + ".part.opus")
 
-    with tempfile.TemporaryDirectory() as td:
-        raw = os.path.join(td, "raw.wav")
-        sf.write(raw, wav, sr, subtype="PCM_16")
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            raw = os.path.join(td, "raw.wav")
+            sf.write(raw, wav, sr, subtype="PCM_16")
 
-        af = f"loudnorm=I={i}:TP={tp}:LRA={lra}"
-        m = measure_loudnorm(raw, i, tp, lra)
-        if m and _all_finite(m, "input_i", "input_tp", "input_lra", "input_thresh", "target_offset"):
-            af += (
-                f":measured_I={m['input_i']}:measured_TP={m['input_tp']}"
-                f":measured_LRA={m['input_lra']}:measured_thresh={m['input_thresh']}"
-                f":offset={m['target_offset']}:linear=true"
-            )
+            af = _fast_filter(raw, loud) if mastering == "fast" else None
+            if af is None:
+                af = _loudnorm_filter(raw, loud)
 
-        cmd = [_ffmpeg(), "-hide_banner", "-nostats", "-y", "-i", raw]
-        if chapters:
-            fm = os.path.join(td, "chapters.txt")
-            with open(fm, "w", encoding="utf-8") as fh:
-                fh.write(_ffmeta_chapters(chapters, wav.size / sr))
-            cmd += ["-i", fm, "-map", "0:a", "-map_chapters", "1"]
-        cmd += [
-            "-af", af, "-ar", "48000", "-ac", "1",
-            "-c:a", "libopus", "-b:a", bitrate, "-vbr", "on",
-        ]
-        for key, value in meta.items():
-            cmd += ["-metadata", f"{key}={value}"]
-        cmd.append(out_path)
-        subprocess.run(cmd, check=True, capture_output=True, text=True)
+            cmd = [_ffmpeg(), "-hide_banner", "-nostats", "-y", "-i", raw]
+            if chapters:
+                fm = os.path.join(td, "chapters.txt")
+                with open(fm, "w", encoding="utf-8") as fh:
+                    fh.write(_ffmeta_chapters(chapters, wav.size / sr))
+                cmd += ["-i", fm, "-map", "0:a", "-map_chapters", "1"]
+            cmd += [
+                "-af", af, "-ar", "48000", "-ac", "1",
+                "-c:a", "libopus", "-b:a", bitrate, "-vbr", "on",
+            ]
+            for key, value in meta.items():
+                cmd += ["-metadata", f"{key}={value}"]
+            cmd.append(tmp_out)
+            subprocess.run(cmd, check=True, capture_output=True, text=True)
+        os.replace(tmp_out, out_path)
+    finally:
+        if os.path.exists(tmp_out):
+            os.remove(tmp_out)
+
+
+def _loudnorm_filter(raw: str, loud: tuple[float, float, float]) -> str:
+    i, tp, lra = loud
+    af = f"loudnorm=I={i}:TP={tp}:LRA={lra}"
+    m = measure_loudnorm(raw, i, tp, lra)
+    if m and _all_finite(m, "input_i", "input_tp", "input_lra", "input_thresh", "target_offset"):
+        af += (
+            f":measured_I={m['input_i']}:measured_TP={m['input_tp']}"
+            f":measured_LRA={m['input_lra']}:measured_thresh={m['input_thresh']}"
+            f":offset={m['target_offset']}:linear=true"
+        )
+    return af
+
+
+def measure_integrated(in_wav: str) -> float | None:
+    """Gated integrated loudness in LUFS (ITU BS.1770, via ebur128), or None for
+    silence. True-peak oversampling is off: that is what makes `loudnorm` slow."""
+    proc = subprocess.run(
+        [_ffmpeg(), "-hide_banner", "-nostats", "-i", in_wav,
+         "-af", "ebur128=peak=none", "-f", "null", "-"],
+        capture_output=True, text=True)
+    m = re.search(r"\bI:\s+(-?[\d.]+) LUFS", proc.stderr.rsplit("Summary:", 1)[-1])
+    return float(m.group(1)) if m else None
+
+
+def _fast_filter(raw: str, loud: tuple[float, float, float]) -> str | None:
+    """One constant gain to the target loudness, then a peak limiter a dB under the
+    true-peak target (a sample-peak limiter cannot see inter-sample overshoot).
+    None when the audio is silent or unmeasurable, so the caller falls back."""
+    i, tp, _lra = loud
+    i_in = measure_integrated(raw)
+    if i_in is None or i_in < -70.0:
+        return None
+    gain = max(-30.0, min(30.0, i - i_in))
+    ceiling = 10 ** ((tp - 1.0) / 20)
+    return f"volume={gain:.3f}dB,alimiter=limit={ceiling:.4f}:attack=5:release=50:level=disabled"

@@ -153,6 +153,12 @@ class Audio:
     loudness_tp: float = -3.0
     loudness_lra: float = 11.0
     dsp: bool = True                 # apply per-voice/style effect chains ([dsp.*])
+    # "fast": one gain + peak limiter to the target loudness (~5x quicker, within
+    # ~0.4 LU of loudnorm). "loudnorm": ffmpeg's two-pass loudnorm filter.
+    mastering: str = "fast"
+    # chapters mastered at once while the next one synthesizes (each ffmpeg is
+    # single-threaded; the synth uses the rest of the cores). 1 = no overlap.
+    master_jobs: int = 3
 
 
 # Effect chains applied after synthesis, keyed by speaker name, voice id, or style
