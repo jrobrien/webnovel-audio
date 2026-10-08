@@ -67,9 +67,9 @@ lead_ms           = 1000   # settling silence before the first word
 tail_ms           = 900    # silence after the last word
 
 [audio]
-opus_bitrate = "56k"       # mono; transparent for speech
-loudness_i   = -19.0       # LUFS target
-loudness_tp  = -3.0        # dBTP ceiling (the fast limiter sits a dB under it)
+opus_bitrate = "32k"       # mono; plenty for speech (56k was transparent but twice the size)
+loudness_i   = -16.0       # LUFS target (the usual podcast level)
+loudness_tp  = -1.0        # dBTP ceiling (the fast limiter sits a dB under it)
 loudness_lra = 11.0        # only used by mastering = "loudnorm"
 dsp          = true        # apply the [dsp.*] effect chains below
 # "fast": measure loudness with ebur128, apply one gain and a peak limiter, encode.

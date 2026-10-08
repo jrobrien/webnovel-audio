@@ -203,7 +203,7 @@ def write_opus(
     sr: int,
     out_path: str,
     *,
-    bitrate: str = "56k",
+    bitrate: str = "32k",
     loud: tuple[float, float, float] = (-19.0, -3.0, 11.0),
     meta: dict | None = None,
     chapters: list[tuple[float, str]] | None = None,

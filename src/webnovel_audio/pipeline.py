@@ -230,7 +230,7 @@ class Job:
     wav: np.ndarray | None = None      # None: a dry run, or an unchanged chapter
     sr: int = 0
     meta: dict = field(default_factory=dict)
-    bitrate: str = "56k"
+    bitrate: str = "32k"
     loud: tuple = (-19.0, -3.0, 11.0)
     mastering: str = "fast"
     recipe: str = ""

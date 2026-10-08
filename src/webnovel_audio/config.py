@@ -148,9 +148,9 @@ class Book:
 
 @dataclass
 class Audio:
-    opus_bitrate: str = "56k"
-    loudness_i: float = -19.0
-    loudness_tp: float = -3.0
+    opus_bitrate: str = "32k"
+    loudness_i: float = -16.0
+    loudness_tp: float = -1.0
     loudness_lra: float = 11.0
     dsp: bool = True                 # apply per-voice/style effect chains ([dsp.*])
     # "fast": one gain + peak limiter to the target loudness (~5x quicker, within
