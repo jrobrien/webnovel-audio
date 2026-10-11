@@ -375,6 +375,14 @@ class _Handler(BaseHTTPRequestHandler):
             db.close()
             return self._send(404, b"unknown series\n", "text/plain")
         dslug = _safe_slug(s["slug"], slug)
+        if slug != dslug:
+            # a renamed series: send a subscribed podcast app to the current URL
+            db.close()
+            self.send_response(301)
+            self.send_header("Location", f"/feed/{dslug}.xml")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if self._feed_redirect(dslug):
             db.close()
             return

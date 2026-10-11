@@ -107,6 +107,12 @@ CREATE TABLE IF NOT EXISTS positions (
     updated_at       TEXT,
     PRIMARY KEY (profile, series_id)
 );
+-- old slugs of renamed series. A podcast app is subscribed to /feed/<slug>.xml, so
+-- the old handle keeps resolving (and redirects to the new one).
+CREATE TABLE IF NOT EXISTS series_aliases (
+    slug      TEXT PRIMARY KEY,
+    series_id INTEGER NOT NULL REFERENCES series(id) ON DELETE CASCADE
+);
 """
 
 
@@ -227,7 +233,9 @@ class DB:
             self.con.execute("PRAGMA foreign_keys = ON")
 
     # -- series ------------------------------------------------------------
-    def upsert_series(self, fi) -> int:
+    def upsert_series(self, fi, slug: str | None = None) -> int:
+        """Insert or refresh a series. `slug` (a vetted handle) replaces the one
+        derived from the title, on insert only: an existing series keeps its slug."""
         now = time.strftime("%Y-%m-%dT%H:%M:%S")
         tags = json.dumps(fi.tags or [])
         warnings = json.dumps(fi.warnings or [])
@@ -245,7 +253,7 @@ class DB:
                  author=excluded.author, url=excluded.url, cover_url=excluded.cover_url,
                  tags=excluded.tags, warnings=excluded.warnings,
                  status=excluded.status, rating=excluded.rating""",
-            (fi.source_id, fi.provider, series_slug(fi.title, fi.slug), fi.title,
+            (fi.source_id, fi.provider, slug or series_slug(fi.title, fi.slug), fi.title,
              fi.author, fi.url, fi.cover_url, tags, warnings,
              fi.status, fi.rating, now, str(uuid.uuid4())),
         )
@@ -282,12 +290,50 @@ class DB:
         ).fetchone()
         if row:
             return row
+        row = self.alias_series(key)
+        if row:
+            return row
         return self.con.execute(
             """SELECT * FROM series
                WHERE slug LIKE ? OR slug LIKE ? OR title LIKE ?
                ORDER BY id LIMIT 1""",
             (f"{key}%", f"%{key}%", f"%{key}%"),
         ).fetchone()
+
+    def alias_series(self, slug: str):
+        """The series that once had this slug, or None. Tolerates a database
+        opened (read-only, by the server) before the alias table existed."""
+        try:
+            return self.con.execute(
+                "SELECT s.* FROM series_aliases a JOIN series s ON s.id = a.series_id "
+                "WHERE a.slug = ?", (str(slug),)).fetchone()
+        except sqlite3.OperationalError:
+            return None
+
+    def slug_owner(self, slug: str):
+        """The series currently using `slug`, or one that held it before. None if free."""
+        row = self.con.execute("SELECT * FROM series WHERE slug = ?", (slug,)).fetchone()
+        return row or self.alias_series(slug)
+
+    def rename_series(self, series_id: int, new_slug: str) -> str:
+        """Give a series a new slug and remember the old one as an alias. Returns
+        the old slug. One transaction, so a reader never sees it half-done."""
+        self.con.execute("BEGIN IMMEDIATE")
+        try:
+            old = self.con.execute("SELECT slug FROM series WHERE id=?",
+                                   (series_id,)).fetchone()["slug"]
+            self.con.execute("DELETE FROM series_aliases WHERE slug=? AND series_id=?",
+                             (new_slug, series_id))
+            self.con.execute("UPDATE series SET slug=? WHERE id=?", (new_slug, series_id))
+            if old and old != new_slug:
+                self.con.execute(
+                    "INSERT OR REPLACE INTO series_aliases (slug, series_id) VALUES (?, ?)",
+                    (old, series_id))
+            self.con.commit()
+        except BaseException:
+            self.con.rollback()
+            raise
+        return old
 
     def list_series(self) -> list[sqlite3.Row]:
         """Every series, most important first.

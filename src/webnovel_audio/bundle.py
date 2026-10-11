@@ -667,7 +667,7 @@ def archive(cfg: Config, db: DB, key: str, *, out: str | None = None,
     slug, bdir = _dir_slug(s), bundle_dir(cfg, s)
     if not os.path.isdir(bdir):
         raise BundleError("bundle_missing", f"nothing at {bdir}",
-                          hint=f"webnovel-audio series forget {slug}")
+                          hint=f"webnovel-audio series forget --scope {slug}")
 
     # write the machine-owned files first, so the archive carries current state
     sync_bundle(cfg, db, s)

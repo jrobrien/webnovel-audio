@@ -556,3 +556,40 @@ def test_run_events_update_the_lists_in_place(tmp_path):
     assert val("other_series") == "6 4 0" and val("other_chapters") == "4"
     assert val("noops_series") == "3 1 1"                  # only the ch4 event moved it
     assert val("subprocs") == "0" and val("log_has_live_error") == "0"
+
+
+@needs_display
+def test_add_verifies_the_slug_and_series_can_be_renamed(tmp_path):
+    """Add reads the page first and proposes an editable slug (warning if it is
+    taken); the series menu renames, showing a refusal in place."""
+    out = tmp_path / "addren.log"
+    r = _run(os.path.join(ROOT, "tests", "ui", "probe_add_rename.tcl"), str(out),
+             ui_conf=tmp_path / "ui.conf")
+    log = out.read_text() if out.exists() else ""
+    assert r.returncode == 0, f"{r.stderr}\n{log}"
+    assert "DONE" in log and "ERROR" not in log and "BGERROR" not in log, log
+
+    def val(key):
+        m = re.search(rf"^{re.escape(key)} (.*)$", log, re.M)
+        assert m, f"no {key!r} in:\n{log}"
+        return m.group(1)
+
+    assert "Rename…" in val("sctx")
+    # step 1: only the URL; nothing is tracked by "Look up"
+    assert "button=Look up" in val("add_stage0") and "slug_mapped=0" in val("add_stage0")
+    assert "series add --url https://www.royalroad.com/fiction/1/x --dry-run" in val("lookup_call")
+    assert "--from" not in val("lookup_call")
+    # step 2: proposed slug shown, editable, button becomes Add
+    s1 = val("add_stage1")
+    assert "confirm" in s1 and "button=Add" in s1 and "slug=between-beast-and-buddha-a-drunken" in s1
+    assert "--slug drunken-monkey" in val("add_call") and "--dry-run" not in val("add_call")
+    assert val("add_closed") == "1"
+    # a taken slug is flagged up front, and a refusal stays inline with the dialog open
+    assert "already belongs" in val("taken_msg")
+    assert "already belongs to 'X'" in val("add_error_inline") and "still_open=1" in val("add_error_inline")
+    assert "lookup" in val("add_reset") and "button=Look up" in val("add_reset")
+    # rename: prefilled, folder move on by default, refusal inline, success closes
+    assert val("ren_entry") == "x move=1"
+    assert "already belongs" in val("ren_error") and "still_open=1" in val("ren_error")
+    assert "series rename --scope x --slug y --move" in val("ren_call")
+    assert val("ren_closed") == "1"

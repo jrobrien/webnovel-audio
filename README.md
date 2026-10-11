@@ -212,7 +212,8 @@ first.
 
 | command | what |
 |---|---|
-| `series add --url U [--from N]` | start tracking — metadata only; `--from` marks 1..N `skipped` |
+| `series add --url U [--from N] [--slug S] [-n]` | start tracking — metadata only; `--from` marks 1..N `skipped`. The slug (the CLI name, folder and feed URL) is derived from the title; `--slug` sets it, `-n` reads the page and reports the title, chapter count and slug without tracking anything |
+| `series rename --scope S --slug NEW [--move] [-n]` | change the slug. The old one stays as an alias, so `--scope old` still works and `/feed/old.xml` redirects to the new URL; `--move` also renames the folder. Refused while a sync or render runs |
 | `series list` | dashboard: per-stage counts, what's next, errors |
 | `series show --scope S` | one series in detail |
 | `series enable\|disable --scope S` | include / exclude from `sync` — the UI calls this Pause/Resume |
@@ -459,7 +460,10 @@ back on resume.
 **Sync…** in the toolbar covers every series; right-click a series for **Sync…**
 on just that one. Either shows a live CPU estimate before it starts, and while a
 command runs the chapter and series lists update as each chapter finishes.
-Right-click a series → **Delete series…** lists what would be removed and the
+**Add series…** reads the series page first and shows the title and the slug it
+would be tracked under, editable, with a warning if it is taken; nothing is tracked until
+you press **Add**. Right-click a series → **Rename…** changes it later (the old name keeps
+working for podcast subscriptions). **Delete series…** lists what would be removed and the
 disk space it frees, then asks *Really delete <slug>?* before touching anything. The Cast and Lexicon tabs
 edit the bundle's `config.toml` and `lexicon.csv` in place, with an
 mtime check so a file that `cast update` changed underneath is never silently
@@ -654,7 +658,7 @@ head (`[Scan complete…]`) stay `system` — the in-fiction AI.
   creating a name and saving a place; both take `application/json` only and the
   server sends no CORS headers, so another website cannot write through a
   visitor's browser.
-- `/feed/<slug>.xml` is a live RSS 2.0 + iTunes feed; `/audio/…` and `/cover/…`
+- `/feed/<slug>.xml` is a live RSS 2.0 + iTunes feed (a renamed series's old URL answers 301 to the new one); `/audio/…` and `/cover/…`
   serve files with single-range support. Opus-in-Ogg works in AntennaPod /
   Podcast Addict / gPodder; Apple Podcasts and Overcast don't — use `book` for
   a `.m4b`.

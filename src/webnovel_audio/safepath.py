@@ -28,6 +28,25 @@ def series_slug(title, fallback: str = "") -> str:
     their URL slug. Dropping bracketed/parenthesised text keeps the handle to the
     name itself. A title that is *only* decoration falls back to `fallback`.
     """
-    bare = _DECORATION_RE.sub(" ", str(title or ""))
+    bare = _DECORATION_RE.sub(" ", str(title or "")).replace("'", "").replace("\u2019", "")
     slug = re.sub(r"[^a-z0-9]+", "-", bare.lower()).strip("-")
-    return slug[:60].rstrip("-") or safe_slug(fallback)
+    if len(slug) > SLUG_MAX:
+        # cut between words, not mid-word: "…-drunken-monkey-s-journey-to-immor"
+        slug = slug[:SLUG_MAX + 1].rsplit("-", 1)[0] if "-" in slug[:SLUG_MAX + 1] else slug[:SLUG_MAX]
+    return slug.rstrip("-") or safe_slug(fallback)
+
+
+SLUG_MAX = 40
+_SLUG_OK = re.compile(r"^[a-z0-9][a-z0-9-]*$")
+
+
+def valid_slug(slug: str) -> str | None:
+    """Why `slug` can't be a series handle, or None if it can. Lower-case letters,
+    digits and hyphens: it becomes a directory name and a URL segment."""
+    if not slug:
+        return "the slug is empty"
+    if len(slug) > 60:
+        return "the slug is longer than 60 characters"
+    if not _SLUG_OK.match(slug) or slug.endswith("-") or "--" in slug:
+        return "use lower-case letters, digits and single hyphens (e.g. drunken-monkey)"
+    return None

@@ -467,9 +467,36 @@ def suggest_cast(cfg: Config, key: str, *, spans=None,
         db.close()
 
 
-def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
-    """Register a series: metadata + chapter list only. No chapter downloads —
-    `fetch`/`parse`/`check`/`render` are separate, explicit stages."""
+class SlugError(ValueError):
+    """A requested slug is malformed or already in use."""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code, self.message = code, message
+
+
+def check_slug(cfg: Config, db: DB, slug: str, *, mine: int | None = None) -> None:
+    """Raise SlugError unless `slug` can be this series' handle: well-formed, not
+    held (now or formerly) by another series, and not an unrelated directory
+    already sitting in the library. `mine` is the series' own id on a rename."""
+    from .safepath import valid_slug
+    why = valid_slug(slug)
+    if why:
+        raise SlugError("bad_slug", f"{slug!r}: {why}")
+    owner = db.slug_owner(slug)
+    if owner is not None and owner["id"] != mine:
+        raise SlugError("slug_taken", f"{slug!r} already belongs to {owner['title']!r}")
+    d = os.path.join(os.path.expanduser(cfg.library.library_dir), slug)
+    if os.path.exists(d) and not (mine is not None and db.series_by_id(mine)["path"]
+                                  and os.path.abspath(db.series_by_id(mine)["path"])
+                                  == os.path.abspath(d)):
+        raise SlugError("slug_taken", f"{d} already exists in the library")
+
+
+def preview_series(cfg: Config, url: str) -> dict:
+    """What `series add` would do, without doing it: read the series page and
+    report the title, chapter count and the slug it would be tracked under."""
+    from .safepath import series_slug
     prov = _series_provider(url)
     db = _db(cfg)
     try:
@@ -478,7 +505,38 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
         fi.provider = prov.name
         if not fi.source_id or not fi.chapters:
             raise SystemExit(f"could not read a series + chapter list from {url}")
-        sid = db.upsert_series(fi)
+        have = db.find_series(prov.name, fi.source_id)
+        slug = series_slug(fi.title, fi.slug)
+        out = {"title": fi.title, "author": fi.author, "provider": fi.provider,
+               "chapters": len(fi.chapters), "slug": have["slug"] if have else slug,
+               "tracked": bool(have), "slug_free": True}
+        if not have:
+            try:
+                check_slug(cfg, db, slug)
+            except SlugError as exc:
+                out["slug_free"], out["slug_problem"] = False, exc.message
+        return out
+    finally:
+        db.close()
+
+
+def add_series(cfg: Config, url: str, start: str = "latest", log=print,
+               slug: str | None = None) -> dict:
+    """Register a series: metadata + chapter list only. No chapter downloads —
+    `fetch`/`parse`/`check`/`render` are separate, explicit stages.
+
+    `slug` overrides the handle derived from the title (new series only)."""
+    prov = _series_provider(url)
+    db = _db(cfg)
+    try:
+        ctx = providers.context(cfg, prov)
+        fi = prov.series(url, ctx)
+        fi.provider = prov.name
+        if not fi.source_id or not fi.chapters:
+            raise SystemExit(f"could not read a series + chapter list from {url}")
+        if slug and not db.find_series(prov.name, fi.source_id):
+            check_slug(cfg, db, slug)
+        sid = db.upsert_series(fi, slug=slug)
         db.replace_volumes(sid, fi.volumes)
         new = db.replace_chapters(sid, fi.chapters)
         through = _skip_through(fi.chapters, start)
@@ -513,12 +571,57 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print) -> dict:
         log(f"added: {fi.title}")
         log(f"  {len(fi.chapters)} chapters ({new} new), "
             f"{through} skipped, {pend} outstanding")
-        log(f"  next:  webnovel-audio fetch {slug} 1-10")
-        return {"slug": fi.slug, "title": fi.title, "provider": fi.provider,
+        log(f"  next:  webnovel-audio fetch --target {row['slug']} --range 1-10")
+        return {"slug": row["slug"], "title": fi.title, "provider": fi.provider,
                 "chapters": len(fi.chapters), "new": new,
                 "skipped": through, "pending": pend}
     finally:
         db.close()
+
+
+def rename_series(cfg: Config, db: DB, key: str, new_slug: str, *, move: bool = False,
+                  dry_run: bool = False) -> dict:
+    """Give a tracked series a new slug.
+
+    The slug is the CLI handle and the feed/player URL segment; the bundle
+    directory is separate (the DB records its path), so by default only the handle
+    changes. `move` also renames the directory to match. The old slug is kept as an
+    alias, so an existing podcast subscription to /feed/<old>.xml still resolves.
+    Refuses while a sync or render is running: it would be writing to the paths
+    this changes."""
+    s = db.get_series(key)
+    if not s:
+        raise SlugError("no_such_series", f"no tracked series matching {key!r}")
+    old = s["slug"]
+    check_slug(cfg, db, new_slug, mine=s["id"])
+    old_dir = bundle.bundle_dir(cfg, s)
+    new_dir = os.path.join(os.path.dirname(old_dir), new_slug)
+    moving = move and os.path.abspath(old_dir) != os.path.abspath(new_dir)
+    if moving and os.path.exists(new_dir):
+        raise SlugError("slug_taken", f"{new_dir} already exists")
+    plan = {"ok": True, "dry_run": dry_run, "title": s["title"], "old_slug": old,
+            "slug": new_slug, "alias_kept": old != new_slug,
+            "moved": bool(moving), "from": old_dir, "to": new_dir if moving else old_dir}
+    if dry_run or (old == new_slug and not moving):
+        return plan
+    with sync_lock(cfg):
+        if moving and os.path.isdir(old_dir):
+            os.rename(old_dir, new_dir)
+            db.set_bundle(s["id"], new_dir)
+            for c in db.chapters(s["id"]):
+                upd = {col: new_dir + c[col][len(old_dir):]
+                       for col in bundle._PATH_COLS
+                       if c[col] and c[col].startswith(old_dir + os.sep)}
+                if upd:
+                    db.con.execute(
+                        f"UPDATE chapters SET {', '.join(f'{k}=?' for k in upd)} WHERE id=?",
+                        (*upd.values(), c["id"]))
+            db.con.commit()
+        elif moving:
+            plan["moved"] = False        # nothing on disk to move
+        db.rename_series(s["id"], new_slug)
+        bundle.sync_bundle(cfg, db, db.series_by_id(s["id"]))   # manifest.toml + state.json
+    return plan
 
 
 def _refresh_one(cfg: Config, db: DB, s):

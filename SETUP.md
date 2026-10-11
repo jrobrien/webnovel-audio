@@ -84,7 +84,7 @@ it showing every line's voice/style/pause.
 
 ```sh
 # start tracking a fiction; --from says where you already are
-uv run webnovel-audio series add --url <royal-road-fiction-url>
+uv run webnovel-audio series add --url <royal-road-fiction-url>   # -n first to preview the slug
 #   --from start   (default) nothing skipped
 #   --from latest  you're caught up; skip everything that exists now
 #   --from 42      you've already read through chapter 42

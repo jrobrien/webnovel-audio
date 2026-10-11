@@ -306,6 +306,21 @@ proc run_json {args} {
     return $d
 }
 
+# Like run_json, but a failed command still returns its parsed {"ok": false,
+# "error": {...}} so a dialog can show the reason in place instead of the log.
+proc run_json_soft {args} {
+    catch {exec -- $::EXE {*}$args --json 2>@1} out
+    if {[catch {json::parse [string trim $out]} d]} {
+        log "! [lindex [split $out \n] 0]" ; return ""
+    }
+    return $d
+}
+proc json_error {d} {
+    if {$d eq "" || [json::get $d ok] ne "0"} { return "" }
+    set m [json::get $d error message]
+    return [expr {$m eq "" ? "failed" : $m}]
+}
+
 proc status {msg} { set ::STATUS $msg }
 
 proc log {msg} {
@@ -828,7 +843,7 @@ proc do_stage {stage} {
 
 proc report_cast {range} {
     .br select .br.log
-    log "\$ webnovel-audio cast update $::SERIES $range"
+    log "\$ webnovel-audio cast update --scope $::SERIES --range $range"
     set d [run_json cast update --scope $::SERIES --range $range]
     if {$d eq ""} return
     log "  [json::get $d overlay_action]: [json::get $d overlay_path]"
@@ -901,6 +916,10 @@ proc do_sync {w} {
     run_cmd $a
 }
 
+# Adding is two steps so the handle ("slug") can be checked before anything is
+# tracked: "Look up" reads the series page (nothing is written) and proposes a
+# slug; Add then tracks it under whatever the field says. The slug becomes the CLI
+# name, the folder and the feed URL, and a title-derived one can be silly.
 proc dlg_add {} {
     set w .add ; catch {destroy $w}
     toplevel $w ; wm title $w "Add series" ; wm transient $w .
@@ -909,22 +928,127 @@ proc dlg_add {} {
     ttk::label $w.l2 -text "Already read through:"
     ttk::combobox $w.f -width 12 -values {start latest 10 25 50}
     $w.f set start
+    ttk::label $w.t -text "" -font TkHeadingFont
+    ttk::label $w.l3 -text "Slug:"
+    ttk::entry $w.s -width 40
+    ttk::label $w.m -text "" -justify left
     ttk::frame $w.b
-    ttk::button $w.b.ok -text Add -command [list do_add $w]
+    ttk::button $w.b.ok -text "Look up" -command [list add_step $w]
     ttk::button $w.b.cx -text Cancel -command [list destroy $w]
     pack $w.b.ok $w.b.cx -side left -padx 4
     grid $w.l $w.u -padx 8 -pady {10 4} -sticky w
     grid $w.l2 $w.f -padx 8 -sticky w
-    grid $w.b -columnspan 2 -pady 8
-    focus $w.u ; bind $w <Return> [list do_add $w] ; bind $w <Escape> [list destroy $w]
+    grid $w.b -row 6 -columnspan 2 -pady 8
+    focus $w.u ; bind $w <Return> [list add_step $w] ; bind $w <Escape> [list destroy $w]
+    bind $w.u <KeyRelease> [list add_reset $w]
+    set ::ADD_STAGE($w) lookup
 }
-proc do_add {w} {
-    set url [string trim [$w.u get]] ; set from [$w.f get]
+proc add_reset {w} {
+    if {$::ADD_STAGE($w) ne "confirm"} return
+    set ::ADD_STAGE($w) lookup
+    grid remove $w.t $w.l3 $w.s $w.m
+    $w.b.ok configure -text "Look up"
+}
+proc add_step {w} {
+    if {![winfo exists $w]} return
+    set url [string trim [$w.u get]]
     if {$url eq ""} return
+    if {$::ADD_STAGE($w) eq "lookup"} {
+        $w.b.ok configure -state disabled
+        $w.m configure -text "Reading the series page…" -foreground [pal dim]
+        grid $w.m -row 4 -column 0 -columnspan 2 -padx 8 -sticky w
+        update idletasks
+        set d [run_json_soft series add --url $url --dry-run]
+        $w.b.ok configure -state normal
+        set err [json_error $d]
+        if {$d eq "" || $err ne ""} {
+            $w.m configure -text [expr {$err eq "" ? "could not read that page" : $err}] \
+                -foreground [pal error]
+            return
+        }
+        set ::ADD_TRACKED($w) [expr {[json::get $d tracked] eq "1"}]
+        $w.t configure -text "[json::get $d title]  ([json::get $d chapters] chapters)"
+        $w.s configure -state normal ; $w.s delete 0 end ; $w.s insert 0 [json::get $d slug]
+        if {$::ADD_TRACKED($w)} {
+            $w.s configure -state disabled
+            $w.m configure -foreground [pal dim] -text \
+                "Already tracked; adding again just refreshes it."
+        } elseif {[json::get $d slug_free] eq "0"} {
+            $w.m configure -foreground [pal error] -text \
+                "[json::get $d slug_problem]. Pick another slug."
+        } else {
+            $w.m configure -foreground [pal dim] -text \
+                "Names the folder and the feed URL: lower-case, digits, hyphens.\nShort is better, e.g. drunken-monkey."
+        }
+        grid $w.t -row 2 -column 0 -columnspan 2 -padx 8 -pady {10 2} -sticky w
+        grid $w.l3 -row 3 -column 0 -padx 8 -sticky w
+        grid $w.s -row 3 -column 1 -padx 8 -sticky w
+        grid $w.m -row 4 -column 0 -columnspan 2 -padx 8 -pady 4 -sticky w
+        $w.b.ok configure -text Add
+        set ::ADD_STAGE($w) confirm
+        focus $w.s ; $w.s selection range 0 end
+        return
+    }
+    set cmd [list series add --url $url --from [$w.f get]]
+    if {!$::ADD_TRACKED($w)} { lappend cmd --slug [string trim [$w.s get]] }
+    $w.b.ok configure -state disabled
+    set d [run_json_soft {*}$cmd]
+    set err [json_error $d]
+    if {$d eq "" || $err ne ""} {
+        $w.b.ok configure -state normal
+        $w.m configure -foreground [pal error] -text [expr {$err eq "" ? "add failed" : $err}]
+        return
+    }
     destroy $w
-    set d [run_json series add --url $url --from $from]
-    if {$d ne ""} { log "added [json::get $d title] — [json::get $d chapters] chapters" }
+    log "added [json::get $d title] as [json::get $d slug] — [json::get $d chapters] chapters"
     refresh_series
+}
+
+# Changing a series' handle. The old one keeps resolving, so a podcast app already
+# subscribed to its feed keeps working. Refused while something is running: a
+# render is writing to the paths a folder move changes.
+proc dlg_rename {} {
+    set slug [selected_series]
+    if {$slug eq ""} return
+    if {$::RUNNING} { log "! busy: wait for the running command before renaming $slug" ; return }
+    set w .ren ; catch {destroy $w}
+    toplevel $w ; wm title $w "Rename" ; wm transient $w .
+    ttk::label $w.l -text "New slug for [.top.tv set $slug title]:"
+    ttk::entry $w.e -width 40
+    $w.e insert 0 $slug
+    set ::REN_MOVE 1
+    ttk::checkbutton $w.mv -text "also rename its folder to match" -variable ::REN_MOVE
+    ttk::label $w.h -justify left -foreground [pal dim] \
+        -text "Lower-case letters, digits and hyphens.\n$slug keeps working as an alias, so existing podcast subscriptions follow."
+    ttk::label $w.m -text "" -justify left
+    ttk::frame $w.b
+    ttk::button $w.b.ok -text Rename -command [list do_rename $w $slug]
+    ttk::button $w.b.cx -text Cancel -command [list destroy $w]
+    pack $w.b.ok $w.b.cx -side left -padx 4
+    grid $w.l -padx 10 -pady {10 4} -sticky w
+    grid $w.e -padx 10 -sticky w
+    grid $w.mv -padx 10 -pady 4 -sticky w
+    grid $w.h -padx 10 -pady 4 -sticky w
+    grid $w.m -padx 10 -sticky w
+    grid $w.b -pady 8
+    focus $w.e ; $w.e selection range 0 end
+    bind $w <Return> [list do_rename $w $slug] ; bind $w <Escape> [list destroy $w]
+}
+proc do_rename {w slug} {
+    set new [string trim [$w.e get]]
+    if {$new eq $slug} { destroy $w ; return }
+    set cmd [list series rename --scope $slug --slug $new]
+    if {$::REN_MOVE} { lappend cmd --move }
+    set d [run_json_soft {*}$cmd]
+    set err [json_error $d]
+    if {$d eq "" || $err ne ""} {
+        $w.m configure -foreground [pal error] -text [expr {$err eq "" ? "rename failed" : $err}]
+        return
+    }
+    destroy $w
+    log "renamed $slug -> $new"
+    refresh_series
+    if {[.top.tv exists $new]} { .top.tv selection set $new }
 }
 
 # ---------------------------------------------------------------- editors ----
@@ -1454,6 +1578,7 @@ menu .sctx -tearoff 0
     if {[selected_series] ne ""} { run_cmd [list series refresh --scope [selected_series]] }
 }
 .sctx add command -label "Set priority…" -command dlg_priority
+.sctx add command -label "Rename…" -command dlg_rename
 .sctx add command -label "Edit cast"    -command {.br select .br.cast}
 .sctx add command -label "Edit lexicon" -command {.br select .br.lex}
 .sctx add separator

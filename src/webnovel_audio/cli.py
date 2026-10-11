@@ -342,7 +342,8 @@ def _cmd_check(args) -> int:
         tag = "NEW" if info["new"] else "mapped"
         print(f'  {name:<20} {info["count"]:>4} line(s), {g:<14} [{tag}]')
     if new:
-        print(f"  add them:  webnovel-audio cast update {report['slug']} {args.range or ''}".rstrip())
+        print(f"  add them:  webnovel-audio cast update --scope {report['slug']}"
+              + (f" --range {args.range}" if args.range else ""))
 
     if report["heteronyms"]:
         from . import tagger as _tagger
@@ -357,7 +358,7 @@ def _cmd_check(args) -> int:
         for h in report["heteronyms"]:
             mark = " [tagger]" if h["word"].lower() in _auto else ""
             print(f"  {h['word']:<10} x{h['count']:<3} \"...{h['context']}...\"{mark}")
-        print(f'  pin one:  webnovel-audio lex add {report["slug"]} "a tear in" "a tair in"')
+        print(f'  pin one:  webnovel-audio lex add --scope {report["slug"]} --surface "a tear in" --respell "a tair in"')
 
     cands = report["lexicon_candidates"]
     if cands:
@@ -365,9 +366,9 @@ def _cmd_check(args) -> int:
         print(f"\nproper nouns in no lexicon ({len(cands)}, most frequent first):")
         print(f"  {', '.join(shown)}" + (f"  … +{len(cands) - len(shown)} more"
                                          if len(cands) > len(shown) else ""))
-        print(f'  fix one:     webnovel-audio lex add {report["slug"]} Kaelith kay-lith')
-        print(f'  silence one: webnovel-audio lex ignore {report["slug"]} '
-              f'{" ".join(shown[:3])}')
+        print(f'  fix one:     webnovel-audio lex add --scope {report["slug"]} --surface Kaelith --respell kay-lith')
+        print(f'  silence one: webnovel-audio lex ignore --scope {report["slug"]} '
+              f'--words {" ".join(shown[:3])}')
     return 0
 
 
@@ -1399,7 +1400,7 @@ def _cmd_cast(args) -> int:
         v = info["voice"] or "\"\"  <- unassigned"
         print(f'  {name:<20} {v:<16} # {info["count"]} line(s), {g}')
     if not args.diff:
-        print(f"\n  review it:  webnovel-audio cast edit {slug}")
+        print(f"\n  review it:  webnovel-audio cast edit --scope {slug}")
     return 0
 
 
@@ -1801,10 +1802,49 @@ def _cmd_series(args) -> int:
     want_json = getattr(args, "json", False)
 
     if args.action == "add":
-        info = sync.add_series(cfg, args.url, start=args.frm,
-                               log=(lambda *_: None) if want_json else print)
+        try:
+            if args.dry_run:
+                info = sync.preview_series(cfg, args.url)
+                if want_json:
+                    _jprint({"ok": True, "dry_run": True, **info})
+                else:
+                    print(f"{info['title']}  ({info['chapters']} chapters)")
+                    print(f"  would be tracked as: {info['slug']}"
+                          + ("  (already tracked)" if info["tracked"] else ""))
+                    if not info["slug_free"]:
+                        print(f"  but: {info['slug_problem']}; choose one with --slug")
+                return 0
+            info = sync.add_series(cfg, args.url, start=args.frm, slug=args.slug,
+                                   log=(lambda *_: None) if want_json else print)
+        except sync.SlugError as exc:
+            return _fail(exc.code, exc.message, json_mode=want_json,
+                         hint="pick another with --slug")
         if want_json:
             _jprint({"ok": True, **(info or {})})
+        return 0
+
+    if args.action == "rename":
+        db = DB(cfg.library.state_db)
+        try:
+            info = sync.rename_series(cfg, db, args.scope, args.slug,
+                                      move=args.move, dry_run=args.dry_run)
+        except sync.SlugError as exc:
+            return (_no_series(args.scope, want_json) if exc.code == "no_such_series"
+                    else _fail(exc.code, exc.message, json_mode=want_json))
+        except sync.SyncLocked as exc:
+            return _fail("locked", str(exc), json_mode=want_json, rc=2,
+                         hint="wait for the running sync/render to finish")
+        finally:
+            db.close()
+        if want_json:
+            _jprint(info)
+        else:
+            verb = "would rename" if args.dry_run else "renamed"
+            print(f"{verb} {info['title']}: {info['old_slug']} -> {info['slug']}")
+            if info["moved"]:
+                print(f"  directory: {info['from']} -> {info['to']}")
+            if info["alias_kept"]:
+                print(f"  /feed/{info['old_slug']}.xml keeps working (redirects)")
         return 0
 
     if args.action == "refresh":
@@ -1900,7 +1940,7 @@ def _cmd_series(args) -> int:
                                 "needs_confirmation",
                                 f"--purge deletes {bdir}, including the series "
                                 "lexicon and every rendered chapter",
-                                hint=f"webnovel-audio series forget {args.scope} "
+                                hint=f"webnovel-audio series forget --scope {args.scope} "
                                      "--purge --yes (or --dry-run first)",
                                 json_mode=want_json, path=bdir)
                         print(f"deletes {bdir}")
@@ -2370,7 +2410,22 @@ def _build_parser():
     a.add_argument("--from", dest="frm", default="start",
                    help="mark chapters up to here as already-read and skip them: "
                         "start (default) | latest | <N> | <chapter-url>")
+    a.add_argument("--slug", metavar="SLUG",
+                   help="track it under this handle instead of one derived from the "
+                        "title (lower-case letters, digits, hyphens); new series only")
+    a.add_argument("-n", "--dry-run", action="store_true",
+                   help="read the series page and report the title, chapter count and "
+                        "the slug it would get, but track nothing")
     _cfg_json(a)
+    rn = se_sub.add_parser(
+        "rename", help="change a series' slug (the old one keeps working as an alias)")
+    _series_pos(rn, what="rename")
+    rn.add_argument("--slug", required=True, metavar="NEW",
+                    help="the new handle (lower-case letters, digits, hyphens)")
+    rn.add_argument("--move", action="store_true",
+                    help="also rename the bundle directory to match")
+    _dry(rn, what="change")
+    _cfg_json(rn)
     for name, helptext in (("list", "all tracked series"),):
         _cfg_json(se_sub.add_parser(name, help=helptext))
     sh = se_sub.add_parser("show", help="one series in detail")
