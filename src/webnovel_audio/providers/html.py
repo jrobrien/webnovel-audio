@@ -15,11 +15,12 @@ and author out of its own markup, then hands the container to
 """
 from __future__ import annotations
 
+import difflib
 import re
 
 from bs4 import BeautifulSoup, Tag
 
-from ..normalize import Block
+from ..normalize import Block, int_to_words
 
 _ITALIC_TAGS = {"em", "i"}
 _HEADING_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6"}
@@ -299,6 +300,49 @@ def _stat_runs_are_system(blocks: list[Block]) -> list[Block]:
                                meta={"bracket": src})
         i = j
     return out
+
+
+_TITLE_NUM_RE = re.compile(r"^\s*(?:chapter|ch\.?)?\s*(\d{1,4})\s*[-\u2013\u2014:.)]*\s*(.*)$", re.I)
+_ALNUM_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _squash(text: str) -> str:
+    return _ALNUM_RE.sub(" ", text.lower()).strip()
+
+
+def drop_title_echo(blocks: list[Block], chapter_title: str) -> list[Block]:
+    """Remove the chapter title the author repeats at the top of the text.
+
+    The heading is announced from the page's own metadata, so a body that opens
+    with `Chapter 17` and then the title (often italic) says it all a second time,
+    in the thought voice. Only the first few short blocks are considered, each must
+    look like part of the title (the number, `chapter N`, the name, or any of those
+    together; the name may differ by a typo, as it did in `Manfiest`), and the first
+    block that is not stops the scan, so story text is never touched.
+    """
+    m = _TITLE_NUM_RE.match(chapter_title or "")
+    num, rest = (m.group(1), m.group(2).strip()) if m else ("", (chapter_title or "").strip())
+    nums = [n for n in (num.lstrip("0") or ("0" if num else ""),
+                        _squash(int_to_words(int(num))) if num else "") if n]
+    rests = [_squash(rest)] if _squash(rest) else []
+    forms = set(rests)
+    for n in nums:
+        forms.add(n)
+        forms.add(f"chapter {n}")
+        for r in rests:
+            forms.add(f"{n} {r}")
+            forms.add(f"chapter {n} {r}")
+    forms.discard("")
+    drop = 0
+    for b in blocks[:4]:
+        text = _squash(b.text)
+        if b.kind not in ("paragraph", "heading") or not text or len(b.text) > 120:
+            break
+        if not any(text == f or (len(f) > 6 and difflib.SequenceMatcher(None, text, f).ratio() >= 0.85)
+                   for f in forms):
+            break
+        drop += 1
+    return blocks[drop:]
 
 
 def next_link_by_text(soup: BeautifulSoup, prefix: str = "next chapter") -> str:

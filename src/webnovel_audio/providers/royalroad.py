@@ -233,6 +233,22 @@ def _chapter_container(soup: BeautifulSoup):
     return H.guess_content_container(soup)
 
 
+def _split_og_title(og_title: str, soup: BeautifulSoup) -> tuple[str, str]:
+    """`og:title` is "<chapter title> - <fiction>", but a chapter title can hold
+    " - " itself ("Chapter 17 - Plans Manifest(?) (III) - Cultivation System"), so
+    splitting on the first one hands the series a title that is half a chapter's.
+    The page's own `<h1>` is the chapter title; whatever follows it is the fiction.
+    Without an h1 to go by, the *last* " - " is the safer split."""
+    h1 = soup.select_one("h1.font-white")
+    own = h1.get_text(" ", strip=True) if h1 else ""
+    if own and og_title.startswith(own + " - "):
+        return own, og_title[len(own) + 3:].strip()
+    if " - " in og_title:          # "4. Deck Four - Salvage Run"
+        left, right = og_title.rsplit(" - ", 1)
+        return left.strip(), right.strip()
+    return og_title, ""
+
+
 def parse_chapter(html: str, *, url: str = "") -> Document:
     soup = H.soup_of(html)
     content = _chapter_container(soup)
@@ -244,12 +260,11 @@ def parse_chapter(html: str, *, url: str = "") -> Document:
     blocks = H.blocks_from_container(content)
 
     og_title = H.meta_content(soup, "og:title", "twitter:title")
-    chapter_title, fiction_title = og_title, ""
-    if " - " in og_title:          # "4. Deck Four - Salvage Run"
-        chapter_title, fiction_title = (p.strip() for p in og_title.split(" - ", 1))
+    chapter_title, fiction_title = _split_og_title(og_title, soup)
     if not chapter_title:
         h1 = soup.find("h1")
         chapter_title = h1.get_text(" ", strip=True) if h1 else ""
+    blocks = H.drop_title_echo(blocks, chapter_title)
 
     a = soup.select_one('.fic-header a[href*="/profile/"], a[href*="/profile/"]')
     return Document(
