@@ -199,10 +199,20 @@ def _decimal_words(m: re.Match[str]) -> str:
     return f"{int_to_words(int(whole))} point {digits}"
 
 
+_ONLY_QUESTIONS_RE = re.compile(r"\?{2,}")
+_ARROW_RE = re.compile(r"\s*(?:->|=>|→|➔|➜)\s*")
+_TRAILING_ARROW_RE = re.compile(r"\s*(?:->|=>|→|➔|➜)\s*$")
+# `???` standing alone as a stat value ("Jade -> ???", "Legendary, ???", "(???)"),
+# not "What???"; in a stat readout it means "not known yet"
+_UNKNOWN_RE = re.compile(r"\s*(?<![\w?])\?{3,}(?![\w?])")
+_PAREN_SIGN_RE = re.compile(r"\(([+-])\)")
+_EQUALS_RE = re.compile(r"\s=\s")
+
 def normalize_text(s: str, *, dampen_caps: bool = True) -> str:
     """Spoken-form normalization. Keeps `…` (TTS renders the trailing pause well)."""
     s = unicodedata.normalize("NFC", s)
     s = _strip_zero_width(s)
+    s = _ARROW_RE.sub(" to ", _TRAILING_ARROW_RE.sub("", s))
     s = _EMOJI_RE.sub(" ", s)
     s = s.translate(_INVERTED_PUNCT)
     s = _strip_foreign_scripts(s)
@@ -245,6 +255,8 @@ def normalize_heading(s: str) -> str:
 def normalize_username(handle: str) -> str:
     """A stream handle -> something speakable: 'Forever1stCommenter' -> 'Forever first Commenter'."""
     h = handle.strip().lstrip("@[").rstrip("]:").strip()
+    if _ONLY_QUESTIONS_RE.fullmatch(h):
+        return "unknown"                    # a viewer shown as `???`
     h = _CAMEL_RE.sub(" ", h)
     h = _LETNUM_RE.sub(" ", h)
     h = re.sub(r"[_\-.]+", " ", h)
@@ -276,9 +288,7 @@ _SYSTEM_SUBS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bAGI\b"), "Agility"),
 ]
 _RATIO_RE = re.compile(r"\b(\d{1,5})\s*/\s*(\d{1,5})\b")
-_ARROW_RE = re.compile(r"\s*(?:->|=>|→|➔|➜)\s*")
 _PIPE_PAIR_RE = re.compile(r"(\d)\s*\|\s*(?=\d)")
-_TRAILING_ARROW_RE = re.compile(r"\s*(?:->|=>|→|➔|➜)\s*$")
 
 
 def normalize_system(s: str) -> str:
@@ -287,11 +297,16 @@ def normalize_system(s: str) -> str:
     s = _ARROW_RE.sub(" to ", s)
     s = _PIPE_PAIR_RE.sub(r"\1, ", s)       # `6|30`: two numbers, not a time
     s = s.replace("[", " ").replace("]", " ")
+    s = _UNKNOWN_RE.sub(
+        lambda m: "unknown" if m.start() == 0 or s[m.start() - 1] in "([" else " unknown", s)
+    s = _PAREN_SIGN_RE.sub(lambda m: " plus" if m.group(1) == "+" else " minus", s)   # `Jade(+)`
+    s = _EQUALS_RE.sub(" equals ", s)
     for pattern, repl in _SYSTEM_SUBS:
         s = pattern.sub(repl, s)
     s = _RATIO_RE.sub(
         lambda m: f"{int_to_words(int(m.group(1)))} out of {int_to_words(int(m.group(2)))}", s
     )
+    s = re.sub(r"(?<=[a-z])%", " percent", s)       # `1/100%` once the ratio is words
     return normalize_text(s, dampen_caps=False)   # keep stat-box acronyms (AC, DR, …)
 
 

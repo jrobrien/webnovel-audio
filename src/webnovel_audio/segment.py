@@ -318,7 +318,24 @@ def build_segments(blocks: list[Block], cfg, lexicon=None, nlp=None) -> list[Seg
                 text=text, voice=voice, style=style, speaker=line.speaker,
                 rate=cfg.synth.speed, pause_after_ms=pause,
             ))
-    return segs
+    return _ellipsis_lines_are_pauses(segs, cfg)
+
+
+_ONLY_ELLIPSIS_RE = re.compile(r"[\s.…]+")
+
+
+def _ellipsis_lines_are_pauses(segs: list[Segment], cfg) -> list[Segment]:
+    """A line that is only `…` (a `[...]` divider in a stat readout, a silent
+    `"..."` reply) is a beat, not something to say: synthesized it comes out as a
+    breath or a click. Keep its place in the timeline as silence."""
+    out: list[Segment] = []
+    for s in segs:
+        if s.kind == "speech" and s.text and _ONLY_ELLIPSIS_RE.fullmatch(s.text):
+            out.append(Segment("", "", kind="pause",
+                               pause_after_ms=s.pause_after_ms + cfg.pauses.ellipsis_extra_ms))
+        else:
+            out.append(s)
+    return out
 
 
 def segments_to_json(segments: list[Segment]) -> str:

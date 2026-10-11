@@ -84,6 +84,8 @@ def parse_chat(text: str) -> dict | None:
         return None  # [Target: ...] etc. -> a system line, not chat
     if not location and " " in user:
         return None  # a sentence, not a handle
+    if not location and user.isalpha() and user.isupper() and len(user) >= 3:
+        return None  # [NAME: …], [TYPE: …]: a capitalised label, not a viewer
     if not location and user.isalpha() and _is_stat_value(message):
         return None  # [HP: 577/577], [Ambition: 15 ->]: a stat line, not a viewer
     return {"user": user, "location": location.strip(), "message": message.strip()}
@@ -249,19 +251,54 @@ def blocks_from_container(content: Tag) -> list[Block]:
             blocks.append(Block("system", (title.title() if title.isupper() else title) + "."))
             continue
 
+        bracketed = flat.startswith("[") and flat.rstrip().endswith("]")
         chat = parse_chat(flat)
         if chat:
             blocks.append(Block("chat", chat["message"],
-                                meta={"user": chat["user"], "location": chat["location"]}))
+                                meta={"user": chat["user"], "location": chat["location"],
+                                      "bracket": raw}))
             continue
 
-        if name in _SYSTEM_TAGS or flat.startswith("[") and flat.rstrip().endswith("]") \
-                or _SYSTEM_HINT_RE.search(flat):
-            blocks.append(Block("system", system_clause_text(raw).strip("[]").strip()))
+        if name in _SYSTEM_TAGS or bracketed or _SYSTEM_HINT_RE.search(flat):
+            blocks.append(Block("system", system_clause_text(raw).strip("[]").strip(),
+                                meta={"bracket": raw} if bracketed else {}))
             continue
 
         blocks.append(Block("paragraph", raw, italic=spans))
-    return blocks
+    return _stat_runs_are_system(blocks)
+
+
+def _stat_runs_are_system(blocks: list[Block]) -> list[Block]:
+    """`[Host: Lu Qi]` is a stat line, not a viewer called Host.
+
+    One bracketed line is ambiguous: `[Handle: message]` is a livestream chat line
+    and `[Label: value]` is a system readout, and `parse_chat` can only tell them
+    apart when the value is numeric. Neighbours settle it. A readout is a *run* of
+    bracketed lines (one paragraph each, so not a block in the source), most of them
+    unmistakably system (several-word labels, no colon, `Quest:`, `...`); a chat
+    stream is a run of handles. Within a run where system lines outnumber the
+    ambiguous ones (and there are at least two), the ambiguous ones are system too.
+    Lines with a location (`[Handle (City): …]`) are always chat.
+    """
+    out = list(blocks)
+    i = 0
+    while i < len(out):
+        if not out[i].meta.get("bracket"):
+            i += 1
+            continue
+        j = i
+        while j < len(out) and out[j].meta.get("bracket"):
+            j += 1
+        run = range(i, j)
+        sysn = sum(out[k].kind == "system" for k in run)
+        amb = [k for k in run if out[k].kind == "chat" and not out[k].meta.get("location")]
+        if sysn >= 2 and sysn >= len(amb):
+            for k in amb:
+                src = out[k].meta["bracket"]
+                out[k] = Block("system", system_clause_text(src).strip("[]").strip(),
+                               meta={"bracket": src})
+        i = j
+    return out
 
 
 def next_link_by_text(soup: BeautifulSoup, prefix: str = "next chapter") -> str:
