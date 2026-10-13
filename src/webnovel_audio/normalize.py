@@ -199,6 +199,13 @@ def _decimal_words(m: re.Match[str]) -> str:
     return f"{int_to_words(int(whole))} point {digits}"
 
 
+# `~` as an author's sing-song / drawn-out marker ("Oh, Disciple~", "Ah~ no", "go~~"),
+# not a symbol to read out: a short pause when a word follows, otherwise nothing.
+# Between numbers it is a range ("5~10"), before one "about" ("~100").
+_TILDE_RANGE_RE = re.compile(r"(?<=\d)\s*~\s*(?=\d)")
+_TILDE_ABOUT_RE = re.compile(r"(?<![\w~])~\s*(?=\d)")
+_TILDE_PAUSE_RE = re.compile(r"(?<=\w)~+(?=\s+\w)")
+_TILDE_RE = re.compile(r"\s*~+")
 _ONLY_QUESTIONS_RE = re.compile(r"\?{2,}")
 _ARROW_RE = re.compile(r"\s*(?:->|=>|→|➔|➜)\s*")
 _TRAILING_ARROW_RE = re.compile(r"\s*(?:->|=>|→|➔|➜)\s*$")
@@ -212,6 +219,11 @@ def normalize_text(s: str, *, dampen_caps: bool = True) -> str:
     """Spoken-form normalization. Keeps `…` (TTS renders the trailing pause well)."""
     s = unicodedata.normalize("NFC", s)
     s = _strip_zero_width(s)
+    if "~" in s:
+        s = _TILDE_RANGE_RE.sub(" to ", s)
+        s = _TILDE_ABOUT_RE.sub("about ", s)
+        s = _TILDE_PAUSE_RE.sub(",", s)
+        s = _TILDE_RE.sub("", s)
     s = _ARROW_RE.sub(" to ", _TRAILING_ARROW_RE.sub("", s))
     s = _EMOJI_RE.sub(" ", s)
     s = s.translate(_INVERTED_PUNCT)

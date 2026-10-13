@@ -129,3 +129,16 @@ def test_tight_number_hyphen_is_a_range_not_subtraction():
 def test_leading_sign_is_spoken():
     assert normalize_text("Strength +2, Speed -1") == "Strength plus two, Speed minus one"
     assert normalize_text("-4 degrees") == "minus four degrees"
+
+
+def test_tilde_is_a_drawn_out_marker_not_a_symbol():
+    from webnovel_audio.normalize import normalize_text as n
+    assert n('"Oh, Disciple~"') == '"Oh, Disciple"'     # quotes are the dialogue splitter's business
+    assert n("Thank you~ for coming~!") == "Thank you, for coming!"       # pause only where a word follows
+    assert n("Ah~ no, no, I never would,") == "Ah, no, no, I never would,"
+    assert n("Down the mountain now I go~~") == "Down the mountain now I go"
+    assert n("~") == ""
+    assert "tilde" not in n("Hmm~").lower() and "~" not in n("Hmm~")
+    # numbers keep their meaning
+    assert n("about 5~10 days") == "about five to ten days"
+    assert n("~100 of them") == "about one hundred of them"
