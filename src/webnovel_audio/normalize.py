@@ -84,13 +84,35 @@ _CAPS_STRIP = "\"'’“”‘()[].,!?;:…—–*"
 _INVERTED_PUNCT = dict.fromkeys(map(ord, "¿¡"), None)
 
 
+def _fold_latin_additional(s: str) -> str:
+    """Latin Extended Additional (U+1E00-1EFF: ṃ ṛ ṣ ṇ ḥ, Vietnamese ẵ ế ệ…) -> its base letters.
+
+    The g2p handles ā, ś, ë and the like, but spells these out by Unicode name ("Latin
+    small letter m with dot below"), so Sanskrit terms (Saṃsāra, Kṛṣṇa) and Vietnamese
+    names (Đà Nẵng) came out as a string of letter names. Dropping the marks leaves a
+    word it can say; the rest of the text, including Latin-1 and Extended-A accents,
+    is untouched."""
+    if s.isascii():
+        return s
+    out = []
+    for ch in s:
+        if 0x1E00 <= ord(ch) <= 0x1EFF:
+            base = "".join(c for c in unicodedata.normalize("NFD", ch)
+                           if not unicodedata.combining(c))
+            out.append({"\u1e9e": "SS", "\u1e9b": "s"}.get(ch, base))
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
 def _strip_foreign_scripts(s: str) -> str:
     """Drop letters from non-Latin scripts (Han, Kana, Hangul, Cyrillic, Arabic…).
 
     The g2p can't speak them — it emits "chinese letter chinese letter" or spells
     Cyrillic out letter-name by letter-name. A translated work that leaves a stray
     glyph in should just skip it, not narrate a placeholder. Accented Latin
-    (é, ñ, ü, ā, ǐ, Vietnamese) is kept — espeak handles it.
+    (é, ñ, ü, ā, ǐ) is kept — espeak handles it; the Latin Extended Additional block
+    it cannot (ṃ, ẵ…) is folded to base letters first, by `_fold_latin_additional`.
     """
     if s.isascii():
         return s
@@ -219,6 +241,7 @@ def normalize_text(s: str, *, dampen_caps: bool = True) -> str:
     """Spoken-form normalization. Keeps `…` (TTS renders the trailing pause well)."""
     s = unicodedata.normalize("NFC", s)
     s = _strip_zero_width(s)
+    s = _fold_latin_additional(s)
     if "~" in s:
         s = _TILDE_RANGE_RE.sub(" to ", s)
         s = _TILDE_ABOUT_RE.sub("about ", s)

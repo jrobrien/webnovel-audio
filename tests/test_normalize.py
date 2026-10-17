@@ -142,3 +142,15 @@ def test_tilde_is_a_drawn_out_marker_not_a_symbol():
     # numbers keep their meaning
     assert n("about 5~10 days") == "about five to ten days"
     assert n("~100 of them") == "about one hundred of them"
+
+
+def test_latin_extended_additional_is_folded_to_base_letters():
+    """ṃ, ṛ, ẵ… were spelled out letter by letter by the g2p ("Latin small letter m with
+    dot below"); ā, ś, ë, é already worked and stay."""
+    from webnovel_audio.normalize import normalize_text as n
+    assert n("barred from entering Saṃsāra.") == "barred from entering Samsāra."
+    assert n("Kṛṣṇa and Śiva") == "Krsna and Śiva"
+    assert n("Đà Nẵng") == "Đà Nang"
+    assert n("Straẞe") == "StraSSe"
+    for kept in ("Xiāo", "café", "Brontë", "résumé", "Łódź", "naïve"):
+        assert n(kept) == kept
