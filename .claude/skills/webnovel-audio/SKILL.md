@@ -74,6 +74,7 @@ webnovel-audio pron "text" [--scope S]                      # phonemes + gloss
 
 webnovel-audio cache status [--scope S]
 webnovel-audio serve [--port N]                             # web player + podcast feeds
+webnovel-audio service install|enable|disable|restart|status|remove  # the server as a systemd user unit
 webnovel-audio book --scope S [--range R] -o x.m4b
 ```
 

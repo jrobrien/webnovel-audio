@@ -277,6 +277,20 @@ first.
 with no re-encode), `schema` (the command surface as JSON), `models fetch|path`,
 `login --provider P`, `ui`.
 
+**Running the server as a service** (a systemd *user* unit, `webnovel-audio.service`):
+
+| command | what |
+|---|---|
+| `service install [-n]` | write the unit (runs `serve` from the config file's directory) and reload systemd; does not start it. `-n` prints the unit instead |
+| `service enable [--no-start]` | start it now and at every login. Refuses if something else already holds the port (stop a hand-started `serve` first) |
+| `service disable` | stop it and stop it starting at login; the unit file stays |
+| `service restart` | restart it, e.g. after updating the code |
+| `service status` | installed, enabled, running, pid, the URL and, when it is down, the last log lines |
+| `service remove [-n]` | stop, disable and delete the unit. Safe when nothing is installed |
+
+It restarts itself if it crashes. It starts at login, not at boot, unless you run
+`loginctl enable-linger $USER`; `service status` says which. Logs: `journalctl --user -u webnovel-audio`.
+
 ### Driving it from a script or an agent
 
 `schema` emits every command, argument and choice, walked out of argparse
@@ -463,7 +477,8 @@ command runs the chapter and series lists update as each chapter finishes.
 **Add series…** reads the series page first and shows the title and the slug it
 would be tracked under, editable, with a warning if it is taken; nothing is tracked until
 you press **Add**. Right-click a series → **Rename…** changes it later (the old name keeps
-working for podcast subscriptions). **Delete series…** lists what would be removed and the
+working for podcast subscriptions). **Open source page** opens the series on its site, in your
+browser, for following, rating or reviewing it there. **Delete series…** lists what would be removed and the
 disk space it frees, then asks *Really delete <slug>?* before touching anything. The Cast and Lexicon tabs
 edit the bundle's `config.toml` and `lexicon.csv` in place, with an
 mtime check so a file that `cast update` changed underneath is never silently
@@ -475,8 +490,11 @@ nothing: a bare `EDITOR=nvim` is wrapped in `xdg-terminal-exec`, and a leading
 which is how Omarchy's `omarchy-launch-editor` decides between running in
 place and opening a window. A GUI editor is launched as given.
 
-The feed **server** starts and stops from the toolbar, and window/sash
-geometry persists.
+The toolbar's **Service…** opens a dialog for the web server's systemd user service: its
+state (running, pid, URL, whether it starts at login), then only the actions that make sense
+(install and start, enable, restart, disable, remove, open the player, show the log), with a
+confirmation before restart, disable or remove. If another process holds the port it says
+which. Window/sash geometry persists.
 
 The **Markdown** tab shows the selected chapter's `.md` — read-only, wrapped,
 and with the filename on the tab. It needs exactly one chapter selected, and

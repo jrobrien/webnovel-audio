@@ -137,7 +137,7 @@ front-matter).
 uv run webnovel-audio serve            # binds 0.0.0.0:8080 by default
 ```
 
-You can also start/stop the server from the control UI (Feed server → Start).
+The control UI's **Service…** button does the same as `service` below, in a dialog.
 On startup `serve` prints a **scannable QR** of the URL (needs `qrencode`; point
 your phone camera at it), one for the local address and, if `tailnet_url` is
 set, one for Tailscale. Or open `http://<this-machine-ip>:8080/` by hand.
@@ -163,8 +163,20 @@ Standalone QR helper (installed at `~/.local/bin/qr`, uses `qrencode` +
 `img2sixel`): `qr <text>` for a block QR, `qr -s <text>` for a sixel image,
 `qr -p out.png <text>` to save one. `some-command | qr` reads stdin.
 
-To leave it running, start it from the control UI (Feed server → Start) or just
-background it in a terminal.
+To leave it running, install it as a user service, which starts at login and restarts
+itself if it dies:
+
+```sh
+uv run webnovel-audio service install     # writes ~/.config/systemd/user/webnovel-audio.service
+uv run webnovel-audio service enable      # start now and at every login
+uv run webnovel-audio service status      # state, pid, URL, recent log if it is down
+```
+
+`service disable` stops it, `service restart` picks up new code, and `service remove`
+deletes the unit. Stop any `serve` you started by hand first, since they share the port.
+It starts at login rather than boot; `loginctl enable-linger $USER` makes it start at boot.
+The control UI's **Service…** button shows its state and offers the same actions
+(install and start, restart, disable, remove, open the player, view the log).
 
 Open the port if you have a firewall: `sudo ufw allow 8080/tcp` (or equivalent).
 
