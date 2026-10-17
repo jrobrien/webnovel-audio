@@ -49,8 +49,8 @@ array set ::geom {main 1280x820 topheight 230 botwidth 760}
 set ::CFGPATH "" ; set ::LEXDIR "data/lexicons" ; set ::SERIESDIR "data/series"
 array set ::BPATH {}
 set ::BASELEX ""
-set ::SERIES "" ; set ::RUNNING 0 ; set ::PIPE "" ; set ::SERVEPID ""
-set ::SERVEPIPE "" ; set ::STATUS "ready" ; set ::LIMIT 10 ; set ::SYNC_SCOPE @all
+set ::SERIES "" ; set ::RUNNING 0 ; set ::PIPE ""
+set ::STATUS "ready" ; set ::LIMIT 10 ; set ::SYNC_SCOPE @all
 array set ::EDIT {}          ;# tab -> path / mtime / dirty
 array set ::MD {}            ;# chapter row id -> text_path / status, from refresh
 array set ::HLAFTER {}       ;# tab -> pending re-highlight, coalesced
@@ -342,9 +342,11 @@ proc refresh_series {} {
     .top.tv delete [.top.tv children {}]
     if {$d eq ""} { status "series list failed" ; return }
     set rows [dict get $d series]
+    array unset ::SURL
     foreach r $rows {
         set st [dict get $r stages]
         set on [expr {[json::get $r enabled] eq "0" ? 0 : 1}]
+        set ::SURL([dict get $r slug]) [json::get $r url]
         .top.tv insert {} end -id [dict get $r slug] -values [list \
             [dict get $r title] \
             [expr {$on ? "on" : "paused"}] \
@@ -516,6 +518,19 @@ proc toggle_pause {} {
     log "$slug: sync [expr {$verb eq {enable} ? {resumed} : {paused}}]"
     refresh_series
     on_series_status
+}
+
+# The series' page on its site, in the default browser: where to follow, rate or
+# review it. Only ever on this click; nothing opens a page by itself.
+proc open_source {} {
+    set slug [selected_series]
+    if {$slug eq ""} return
+    set url [expr {[info exists ::SURL($slug)] ? $::SURL($slug) : ""}]
+    if {![regexp {^https?://} $url]} { log "! $slug has no source page recorded" ; return }
+    open_url $url
+}
+proc open_url {url} {
+    if {[catch {exec xdg-open $url >&/dev/null &} e]} { log "! could not open $url: $e" }
 }
 
 # Render order. Higher goes first; pausing is a separate axis and leaves this
@@ -1397,39 +1412,148 @@ proc external_editor {which} {
     if {[catch {exec xdg-open $path &} e]} { log "! $e" }
 }
 
-# ---------------------------------------------------------------- server ------
-proc server_toggle {} {
-    if {$::SERVEPID ne ""} { server_stop } else { server_start }
+# ---------------------------------------------------------------- service ------
+;# The web server runs as a systemd user service (`webnovel-audio service ...`), so it
+;# outlives this window. This dialog is the whole of the UI's part in it: it shows the
+;# state and offers whichever actions make sense in it, refreshing after each one.
+proc dlg_service {} {
+    set w .svc ; catch {destroy $w}
+    toplevel $w ; wm title $w "Web server" ; wm transient $w .
+    ttk::label $w.s -text "" -font TkHeadingFont -justify left
+    ttk::label $w.d -text "" -justify left -foreground [pal dim]
+    ttk::label $w.m -text "" -justify left
+    ttk::frame $w.b
+    # The log is the startup banner too, with its QR codes: those need a fixed font,
+    # room, and scrollbars both ways. The pane takes whatever the window grows to.
+    ttk::frame $w.l
+    text $w.l.t -width 100 -height 28 -wrap none -state disabled -font TkFixedFont \
+        -background [pal bg] -foreground [pal fg] -highlightthickness 0 -borderwidth 1 \
+        -yscrollcommand [list $w.l.y set] -xscrollcommand [list $w.l.x set]
+    ttk::scrollbar $w.l.y -orient vertical   -command [list $w.l.t yview]
+    ttk::scrollbar $w.l.x -orient horizontal -command [list $w.l.t xview]
+    grid $w.l.t $w.l.y -sticky nsew
+    grid $w.l.x -sticky ew
+    grid rowconfigure $w.l 0 -weight 1 ; grid columnconfigure $w.l 0 -weight 1
+    grid $w.s -padx 12 -pady {12 2} -sticky w
+    grid $w.d -padx 12 -sticky w
+    grid $w.m -padx 12 -pady 2 -sticky w
+    grid $w.b -padx 8 -pady 8 -sticky w
+    grid columnconfigure $w 0 -weight 1 ; grid rowconfigure $w 4 -weight 1
+    bind $w <Escape> [list destroy $w]
+    set ::SVC_LOG 0
+    svc_refresh $w
 }
-proc server_start {} {
-    if {$::SERVEPID ne ""} return
-    if {[catch {open "| [list $::EXE serve 2>@1]" r} ::SERVEPIPE]} {
-        log "! server: $::SERVEPIPE" ; set ::SERVEPIPE "" ; return
-    }
-    set ::SERVEPID [pid $::SERVEPIPE]
-    fconfigure $::SERVEPIPE -blocking 0 -buffering line
-    fileevent $::SERVEPIPE readable server_readable
-    .tool.srv configure -text "Stop server"
-    log "feed server started (pid $::SERVEPID)"
-}
-proc server_readable {} {
-    if {[gets $::SERVEPIPE line] < 0} {
-        if {[eof $::SERVEPIPE]} { server_gone }
+proc svc_refresh {w} {
+    if {![winfo exists $w]} return
+    set args [list service status]
+    if {$::SVC_LOG} { lappend args --log 200 }   ;# enough to include both startup QR codes
+    set d [run_json_soft {*}$args]
+    set err [json_error $d]
+    foreach c [winfo children $w.b] { destroy $c }
+    if {$d eq "" || $err ne ""} {
+        $w.s configure -text "Could not read the service state"
+        $w.d configure -text "" ; $w.m configure -foreground [pal error] -text $err
         return
     }
-    if {[string trim $line] ne ""} { log "\[serve\] $line" }
+    set installed [expr {[json::get $d installed] eq "1"}]
+    set active    [expr {[json::get $d active] eq "1"}]
+    set enabled   [expr {[json::get $d enabled] eq "1"}]
+    set busy      [expr {[json::get $d port_busy] eq "1"}]
+    set url       [json::get $d url]
+    if {!$installed} {
+        $w.s configure -text "○ not installed"
+        $w.d configure -text "Install it to run the web player and feeds in the background,\nstarting at login and restarting if it crashes."
+    } elseif {$active} {
+        set pid [json::get $d pid]
+        $w.s configure -text "● running[expr {$pid ne "" ? " (pid $pid)" : ""}]"
+        $w.d configure -text "[expr {$enabled ? "starts at login" : "not enabled at login"}]  ·  $url\nsince [json::get $d since]"
+    } else {
+        $w.s configure -text "○ stopped ([json::get $d state])"
+        $w.d configure -text "[expr {$enabled ? "enabled at login" : "not enabled"}]  ·  $url"
+    }
+    set note ""
+    if {$busy} {
+        set o [json::get $d port_owner]
+        set who [expr {$o eq "" ? "another process" : "[json::get $o name] (pid [json::get $o pid])"}]
+        set note "Port [json::get $d port] is held by $who, so the service cannot start.\nStop that first."
+    }
+    $w.m configure -foreground [pal error] -text $note
+    set add {}
+    if {!$installed} {
+        lappend add [list "Install and start" [list svc_install_start $w]]
+    } elseif {$active} {
+        lappend add [list "Open player" [list open_url $url]]
+        lappend add [list "Restart…" [list svc_confirm $w restart "Restart the web server?\n\nAnyone listening right now will be cut off."]]
+        if {$enabled} {
+            lappend add [list "Disable…" [list svc_confirm $w disable "Stop the web server and stop it starting at login?"]]
+        } else {
+            lappend add [list "Enable at login" [list svc_act $w enable]]
+        }
+    } else {
+        lappend add [list "Enable and start" [list svc_act $w enable] [expr {$busy ? "disabled" : "normal"}]]
+    }
+    if {$installed} {
+        lappend add [list [expr {$::SVC_LOG ? "Hide log" : "Log…"}] [list svc_toggle_log $w]]
+        lappend add [list "Remove…" [list svc_confirm $w remove "Remove the service?\n\nIt is stopped and its unit file deleted."]]
+    }
+    set n 0
+    foreach a $add {
+        set st [expr {[llength $a] > 2 ? [lindex $a 2] : "normal"}]
+        ttk::button $w.b.b[incr n] -text [lindex $a 0] -command [lindex $a 1] -state $st
+        pack $w.b.b$n -side left -padx 3
+    }
+    if {$::SVC_LOG && [json::get $d log] ne ""} {
+        grid $w.l -row 4 -column 0 -padx 8 -pady {0 8} -sticky nsew
+        $w.l.t configure -state normal ; $w.l.t delete 1.0 end
+        ansi_insert $w.l.t [json::get $d log] ; $w.l.t see end ; $w.l.t configure -state disabled
+    } else {
+        grid remove $w.l
+        wm geometry $w {}                ;# back to the natural size once the log is hidden
+    }
 }
-proc server_gone {} {
-    catch {fileevent $::SERVEPIPE readable {}}
-    catch {close $::SERVEPIPE}
-    set ::SERVEPIPE "" ; set ::SERVEPID ""
-    .tool.srv configure -text "Start server"
-    log "feed server stopped"
+# The startup banner is journaled with ANSI colour codes around its QR codes
+# (`ESC[40;37;1m` ... `ESC[0m`: white blocks on black). Shown raw they are noise, and
+# without the colours the code is inverted on a light theme, so the escapes are read and
+# applied as a fixed black-on-white tag that no theme can change.
+proc ansi_insert {t text} {
+    $t tag configure qr -background black -foreground white
+    # block glyphs have to fill the whole line or the code shows dark stripes between rows;
+    # the desktop's own monospace often draws them short, so prefer a font known to fill it
+    set fams [font families]
+    foreach f {"DejaVu Sans Mono" "Liberation Mono" "Noto Sans Mono"} {
+        if {$f in $fams} { $t tag configure qr -font [list $f [font actual TkFixedFont -size]] ; break }
+    }
+    set tag "" ; set pos 0
+    while {[regexp -indices -start $pos {\x1b\[([0-9;]*)m} $text m p]} {
+        lassign $m ms me ; lassign $p ps pe
+        if {$ms > $pos} { $t insert end [string range $text $pos [expr {$ms - 1}]] $tag }
+        set codes [split [string range $text $ps $pe] ";"]
+        set tag [expr {"40" in $codes ? "qr" : ""}]
+        set pos [expr {$me + 1}]
+    }
+    $t insert end [string range $text $pos end] $tag
 }
-proc server_stop {} {
-    if {$::SERVEPID eq ""} return
-    catch {exec kill -INT {*}$::SERVEPID}
-    after 1000 {if {$::SERVEPID ne ""} {catch {exec kill {*}$::SERVEPID} ; server_gone}}
+proc svc_act {w action} {
+    set d [run_json_soft service $action]
+    set err [json_error $d]
+    if {$d eq "" || $err ne ""} {
+        if {[winfo exists $w]} { $w.m configure -foreground [pal error] -text [expr {$err eq "" ? "$action failed" : $err}] }
+        return 0
+    }
+    log "service: $action ok"
+    svc_refresh $w
+    return 1
+}
+proc svc_install_start {w} {
+    if {[svc_act $w install]} { svc_act $w enable }
+}
+proc svc_confirm {w action msg} {
+    if {[tk_messageBox -parent $w -icon question -type yesno -default no -title "Web server" -message $msg] ne "yes"} return
+    svc_act $w $action
+}
+proc svc_toggle_log {w} {
+    set ::SVC_LOG [expr {!$::SVC_LOG}]
+    svc_refresh $w
 }
 
 # ---------------------------------------------------------------- persistence -
@@ -1484,7 +1608,7 @@ proc quit {} {
             if {$a eq "yes"} { save_editor $w }
         }
     }
-    server_stop ; save_conf ; exit
+    save_conf ; exit
 }
 
 # ================================================================ build UI ====
@@ -1508,7 +1632,7 @@ ttk::separator .tool.s1 -orient vertical
 ttk::button .tool.sync    -text "Sync…"       -command {dlg_sync @all}
 ttk::button .tool.stop    -text "Stop"        -command stop_cmd
 ttk::separator .tool.s2 -orient vertical
-ttk::button .tool.srv     -text "Start server" -command server_toggle
+ttk::button .tool.svc     -text "Service…" -command dlg_service
 ;# Labelled "View" rather than "Theme": it carries both appearance settings
 ;# now, and the widget path stays .tool.theme so repaint_theme keeps finding
 ;# the menu.
@@ -1541,7 +1665,7 @@ pack .tool.add .tool.refresh -side left -padx 2
 pack .tool.s1 -side left -fill y -padx 6
 pack .tool.sync .tool.stop -side left -padx 2
 pack .tool.s2 -side left -fill y -padx 6
-pack .tool.srv -side left -padx 2
+pack .tool.svc -side left -padx 2
 grid .tool -row 0 -column 0 -sticky ew
 
 # -- vertical split: series on top, everything else below
@@ -1579,8 +1703,7 @@ menu .sctx -tearoff 0
 }
 .sctx add command -label "Set priority…" -command dlg_priority
 .sctx add command -label "Rename…" -command dlg_rename
-.sctx add command -label "Edit cast"    -command {.br select .br.cast}
-.sctx add command -label "Edit lexicon" -command {.br select .br.lex}
+.sctx add command -label "Open source page" -command open_source
 .sctx add separator
 .sctx add command -label "Delete series…" -command dlg_delete
 

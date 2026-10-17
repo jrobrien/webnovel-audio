@@ -511,6 +511,11 @@ def test_series_menu_sync_and_delete(tmp_path):
         return m.group(1)
 
     assert "Sync…" in val("sctx") and "Delete series…" in val("sctx")
+    # the editor panes make "Edit cast"/"Edit lexicon" redundant; the source page is one click
+    assert "Open source page" in val("sctx")
+    assert "Edit cast" not in val("sctx") and "Edit lexicon" not in val("sctx")
+    assert val("opened") == "https://www.royalroad.com/fiction/1/probe"
+    assert val("opened_without_url") == "0"
     # toolbar: all series, no per-series checkbox, runs `sync --scope @all`
     assert val("tb_scope") == "@all" and val("tb_all_checkbox") == "0"
     assert "all series" in val("tb_label") and "--scope @all" in val("tb_run")
@@ -593,3 +598,54 @@ def test_add_verifies_the_slug_and_series_can_be_renamed(tmp_path):
     assert "already belongs" in val("ren_error") and "still_open=1" in val("ren_error")
     assert "series rename --scope x --slug y --move" in val("ren_call")
     assert val("ren_closed") == "1"
+
+
+@needs_display
+def test_service_dialog_offers_the_right_actions_for_each_state(tmp_path):
+    """The old Start/Stop server button is gone; Service… shows the systemd user
+    service's state and only the actions that make sense, confirming the disruptive ones."""
+    out = tmp_path / "svc.log"
+    r = _run(os.path.join(ROOT, "tests", "ui", "probe_service.tcl"), str(out),
+             ui_conf=tmp_path / "ui.conf")
+    log = out.read_text() if out.exists() else ""
+    assert r.returncode == 0, f"{r.stderr}\n{log}"
+    assert "DONE" in log and "ERROR" not in log and "BGERROR" not in log, log
+
+    def val(key):
+        m = re.search(rf"^{re.escape(key)} (.*)$", log, re.M)
+        assert m, f"no {key!r} in:\n{log}"
+        return m.group(1)
+
+    # the UI-spawned server is gone
+    assert val("toolbar") == "Service… exists_old=0 oldprocs=0"
+    assert "not installed" in val("s0") and "Install and start(normal)" in val("s0")
+    assert "Remove…" not in val("s0")
+    # one click installs then enables
+    assert "{service install}" in val("installed_calls") and "{service enable}" in val("installed_calls")
+    assert "running" in val("s1") and "pid 777" in val("s1")
+    for b in ("Open player", "Restart…", "Disable…", "Log…", "Remove…"):
+        assert b in val("s1"), b
+    # disruptive actions ask first, and "no" does nothing
+    assert val("restart_no_calls").strip() == "asked=1"          # no restart call, one question
+    assert "{service restart}" in val("restart_yes")
+    assert "cut off" in val("ask_text")
+    assert val("opened") == "http://localhost:8080/"
+    assert val("log_shown") == "1 text=serving" and val("log_hidden") == "0"
+    # the log shows the startup banner's QR codes: fixed font, scrollbars both ways, plenty of
+    # lines requested, and the pane grows with the window
+    assert "--log 200" in val("log_call")
+    assert val("log_widgets") == "font=TkFixedFont yscroll=1 xscroll=1"
+    assert val("log_resized") == "wider=1 taller=1"
+    # the QR codes' ANSI colour escapes are applied (white on black), never shown as text
+    assert val("log_plain") == "serving|██ ▄▄ ▀▀|▀▀ ██ ▄▄|after"
+    assert "\x1b" not in log
+    qr = val("log_qr_tag")
+    assert qr.startswith("4 ") and "bg=black fg=white" in qr          # two QR lines, start+end each
+    assert "first_tagged=1" in qr and "after_tagged=0" in qr
+    assert val("log_scrolls") == "1"
+    assert "stopped" in val("s2") and "Enable and start(normal)" in val("s2")
+    # something else holds the port: named, and Enable is disabled
+    busy = val("busy")
+    assert "webnovel-audio (pid 4242)" in busy and "Enable and start(disabled)" in busy
+    assert "not installed" in val("s3") and "Install and start" in val("s3")
+    assert "already in use" in val("fail_msg") and "open=1" in val("fail_msg")

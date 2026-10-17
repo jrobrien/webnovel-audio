@@ -28,6 +28,9 @@ proc run_json {args} {
     return [json::parse {{"series": [], "chapters": []}}]
 }
 proc run_cmd {argv {onfinish ""}} { lappend ::RUNCMDS $argv }
+# never launch a real browser from a test
+set ::OPENED {}
+proc open_url {url} { lappend ::OPENED $url }
 set ::RUNCMDS {}
 
 proc labels {m} {
@@ -52,6 +55,14 @@ proc report {} {
 
         .top.tv insert {} end -id probe -values [list "Probe Series" on 100 "" 0 0 0 ""]
         .top.tv selection set probe ; update
+        # "Open source page": the selected series' URL, and a clear note without one
+        set ::SURL(probe) "https://www.royalroad.com/fiction/1/probe"
+        open_source
+        puts $::LOG "opened $::OPENED"
+        set ::OPENED {}
+        unset ::SURL(probe)
+        open_source
+        puts $::LOG "opened_without_url [llength $::OPENED]"
         dlg_sync probe
         update
         puts $::LOG "one_scope $::SYNC_SCOPE"
