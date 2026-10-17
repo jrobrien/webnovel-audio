@@ -2242,6 +2242,75 @@ def _cmd_serve(args) -> int:
     return 0
 
 
+def _cmd_service(args) -> int:
+    """`service install|enable|disable|restart|status|remove`: the web server as a
+    systemd user service (see service.py)."""
+    from . import service
+
+    want_json = getattr(args, "json", False)
+    cfg = Config.load(args.config)
+    try:
+        if args.action == "install":
+            res = service.install(args.config, dry_run=args.dry_run)
+        elif args.action == "enable":
+            res = service.enable(cfg, start=not args.no_start)
+        elif args.action == "disable":
+            res = service.disable()
+        elif args.action == "restart":
+            res = service.restart()
+        elif args.action == "remove":
+            res = service.remove(dry_run=args.dry_run)
+        else:
+            res = service.status(cfg, log_lines=args.log)
+    except service.ServiceError as exc:
+        return _fail(exc.code, exc.message, hint=exc.hint, json_mode=want_json)
+    if want_json:
+        res.pop("text", None)
+        _jprint(res)
+        return 0
+    a = res["action"]
+    if a == "install":
+        print(f"{res['result']}: {res['unit']}" + ("  (dry run)" if res["dry_run"] else ""))
+        if res["dry_run"]:
+            print(res["text"], end="")
+        elif res["result"] != "unchanged":
+            print("next: webnovel-audio service enable")
+    elif a == "enable":
+        print("enabled" + (" and started" if res["started"] else "")
+              + f"; web player at http://localhost:{cfg.serve.port}/")
+    elif a == "remove":
+        print(("would remove " if res["dry_run"] else "removed " if res["was_installed"]
+               else "nothing to remove: ") + res["unit"])
+    elif a == "status":
+        print(f"unit     : {res['unit']}" + ("" if res["installed"] else "  (not installed)"))
+        if res["installed"]:
+            print(f"enabled  : {'yes' if res['enabled'] else 'no'}")
+            print(f"state    : {res['state']}" + (f", pid {res['pid']}" if res.get("pid") else "")
+                  + (f", since {res['since']}" if res.get("since") and res["active"] else ""))
+            if res.get("restarts"):
+                print(f"restarts : {res['restarts']}")
+            print(f"url      : {res['url']}")
+            if res.get("linger") is False:
+                print("at boot  : starts at login only; `loginctl enable-linger $USER` "
+                      "to start without one")
+            if res.get("port_busy"):
+                who = res.get("port_owner")
+                print(f"port     : {res['port']} is held by "
+                      + (f"{who['name']} (pid {who['pid']})" if who else "another process")
+                      + ", so the service cannot start")
+            if res.get("log"):
+                print("recent log:\n  " + res["log"].replace("\n", "\n  "))
+        else:
+            print("install it with: webnovel-audio service install")
+            if res.get("port_busy"):
+                who = res.get("port_owner")
+                print(f"port {res['port']} is held by "
+                      + (f"{who['name']} (pid {who['pid']})" if who else "another process"))
+    else:
+        print(f"{a}: ok")
+    return 0
+
+
 def _cmd_book(args) -> int:
     from . import sync
 
@@ -2673,6 +2742,27 @@ def _build_parser():
                     help="port to listen on (default: from config)")
     _cfg(sv)
     sv.set_defaults(func=_cmd_serve)
+
+    svc = sub.add_parser("service", help="run the web server as a systemd user service")
+    svc_sub = svc.add_subparsers(dest="action", required=True)
+    for name, helptext in (
+            ("install", "write webnovel-audio.service (not enabled or started)"),
+            ("enable", "start it now and at every login"),
+            ("disable", "stop it and stop it starting at login (the unit file stays)"),
+            ("restart", "restart the running service"),
+            ("status", "installed? enabled? running? the URL, and why not if it is down"),
+            ("remove", "stop, disable and delete the unit file")):
+        q = svc_sub.add_parser(name, help=helptext)
+        if name in ("install", "remove"):
+            _dry(q, what="be written" if name == "install" else "be removed")
+        if name == "status":
+            q.add_argument("--log", type=int, default=0, metavar="N",
+                           help="also show the last N journal lines (default: only when it is down)")
+        if name == "enable":
+            q.add_argument("--no-start", action="store_true",
+                           help="enable for the next login, but do not start it now")
+        _cfg_json(q)
+        q.set_defaults(func=_cmd_service)
 
     bk = sub.add_parser("book", help="stitch rendered chapters into a .m4b")
     _series_pos(bk, what="stitch")
