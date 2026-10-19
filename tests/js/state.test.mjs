@@ -71,3 +71,36 @@ test("a hostile cover address cannot break out of the css url()", () => {
   assert.ok(!out.slice(5, -2).includes('"') && !out.includes("); "));
   assert.ok(!cssUrl("a\\b\nc").slice(5, -2).match(/[\\\n]/));
 });
+
+import { formatDiag, shouldAutoAdvance } from "../../src/webnovel_audio/web/state.mjs";
+
+test("the playback log is one readable line per event", () => {
+  const out = formatDiag([
+    { t: 0, ev: "switch", ct: 0, rs: 0, ns: 1, hidden: true, note: "#6 s" },
+    { t: 4.2, ev: "pause", ct: 4.2, rs: 4, ns: 1, hidden: true, note: "unrequested" },
+  ]);
+  const lines = out.split("\n");
+  assert.equal(lines.length, 2);
+  assert.match(lines[0], /0\.0s\s+switch\s+at 0s\s+ready=0 net=1 hidden\s+#6 s/);
+  assert.match(lines[1], /4\.2s\s+pause\s+at 4\.2s.*unrequested/);
+});
+
+import { worthSending } from "../../src/webnovel_audio/web/state.mjs";
+
+test("the log goes to the server by itself only when it holds something unsent about playback stopping or failing", () => {
+  const e = (seq, ev) => ({ seq, ev });
+  assert.equal(worthSending([e(1, "play"), e(2, "pause"), e(3, "hidden"), e(4, "visible"), e(5, "switch")], 0), false);  // routine
+  assert.equal(worthSending([e(1, "switch"), e(2, "stopped")], 0), true);
+  assert.equal(worthSending([e(1, "error")], 0), true);
+  assert.equal(worthSending([e(1, "stalled")], 0), true);
+  assert.equal(worthSending([e(1, "stopped"), e(2, "play")], 1), false);                                  // already sent
+  assert.equal(worthSending([e(1, "stopped"), e(2, "error")], 1), true);                                  // something new since
+  assert.equal(worthSending([], 0), false);
+});
+
+test("a phone with the screen off stops at the end of the chapter; everything else goes on", () => {
+  assert.equal(shouldAutoAdvance({ hidden: true, mobile: true }), false);
+  assert.equal(shouldAutoAdvance({ hidden: false, mobile: true }), true);    // phone, screen on
+  assert.equal(shouldAutoAdvance({ hidden: true, mobile: false }), true);    // desktop, another tab in front
+  assert.equal(shouldAutoAdvance({ hidden: false, mobile: false }), true);
+});

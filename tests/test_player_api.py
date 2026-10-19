@@ -253,3 +253,70 @@ def test_a_request_connection_does_not_run_the_schema_pass(tmp_path):
     tables = sqlite3.connect(str(tmp_path / "x.db")).execute(
         "SELECT name FROM sqlite_master").fetchall()
     assert tables == []                       # nothing was created, so nothing was locked for
+
+
+def _logs(call):
+    import os
+    folder = os.path.join(os.path.dirname(call.db), "playback-logs")
+    return folder, sorted(os.listdir(folder)) if os.path.isdir(folder) else []
+
+
+def test_playback_log_is_saved_to_a_file_the_server_names(env):
+    r, d = env("POST", "/api/playback-log", {"profile": "Jon", "text": "  0.0s  switch  at 0s\n  4.2s  pause  at 4.2s"})
+    assert r.status == 200 and d["ok"] and d["file"].endswith(".log") and "/" not in d["file"]
+    folder, names = _logs(env)
+    assert names == [d["file"]]
+    body = open(f"{folder}/{names[0]}", encoding="utf-8").read()
+    assert "# profile: Jon" in body and "# playback log received" in body and "from 127.0.0.1" in body
+    assert body.rstrip().endswith("4.2s  pause  at 4.2s")
+
+
+def test_playback_log_follows_the_write_rules(env):
+    assert env("POST", "/api/playback-log", {"text": "x"}, ctype="text/plain")[0].status == 415   # JSON only
+    assert env("POST", "/api/playback-log", {"text": "x" * 70000})[0].status == 413                  # over 64 KB
+    assert env("POST", "/api/playback-log", {})[0].status == 400                                     # no text
+    assert env("POST", "/api/playback-log", {"text": "   \n"})[0].status == 400
+    assert env("POST", "/api/playback-log", ["not", "a", "dict"])[0].status == 400
+    assert env("POST", "/api/playback-log", {"text": 5})[0].status == 400
+    assert env("POST", "/api/playback-log", raw=b"{nope")[0].status == 400
+    assert env("PUT", "/api/playback-log", {"text": "x"})[0].status == 404                          # POST only
+    assert _logs(env)[1] == []                                                                       # nothing was written
+
+
+def test_playback_log_sanitises_what_a_client_sends(env):
+    r, d = env("POST", "/api/playback-log", {"profile": "../../etc/passwd\nx", "text": "a\x00b\x1b[31mc\nd\te"})
+    assert r.status == 200
+    folder, names = _logs(env)
+    body = open(f"{folder}/{d['file']}", encoding="utf-8").read()
+    assert "# profile: -" in body and "passwd" not in body              # a bad name is dropped, never a path
+    assert "\x00" not in body and "\x1b" not in body and "ab[31mc\nd\te" in body
+
+
+def test_playback_logs_never_overwrite_each_other_and_only_the_newest_are_kept(env):
+    names = {env("POST", "/api/playback-log", {"text": f"run {i}"})[1]["file"] for i in range(60)}
+    assert len(names) == 60                                             # same second, different files
+    _, kept = _logs(env)
+    assert len(kept) == 50 and set(kept) <= names
+
+
+def test_the_player_has_a_manifest_with_real_icons(env, monkeypatch):
+    """So "Add to Home screen" gets a proper name and icon. (No service worker: installing as an
+    app needs HTTPS, which is not set up; the phone route is the podcast feed.)"""
+    import os
+    import struct
+    real = os.path.join(os.path.dirname(srv.__file__), "web")
+    monkeypatch.setattr(srv, "WEB_DIR", real)
+    r, m = env("GET", "/player/manifest.webmanifest")
+    assert r.status == 200 and "manifest+json" in r.getheader("Content-Type")
+    assert m["name"] and m["short_name"] and m["start_url"] == "/" and m["display"] == "standalone"
+    sizes = set()
+    for icon in m["icons"]:
+        r, png = env("GET", icon["src"])
+        assert r.status == 200 and r.getheader("Content-Type") == "image/png" and png[:8] == b"\x89PNG\r\n\x1a\n"
+        w, h = struct.unpack(">II", png[16:24])
+        assert f"{w}x{h}" == icon["sizes"]
+        sizes.add((icon["sizes"], icon["purpose"]))
+    assert ("192x192", "any") in sizes and ("512x512", "any") in sizes and ("512x512", "maskable") in sizes
+    r, page = env("GET", "/")
+    assert b'rel="manifest"' in page and b"/player/manifest.webmanifest" in page
+    assert env("GET", "/sw.js")[0].status == 404

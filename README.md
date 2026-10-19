@@ -18,10 +18,11 @@ no GPU, no cloud, no account required.
 - **Three outputs per chapter** — mastered Opus, a **readable Markdown** copy
   (decoys stripped, structure kept, YAML provenance — feeds `pandoc … -o epub`),
   and the internal narration script.
-- **Listening** — a phone-friendly **web player** served from the same machine
-  (no login, remembers your place, counts what's new, plays on to the next
-  chapter with the screen off), per-series **podcast RSS feeds** (real dates,
-  durations, cover art, HTTP Range) for podcast apps, or a chapterised **`.m4b`**.
+- **Listening** — a **web player** served from the same machine (no login,
+  remembers your place, counts what's new, plays on chapter after chapter; best on a
+  desktop), per-series **podcast RSS feeds** (real dates, durations, cover art, HTTP
+  Range) for podcast apps such as AntennaPod, the way to listen on a phone with the
+  screen off, or a chapterised **`.m4b`**.
 - **Faithful text handling** — anti-piracy decoy paragraphs removed, LitRPG
   number/stat normalization, and one pronunciation table that covers both names
   the g2p mangles (`Montgomery`, `Eleanor`) and heteronyms the grammar decides
@@ -113,8 +114,17 @@ QR code for it, and a second one for your Tailscale address if you set
   chapter moves *where you are* but not *furthest*; **Back to #N** jumps back.
 - **What's new.** Each series shows how many chapters lie beyond your furthest,
   and the count grows when you refresh or come back to the tab.
-- **Plays on its own.** Chapters continue one after another (also with the
-  screen locked), with lock-screen controls, ±15/+30 s, speed and a sleep timer.
+- **Plays on its own.** Chapters continue one after another, with media-key and
+  lock-screen controls, ±15/+30 s, speed and a sleep timer. **On a phone with the screen
+  off it stops at the end of the chapter** (play goes on to the next): Chrome on Android
+  starts a chapter in the background without its lock-screen player and has played it
+  silently while reporting "playing", which also moved your place on through chapters
+  nobody heard. For screen-off listening on a phone, use the **podcast feed** in
+  AntennaPod, a real app with a background player.
+- **Playback log.** The home page's **Playback log** (`#/log`) records what the player saw
+  (play, pause, stalls, errors, the screen going off and on). It is sent to the server by
+  itself after playback stops or fails, or with **Send**, and kept under
+  `~/.local/state/webnovel-audio/playback-logs/` (newest 50).
 - **Podcast apps too.** Each series page has a **Podcast feed** panel with the
   feed URL, *Add to AntennaPod* and *Copy URL*.
 

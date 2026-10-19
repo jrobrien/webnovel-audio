@@ -4,8 +4,8 @@
 // keeps each person's place per series. The rules for "where am I / what's new"
 // live in state.mjs so they can be tested without a browser.
 import {
-  advanceFurthest, chapterState, cssUrl, formatTime, furthestPoint, indexOfChapter, newCount,
-  nextChapter, prevChapter, resumePoint,
+  advanceFurthest, chapterState, cssUrl, formatDiag, formatTime, furthestPoint, indexOfChapter, newCount,
+  nextChapter, prevChapter, resumePoint, shouldAutoAdvance, worthSending,
 } from "./state.mjs";
 
 const $ = (sel) => document.querySelector(sel);
@@ -27,6 +27,8 @@ const S = {
   listened: 0, lastT: 0, dirty: false,       // seconds actually listened to this chapter
   sleepAt: 0, sleepIdx: 0, loaded: false, podcastOpen: false,
   accents: new Map(),
+  switchAt: 0, pendingNext: null,           // when this chapter started; the chapter a stopped phone goes on to
+  diag: [], seq: 0, sentSeq: 0, sentAt: 0,   // the playback log (see #/log), and how much of it the server has
 };
 const audio = $("#audio");
 
@@ -165,16 +167,16 @@ async function applyAccent(series) {
 // --------------------------------------------------------------------- routing
 const route = () => {
   const m = location.hash.match(/^#\/s\/([^/?]+)/);
-  return { slug: m ? decodeURIComponent(m[1]) : null };
+  return { slug: m ? decodeURIComponent(m[1]) : null, log: location.hash === "#/log" };
 };
 
 function render() {
   renderTop();
-  const { slug } = route();
-  const series = slug && S.by.get(slug);
-  const y = window.scrollY, sameView = $("#main").dataset.view === (series ? slug : "home");
-  $("#main").replaceChildren(series ? seriesView(series) : homeView());
-  $("#main").dataset.view = series ? slug : "home";
+  const { slug, log } = route();
+  const series = !log && slug && S.by.get(slug);
+  const y = window.scrollY, sameView = $("#main").dataset.view === (log ? "log" : series ? slug : "home");
+  $("#main").replaceChildren(log ? logView() : series ? seriesView(series) : homeView());
+  $("#main").dataset.view = log ? "log" : series ? slug : "home";
   if (sameView) window.scrollTo(0, y);
   else if (series) scrollToCurrent();
   else window.scrollTo(0, 0);
@@ -228,7 +230,50 @@ function homeView() {
       ? "Pick up where you left off."
       : "Browsing as a guest. Pick who's listening (top right) to keep your place and see what's new."),
     list.length ? h("section", { class: "grid" }, list.map(card))
-      : h("p", { class: "dim" }, "Nothing has been rendered yet."));
+      : h("p", { class: "dim" }, "Nothing has been rendered yet."),
+    h("p", { class: "dim" }, h("a", { href: "#/log" }, "Playback log")));
+}
+
+// What the player did, kept so a chapter that stops by itself can be explained afterwards.
+function diag(ev, note = "") {
+  S.diag.push({ seq: ++S.seq, t: S.switchAt ? (Date.now() - S.switchAt) / 1000 : 0, ev, ct: Math.round(audio.currentTime * 10) / 10,
+    rs: audio.readyState, ns: audio.networkState, hidden: document.hidden, note });
+  if (S.diag.length > 120) S.diag.shift();
+}
+
+// Send the log to the server (saved under playback-logs/ beside the state DB), so it need not
+// be copied by hand off a phone.
+async function uploadLog(manual = false) {
+  if (!S.diag.length) { if (manual) toast("Nothing to send yet"); return false; }
+  const seq = S.seq;
+  try {
+    const r = await fetch("/api/playback-log", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: S.profile || "", text: formatDiag(S.diag) }) });
+    if (!r.ok) throw new Error(String(r.status));
+    S.sentSeq = seq; S.sentAt = Date.now();
+    if (manual) toast("Log sent");
+    return true;
+  } catch { if (manual) toast("Couldn't send the log"); return false; }
+}
+// ...and by itself on coming back to the app after a chapter changed over (at most once a minute).
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && worthSending(S.diag, S.sentSeq) && Date.now() - S.sentAt > 60000) uploadLog();
+});
+
+function logView() {
+  const text = formatDiag(S.diag) || "Nothing yet. Play something, and if a chapter stops by itself, come back here.";
+  return h("div", {},
+    h("h1", {}, "Playback log"),
+    h("p", { class: "lead" }, "Seconds since the chapter started, the event, the playhead, and whether the page was hidden. It is sent to the server by itself after playback stops or fails; Send does it now."),
+    h("pre", { style: "white-space:pre-wrap;font-size:12px;overflow-x:auto" }, text),
+    h("p", {},
+      h("button", { class: "btn", onclick: () => uploadLog(true) }, "Send"),
+      " ",
+      h("button", { class: "btn ghost", onclick: async () => toast((await copyText(text)) ? "Log copied" : "Select the text to copy it") }, "Copy"),
+      " ",
+      h("button", { class: "btn ghost", onclick: () => { S.diag = []; render(); } }, "Clear"),
+      " ",
+      h("a", { class: "btn ghost", href: "#/" }, "Back")));
 }
 
 // ---------------------------------------------------------------- series view
@@ -312,6 +357,8 @@ function playChapter(slug, id, t = 0) {
   savePosition();
   S.now = { slug, id };
   S.listened = 0; S.lastT = t;
+  S.switchAt = Date.now(); S.pendingNext = null;
+  diag("switch", `#${chapter.n} ${slug}`);
   audio.src = chapter.audio;
   audio.defaultPlaybackRate = audio.playbackRate = rate();
   if (t > 0) audio.addEventListener("loadedmetadata", () => { audio.currentTime = t; }, { once: true });
@@ -343,7 +390,31 @@ function step(dir) {
 }
 
 const skip = (s) => { if (S.now) audio.currentTime = Math.min(Math.max(0, audio.currentTime + s), audio.duration || Infinity); };
-const toggle = () => (audio.paused ? audio.play().catch(() => {}) : audio.pause());
+// Play: after a phone stopped at the end of a chapter, that means the next chapter.
+function resume() {
+  if (S.pendingNext && S.now) return playChapter(S.now.slug, S.pendingNext, 0);
+  return audio.play().catch(() => {});
+}
+const toggle = () => (audio.paused ? resume() : audio.pause());
+const MOBILE = navigator.userAgentData?.mobile === true || /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+// The chapter finished: go on to the next one, or stop there on a phone with the screen off.
+function advance() {
+  if (!S.now) return;
+  const series = S.by.get(S.now.slug);
+  noteProgress(audio.duration || audio.currentTime, true);
+  const next = nextChapter(series.chapters, S.now.id);
+  if (!next) { savePosition(true); toast("You're all caught up"); paintPlayState(); return; }
+  if (!shouldAutoAdvance({ hidden: document.hidden, mobile: MOBILE })) {
+    S.pendingNext = next.id;
+    const pos = S.profile && S.pos[series.slug];
+    if (pos) { pos.chapter = next.id; pos.t = 0; S.dirty = true; }   // "Continue" picks up with the next one
+    diag("stopped", `end of #${series.chapters.find((c) => c.id === S.now.id)?.n}; screen off on a phone`);
+    savePosition(true); paintPlayState();
+    return;
+  }
+  playChapter(series.slug, next.id, 0);
+}
 
 audio.addEventListener("timeupdate", () => {
   const dt = audio.currentTime - S.lastT;
@@ -353,26 +424,31 @@ audio.addEventListener("timeupdate", () => {
   paintProgress();
   if (S.sleepAt && Date.now() >= S.sleepAt) { audio.pause(); S.sleepAt = 0; S.sleepIdx = 0; toast("Sleep timer: paused"); renderMini(); }
 });
-audio.addEventListener("play", () => paintPlayState());
+audio.addEventListener("play", () => { diag("play"); paintPlayState(); setPlaybackState(); });
 audio.addEventListener("pause", () => {
+  diag("pause", audio.ended ? "end of chapter" : "");
   paintPlayState();
+  setPlaybackState();
   savePosition(true);
   if (S.profile && S.now && !audio.ended) render();       // refresh "Continue \u00b7 #N m:ss" and the markers
 });
+for (const ev of ["playing", "waiting", "stalled", "emptied"]) audio.addEventListener(ev, () => diag(ev));
+document.addEventListener("visibilitychange", () => diag(document.hidden ? "hidden" : "visible"));
 audio.addEventListener("ended", () => {
-  if (!S.now) return;
-  const series = S.by.get(S.now.slug);
-  noteProgress(audio.duration || audio.currentTime, true);
-  const next = nextChapter(series.chapters, S.now.id);
-  if (next) playChapter(series.slug, next.id, 0);
-  else { savePosition(true); toast("You're all caught up"); paintPlayState(); }
+  diag("ended");
+  advance();
 });
-audio.addEventListener("error", () => { if (S.now) toast("Couldn't play that chapter"); });
+audio.addEventListener("error", () => { diag("error", audio.error ? `code ${audio.error.code}` : ""); if (S.now) toast("Couldn't play that chapter"); });
 
 setInterval(() => { if (!audio.paused) savePosition(); }, 5000);
 document.addEventListener("visibilitychange", () => { if (document.hidden) savePosition(true); else refresh(); });
 window.addEventListener("pagehide", () => savePosition(true));
 setInterval(() => { if (!document.hidden) refresh(); }, 5 * 60 * 1000);
+
+// Tell the OS what we are doing, so the lock-screen controls do not lag behind a chapter change.
+function setPlaybackState() {
+  if ("mediaSession" in navigator) navigator.mediaSession.playbackState = audio.paused ? "paused" : "playing";
+}
 
 function setMediaSession(series, chapter) {
   if (!("mediaSession" in navigator)) return;
@@ -381,15 +457,18 @@ function setMediaSession(series, chapter) {
     artwork: series.cover ? [{ src: new URL(series.cover, location.href).href, sizes: "512x512" }] : [],
   });
 }
-if ("mediaSession" in navigator) {
+function registerMediaActions() {
+  if (!("mediaSession" in navigator)) return;
   const handlers = {
-    play: () => audio.play(), pause: () => audio.pause(),
+    play: () => resume(), pause: () => audio.pause(),
     previoustrack: () => step(-1), nexttrack: () => step(1),
     seekbackward: () => skip(-15), seekforward: () => skip(30),
     seekto: (d) => { if (d.seekTime != null) audio.currentTime = d.seekTime; },
   };
   for (const [action, fn] of Object.entries(handlers)) { try { navigator.mediaSession.setActionHandler(action, fn); } catch { /* unsupported */ } }
 }
+registerMediaActions();
+
 
 // ------------------------------------------------------------------ mini player
 let dragging = false;

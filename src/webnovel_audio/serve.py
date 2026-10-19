@@ -33,6 +33,9 @@ _WEB_TYPES = {".html": "text/html; charset=utf-8", ".css": "text/css; charset=ut
               ".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon",
               ".webmanifest": "application/manifest+json"}
 _MAX_BODY = 4096
+#: the player's playback log (its own diagnostic, uploaded so it need not be pasted by hand)
+_MAX_LOG_BODY = 64 * 1024
+_KEEP_LOGS = 50
 #: how long a request waits for the renderer's write lock before answering 503.
 #: Reads never wait (WAL); only position saves can, and the page just retries.
 DB_BUSY_MS = 2000
@@ -292,7 +295,7 @@ class _Handler(BaseHTTPRequestHandler):
         finally:
             db.close()
 
-    def _read_json(self):
+    def _read_json(self, max_body: int = _MAX_BODY):
         """The request's JSON body, or `_BAD` after sending the error response.
 
         Only `application/json` is accepted, and no CORS headers are ever sent, so
@@ -306,8 +309,8 @@ class _Handler(BaseHTTPRequestHandler):
             n = int(self.headers.get("Content-Length") or 0)
         except ValueError:
             n = -1
-        if not 0 < n <= _MAX_BODY:
-            self._json(413 if n > _MAX_BODY else 400, {"error": "bad body size"})
+        if not 0 < n <= max_body:
+            self._json(413 if n > max_body else 400, {"error": "bad body size"})
             return _BAD
         try:
             return json.loads(self.rfile.read(n))
@@ -320,6 +323,8 @@ class _Handler(BaseHTTPRequestHandler):
             parts = [p for p in path.split("/") if p]
             if parts[:1] != ["api"]:
                 return self._json(404, {"error": "not found"})
+            if self.command == "POST" and parts == ["api", "playback-log"]:
+                return self._playback_log()
             body = self._read_json()
             if body is _BAD:
                 return
@@ -345,6 +350,45 @@ class _Handler(BaseHTTPRequestHandler):
             self._busy()
         except (*_QUIET_ERRORS, OSError):
             pass
+
+    def _playback_log(self) -> None:
+        """Save the player's playback log to a file, for diagnosing a chapter that stops by
+        itself on a phone. Same rules as every write (JSON only, no CORS), a bigger size cap, and
+        the file name is the server's own, never the client's. Only the newest few are kept."""
+        body = self._read_json(_MAX_LOG_BODY)
+        if body is _BAD:
+            return
+        text = body.get("text") if isinstance(body, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            return self._json(400, {"error": "send {\"text\": the log}"})
+        profile = player.valid_profile_name(body.get("profile")) or "-"
+        text = "".join(c for c in text if c in "\n\t" or c >= " ")[:_MAX_LOG_BODY]
+        ua = "".join(c for c in (self.headers.get("User-Agent") or "") if c >= " ")[:200]
+        stamp = time.time()
+        now = time.localtime(stamp)
+        header = (f"# playback log received {time.strftime('%F %T', now)} from {self.client_address[0]}\n"
+                  f"# profile: {profile}\n# user agent: {ua}\n\n")
+        folder = os.path.join(os.path.dirname(os.path.abspath(os.path.expanduser(self.cfg.library.state_db))),
+                              "playback-logs")
+        try:
+            os.makedirs(folder, exist_ok=True)
+            # date, time and microseconds: sorting the names is sorting by arrival, so pruning
+            # always drops the oldest, and two uploads in one second never share a name
+            us = int((stamp % 1) * 1_000_000)
+            name = f"{time.strftime('%Y%m%d-%H%M%S', now)}-{us:06d}.log"
+            while os.path.exists(os.path.join(folder, name)):
+                us += 1
+                name = f"{time.strftime('%Y%m%d-%H%M%S', now)}-{us:06d}.log"
+            with open(os.path.join(folder, name), "w", encoding="utf-8") as fh:
+                fh.write(header + text.rstrip("\n") + "\n")
+            for old in sorted(os.listdir(folder))[:-_KEEP_LOGS]:
+                try:
+                    os.remove(os.path.join(folder, old))
+                except OSError:
+                    pass
+        except OSError:
+            return self._json(500, {"error": "could not save the log"})
+        self._json(200, {"ok": True, "file": name})
 
     def _db(self) -> DB:
         # no schema pass per request: `serve()` initialised the DB once, and a

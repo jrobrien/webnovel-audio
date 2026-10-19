@@ -73,3 +73,31 @@ export function formatTime(seconds) {
 export function cssUrl(address) {
   return `url("${String(address).replace(/["\\\n\r()]/g, (ch) => "%" + ch.charCodeAt(0).toString(16).padStart(2, "0"))}")`;
 }
+
+
+/** The playback log as text, one event per line: seconds since the chapter switch, the event,
+ *  the playhead, the media element's ready and network state, and whether the page was hidden. */
+export function formatDiag(entries) {
+  return entries.map((e) =>
+    `${String(e.t.toFixed(1)).padStart(6)}s  ${e.ev.padEnd(14)} at ${String(e.ct)}s  ready=${e.rs} net=${e.ns}${e.hidden ? " hidden" : ""}${e.note ? "  " + e.note : ""}`).join("\n");
+}
+
+
+const LOG_WORTH_SENDING = new Set(["stopped", "error", "stalled"]);
+
+/** Should the playback log go to the server by itself? When it holds something unsent about playback
+ *  stopping or failing, and not for a log that is only plays, pauses and visibility changes. `seq`
+ *  numbers the entries. */
+export function worthSending(entries, sentSeq) {
+  return entries.some((e) => e.seq > sentSeq && LOG_WORTH_SENDING.has(e.ev));
+}
+
+/** Move on to the next chapter by itself? Not on a phone with the page hidden (screen off or another
+ *  app in front): there, Chrome on Android starts the next chapter without its lock-screen player
+ *  and has played it silently while still reporting "playing", which also moved your place on
+ *  through chapters nobody heard. So a phone stops at the end of the chapter and the next press of
+ *  play starts the next one. For listening with the screen off, use the podcast feed in an app
+ *  such as AntennaPod. */
+export function shouldAutoAdvance({ hidden, mobile }) {
+  return !(hidden && mobile);
+}
