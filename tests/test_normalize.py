@@ -154,3 +154,16 @@ def test_latin_extended_additional_is_folded_to_base_letters():
     assert n("Straẞe") == "StraSSe"
     for kept in ("Xiāo", "café", "Brontë", "résumé", "Łódź", "naïve"):
         assert n(kept) == kept
+
+
+def test_zalgo_glitch_text_reads_as_its_letters():
+    """cursed-relic-collector 13: a corrupted voice written with stacked combining marks. A quote
+    holding only marks became an empty segment and failed the whole chapter."""
+    from webnovel_audio.normalize import normalize_text as n
+    zalgo = "“̴̨̡̎W̴͓̭̝͛͋h̷̩̹̆̽̑ḁ̴̗̌t̷̬̗͑̋̅ ̷͎̈́̑̎ä̶͙̻̥́r̷͙̜̱͘è̸̟͘ ̵̩̓̾ÿ̷̙̠́͘o̵̝̩̾̓u̴̢̟̩͆ ̴̛̩͖̿͌d̴̼̦͊̋͝ͅờ̵̟̙̳͝i̵̫̓͒̄n̵͎̘̾̏̓g̴̼͚̞͒̚ ̴̬̬̥͗͐̍h̸̡̩̼̿͂è̶̙̉r̵̰̈́e̸̪̱̳͝?̸͕̊͘”̷̨̙̙̈́” she said."
+    out = n(zalgo)
+    assert "What are you doing here?" in out.replace("’", "'") or "What are you doing here" in out
+    assert all(not ("̀" <= c <= "ͯ") for c in out)
+    assert n("̷̨̙̙̈́") == ""                       # marks alone: nothing to say, not an error
+    for kept in ("café", "naïve", "Xiāo", "résumé", "Brontë"):
+        assert n(kept) == kept                      # NFC-composed accents are letters, not marks

@@ -105,6 +105,32 @@ def _fold_latin_additional(s: str) -> str:
     return "".join(out)
 
 
+def _strip_combining_marks(s: str) -> str:
+    """Letters smothered in combining marks ("Zalgo" glitch text) -> the plain letters.
+
+    An author's corrupted-voice effect stacks marks on every letter (“̴̨̡̎W̴͓̭̝͛͋h̷̩̹̆̽̑ḁ̴̗̌t̷̬̗͑̋̅”). The g2p cannot say a
+    bare mark, a quote that held only marks became an empty segment that failed the whole chapter,
+    and letters the marks happened to compose with came out as ä, è, ÿ ("ärè ÿou"). So each letter
+    is taken with its marks: if together they compose into one real character (é, ā, ü, ế) it is
+    an ordinary accent and stays; anything left over means decoration, and the letter loses all of
+    its marks. Marks with no letter to sit on are dropped."""
+    if s.isascii():
+        return s
+    out: list[str] = []
+    cluster = ""
+    for ch in unicodedata.normalize("NFD", s) + "\0":
+        if cluster and unicodedata.combining(ch):
+            cluster += ch
+            continue
+        if cluster:
+            comp = unicodedata.normalize("NFC", cluster)
+            out.append(comp if len(comp) == 1 else cluster[0])
+        cluster = "" if ch == "\0" else ch
+        if cluster and unicodedata.combining(cluster):
+            cluster = ""                          # a mark with nothing under it
+    return "".join(out)
+
+
 def _strip_foreign_scripts(s: str) -> str:
     """Drop letters from non-Latin scripts (Han, Kana, Hangul, Cyrillic, Arabic…).
 
@@ -242,6 +268,7 @@ def normalize_text(s: str, *, dampen_caps: bool = True) -> str:
     s = unicodedata.normalize("NFC", s)
     s = _strip_zero_width(s)
     s = _fold_latin_additional(s)
+    s = _strip_combining_marks(s)
     if "~" in s:
         s = _TILDE_RANGE_RE.sub(" to ", s)
         s = _TILDE_ABOUT_RE.sub("about ", s)
