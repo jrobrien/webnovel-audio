@@ -51,6 +51,7 @@ array set ::BPATH {}
 set ::BASELEX ""
 set ::SERIES "" ; set ::RUNNING 0 ; set ::PIPE ""
 set ::STATUS "ready" ; set ::LIMIT 10 ; set ::SYNC_SCOPE @all
+set ::SYNC_EST_AFTER {}   ;# pending debounced sync_estimate
 array set ::EDIT {}          ;# tab -> path / mtime / dirty
 array set ::MD {}            ;# chapter row id -> text_path / status, from refresh
 array set ::HLAFTER {}       ;# tab -> pending re-highlight, coalesced
@@ -908,8 +909,17 @@ proc dlg_sync {{scope @all}} {
     grid $w.est -row 2 -column 0 -columnspan 3 -padx 10 -pady 6 -sticky w
     grid $w.b -row 3 -column 0 -columnspan 3 -pady 8
     bind $w <Escape> [list destroy $w]
-    trace add variable ::LIMIT write [list sync_estimate $w]
+    trace add variable ::LIMIT write [list sync_estimate_soon $w]
     sync_estimate $w
+}
+
+;# The estimate shells out to the CLI, so recomputing it on every keystroke or
+;# spinbox click makes editing the count crawl. Wait until the edit goes idle.
+proc sync_estimate_soon {w args} {
+    if {![winfo exists $w]} return
+    after cancel $::SYNC_EST_AFTER
+    $w.est configure -text "estimating…"
+    set ::SYNC_EST_AFTER [after 1500 [list sync_estimate $w]]
 }
 
 proc sync_estimate {w args} {
@@ -918,7 +928,7 @@ proc sync_estimate {w args} {
                                            : "Sync $::SYNC_SCOPE — chapters to render:"}]
     $w.l configure -text $txt
     set a [list sync --scope $::SYNC_SCOPE --estimate]
-    if {$::LIMIT > 0} { lappend a --limit $::LIMIT }
+    if {[string is integer -strict $::LIMIT] && $::LIMIT > 0} { lappend a --limit $::LIMIT }
     set d [run_json {*}$a]
     if {$d eq ""} { $w.est configure -text "estimate unavailable" ; return }
     $w.est configure -text "[json::get $d chapters] chapter(s), ~[json::get $d human] of CPU"
