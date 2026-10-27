@@ -931,3 +931,33 @@ def test_re_rendering_unchanged_chapters_does_nothing_unless_forced(tmp_path, mo
               for c in db.chapters(s["id"]) if c["status"] == "rendered"}
     db.close()
     assert all(forced[o] > before[o][1] for o in before)    # every file really was rewritten
+
+
+def test_chapters_the_source_dropped_keep_a_unique_place(tmp_path):
+    """Royal Road pulled a book (it went to Amazon) and renumbered the rest. The
+    dropped chapters stay, rendered, but must not share an `ord` with a live one:
+    "chapter #4" named two, and the UI, which keys rows on the number, stopped
+    listing at the first clash."""
+    db = DB(str(tmp_path / "s.db"))
+    fi = SeriesInfo(provider="royalroad", source_id="9", slug="demo", title="Demo", author="A", url="https://rr/9")
+    sid = db.upsert_series(fi)
+
+    def ch(i, day):
+        return ChapterRef(source_id=str(i), order=0, title=f"C{i}", slug=f"c{i}", url=f"https://rr/{i}", unlocked=True, published_at=f"2025-01-{day:02d}T00:00:00Z")
+    full = [ch(i, i + 1) for i in range(1, 8)]                       # published days 2..8
+    for n, c in enumerate(full):
+        c.order = n
+    db.replace_chapters(sid, full)
+    # the site now lists only 1, 6 and 7, renumbered from 0
+    live = [full[0], full[5], full[6]]
+    for n, c in enumerate(live):
+        c.order = n
+    db.replace_chapters(sid, live)
+    rows = db.chapters(sid)
+    assert [r["ord"] for r in rows] == list(range(7))
+    assert [r["source_id"] for r in rows] == ["1", "2", "3", "4", "5", "6", "7"]
+    # and nothing is dropped, so the site's own numbering is used untouched
+    for n, c in enumerate(full):
+        c.order = n
+    db.replace_chapters(sid, full)
+    assert [r["ord"] for r in db.chapters(sid)] == list(range(7))

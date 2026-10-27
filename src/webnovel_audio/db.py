@@ -445,6 +445,7 @@ class DB:
                 "SELECT source_id FROM chapters WHERE series_id=?", (series_id,)
             )
         }
+        pos = self._positions(series_id, chapters)
         # 1-based position within each volume, in chapter order
         seq, counts = {}, {}
         for c in sorted(chapters, key=lambda c: c.order):
@@ -463,13 +464,40 @@ class DB:
                      unlocked=excluded.unlocked,
                      volume_source_id=excluded.volume_source_id,
                      volume_chapter=excluded.volume_chapter""",
-                (series_id, c.source_id, c.order, c.title, c.slug, c.url,
+                (series_id, c.source_id, pos.get(c.source_id, c.order), c.title, c.slug, c.url,
                  c.published_at, int(c.unlocked),
                  str(c.volume_id) if c.volume_id else None,
                  seq.get(c.source_id)),
             )
         self.con.commit()
         return sum(1 for c in chapters if c.source_id not in existing)
+
+    def _positions(self, series_id: int, chapters) -> dict[str, int]:
+        """source_id -> `ord`, for a series that keeps chapters its source dropped.
+
+        A site can pull chapters (a book moved to Amazon) and renumber what is
+        left. The dropped chapters are kept — they are rendered, and a listener
+        may be partway through one — but they would keep their old `ord`, now
+        shared with a live chapter, and "chapter #4" would name two. So when any
+        are kept they are slotted back in by publish date among the live ones,
+        which keeps the live chapters in the site's order. Empty (every chapter
+        keeps the site's own `ord`) when nothing was dropped.
+        """
+        live = {c.source_id for c in chapters}
+        kept = sorted(
+            (r for r in self.con.execute(
+                "SELECT source_id, ord, published_at FROM chapters WHERE series_id=?",
+                (series_id,)) if r["source_id"] not in live),
+            key=lambda r: (r["published_at"] or "", r["ord"]))
+        if not kept:
+            return {}
+        order, i = [], 0
+        for c in sorted(chapters, key=lambda c: c.order):
+            while i < len(kept) and (kept[i]["published_at"] or "") <= (c.published_at or ""):
+                order.append(kept[i]["source_id"]); i += 1
+            order.append(c.source_id)
+        order += [r["source_id"] for r in kept[i:]]
+        return {sid: n for n, sid in enumerate(order)}
 
     def chapters(self, series_id: int) -> list[sqlite3.Row]:
         return self.con.execute(
