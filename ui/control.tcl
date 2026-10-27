@@ -934,6 +934,29 @@ proc sync_estimate {w args} {
     $w.est configure -text "[json::get $d chapters] chapter(s), ~[json::get $d human] of CPU"
 }
 
+;# Royal Road puts a proof-of-work bot check in front of its pages; the
+;# clearance cookie it earns lasts about a week. This copies it out of the
+;# browser (which has to have passed the check) so syncs can go on. It is quick
+;# and touches no chapter, so it works while a sync is running too.
+proc import_cookies {} {
+    foreach browser {chrome chromium} {
+        set d [run_json_soft login --from-browser $browser]
+        set err [json_error $d]
+        if {$d ne "" && $err eq ""} {
+            set n [llength [json::get $d cookies]]
+            log "imported $n bot-check cookie(s) from $browser"
+            status "cookies imported from $browser"
+            return
+        }
+        if {$err ne ""} { lappend errs "$browser: $err" }
+    }
+    set msg [join $errs "\n"]
+    log "! cookie import failed — $msg"
+    status "cookie import failed"
+    tk_messageBox -parent . -icon warning -title "Re-import cookies" -message \
+        "Could not import cookies.\n\n$msg\n\nOpen royalroad.com in Chrome or Chromium, let it pass the check, and try again."
+}
+
 proc do_sync {w} {
     set lim $::LIMIT ; set scope $::SYNC_SCOPE ; destroy $w
     set a [list sync --scope $scope --yes]
@@ -1643,6 +1666,7 @@ ttk::button .tool.sync    -text "Sync…"       -command {dlg_sync @all}
 ttk::button .tool.stop    -text "Stop"        -command stop_cmd
 ttk::separator .tool.s2 -orient vertical
 ttk::button .tool.svc     -text "Service…" -command dlg_service
+ttk::button .tool.cookies -text "Re-import cookies" -command import_cookies
 ;# Labelled "View" rather than "Theme": it carries both appearance settings
 ;# now, and the widget path stays .tool.theme so repaint_theme keeps finding
 ;# the menu.
@@ -1676,6 +1700,7 @@ pack .tool.s1 -side left -fill y -padx 6
 pack .tool.sync .tool.stop -side left -padx 2
 pack .tool.s2 -side left -fill y -padx 6
 pack .tool.svc -side left -padx 2
+pack .tool.cookies -side left -padx 2
 grid .tool -row 0 -column 0 -sticky ew
 
 # -- vertical split: series on top, everything else below

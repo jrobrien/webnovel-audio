@@ -298,7 +298,8 @@ class RoyalRoadProvider(Provider):
         """The only network call. Tests replace this."""
         client = PoliteClient(
             delay=float(ctx.settings.get("request_delay", DEFAULT_REQUEST_DELAY)),
-            cookies=self.session.load(), label=self.name)
+            cookies=self.session.load(), label=self.name,
+            headers=({"User-Agent": ua} if (ua := self.session.user_agent()) else None))
         try:
             return client.text(url if url.startswith("http") else BASE + url)
         finally:

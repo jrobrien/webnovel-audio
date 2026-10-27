@@ -252,6 +252,23 @@ fetch of a normal chapter starts returning a login page, `login --logout` then
 re-export. Nothing in this tool reads your account state — no follows, no
 reading position.
 
+### The bot check
+
+Royal Road sits behind Anubis, a proof-of-work check. Without its clearance
+cookie every fetch gets the "Making sure you're not a bot!" page, and the tool
+stops with a message saying so. Open royalroad.com in Chrome or Chromium so it
+passes the check, then:
+
+```sh
+uv run webnovel-audio login --from-browser chrome     # or chromium; --profile "Profile 1"
+```
+
+This copies only the bot-check cookies (and the browser's User-Agent, which they
+are tied to) out of the browser's cookie file, which may be open, and adds them to
+`session.json` without touching a stored login. The key comes from the desktop
+keyring via `secret-tool`. The control UI has a **Re-import cookies** toolbar button that does the same (Chrome, then Chromium). `--all-cookies` takes the logged-in session too. The
+clearance lasts about a week; repeat when fetches start refusing again.
+
 Personal use only — respect authors who sell their own audiobooks.
 
 ## 10. Where things live

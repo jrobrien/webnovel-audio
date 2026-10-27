@@ -144,6 +144,16 @@ def test_ui_handles_every_event_shape(tmp_path):
 
 
 @needs_display
+def test_reimport_cookies_button_reports_each_outcome(tmp_path):
+    out = tmp_path / "cookies.log"
+    r = _run(os.path.join(ROOT, "tests", "ui", "import_cookies.tcl"), str(out),
+             ui_conf=tmp_path / "ui.conf")
+    log = out.read_text() if out.exists() else ""
+    assert r.returncode == 0, f"{r.stderr}\n{log}"
+    assert "FAILURES: 0" in log, log
+
+
+@needs_display
 def test_selecting_a_series_shows_the_first_unfinished_chapter(tmp_path):
     """Selecting a series must land on the edge of the work, not on chapter 1.
 

@@ -48,6 +48,11 @@ class PoliteClient:
             try:
                 resp = self._c.get(url, headers=headers)
                 PoliteClient._last_request[host] = time.monotonic()
+                if b'id="anubis_challenge"' in resp.content[:20000]:
+                    raise SystemExit(
+                        f"{self.label}: {host} is asking for a bot-check (Anubis "
+                        "proof of work). Pass it in your browser, then run "
+                        "`webnovel-audio login --from-browser chrome`")
                 if resp.status_code in (429, 500, 502, 503, 504):
                     time.sleep(self.delay * (attempt + 2))
                     continue

@@ -28,11 +28,27 @@ class CookieSession:
         except (OSError, json.JSONDecodeError):
             return {}
 
-    def save(self, cookies: dict) -> None:
+    def user_agent(self) -> str | None:
+        """The User-Agent the cookies were earned under, if one was stored.
+        Bot-check clearance cookies are only honoured from the same one."""
+        try:
+            with open(self.path, encoding="utf-8") as fh:
+                return json.load(fh).get("user_agent") or None
+        except (OSError, json.JSONDecodeError):
+            return None
+
+    def save(self, cookies: dict, user_agent: str | None = None) -> None:
         os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        doc = {"cookies": cookies}
+        if user_agent:
+            doc["user_agent"] = user_agent
         with open(self.path, "w", encoding="utf-8") as fh:
-            json.dump({"cookies": cookies}, fh)
+            json.dump(doc, fh)
         os.chmod(self.path, 0o600)
+
+    def merge(self, cookies: dict, user_agent: str | None = None) -> None:
+        """Add to what is stored (a login cookie survives a clearance refresh)."""
+        self.save({**self.load(), **cookies}, user_agent or self.user_agent())
 
     def clear(self) -> None:
         try:

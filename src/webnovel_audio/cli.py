@@ -2209,6 +2209,34 @@ def _cmd_login(args) -> int:
             print("no session stored; chapter fetches are anonymous.")
         return 0 if cookies else 1
 
+    ua = None
+    if getattr(args, "from_browser", None):
+        from .providers import browser_cookies as bc
+        try:
+            cookies = bc.read_cookies(
+                args.from_browser, sess.domain, profile=args.profile,
+                only=None if args.all_cookies else bc.CLEARANCE)
+        except bc.BrowserCookieError as exc:
+            return _fail("browser_cookies", str(exc), json_mode=want_json)
+        if not cookies:
+            return _fail("no_cookies",
+                         f"{args.from_browser} has no unexpired "
+                         f"{'cookies' if args.all_cookies else 'bot-check cookies'}"
+                         f" for {sess.domain}",
+                         hint=f"open {sess.domain} in {args.from_browser}, pass "
+                              "the check, then retry (--profile if not Default)",
+                         json_mode=want_json)
+        ua = bc.user_agent(args.from_browser)
+        sess.merge(cookies, ua)
+        if want_json:
+            _jprint({"ok": True, "stored": True, "cookies": sorted(cookies),
+                     "user_agent": ua, "file": sess.path})
+        else:
+            print(f"merged {len(cookies)} cookie(s) from {args.from_browser} "
+                  f"into {sess.path}: {', '.join(sorted(cookies))}")
+            if not ua:
+                print("  (could not read the browser's version; User-Agent unchanged)")
+        return 0
     if args.cookies_file:
         cookies = sess.parse_cookies_txt(args.cookies_file)
     elif args.cookie:
@@ -2869,10 +2897,21 @@ def _build_parser():
                       help="Netscape cookies.txt exported from your browser")
     mode.add_argument("--cookie-header", dest="cookie", metavar="STR",
                       help="the raw Cookie: header value (devtools -> copy)")
+    mode.add_argument("--from-browser", choices=("chrome", "chromium"),
+                      metavar="BROWSER",
+                      help="copy the site's bot-check cookies (Anubis, Cloudflare) "
+                           "out of chrome or chromium, running or not; adds to "
+                           "any stored login rather than replacing it")
     mode.add_argument("--status", action="store_true",
                       help="report whether a session is stored (does not verify it)")
     mode.add_argument("--logout", action="store_true",
                       help="delete the stored session")
+    lg.add_argument("--profile", default="Default", metavar="NAME",
+                    help="with --from-browser: the browser profile directory "
+                         "(default: Default)")
+    lg.add_argument("--all-cookies", action="store_true",
+                    help="with --from-browser: take every cookie for the site, "
+                         "including its logged-in session, not just the bot check")
     _cfg_json(lg)
     lg.set_defaults(func=_cmd_login)
 
