@@ -16,6 +16,21 @@ CHAPTER_STUB = """<html><head><meta property="og:title" content="4. Deck Four - 
 </div></body></html>"""
 
 
+def _bring(cfg, slug="salvage-run"):
+    """Stand in for the browser: file a chapter page for every chapter that is wanted.
+    Royal Road is read through a browser, so a sync only renders what has been brought."""
+    db = DB(cfg.library.state_db)
+    s = db.get_series(slug)
+    for c in db.chapters(s["id"]):
+        if c["status"] != "new":
+            continue
+        page = CHAPTER_STUB.replace(
+            "<head>", '<head><meta property="og:url" content="https://www.royalroad.com/'
+            f'fiction/{s["source_id"]}/{slug}/chapter/{c["source_id"]}/x">', 1)
+        sync.ingest_raw(cfg, db, page)
+    db.close()
+
+
 def _chapters(n=5):
     return [
         ChapterRef(source_id=str(100 + i), order=i, title=f"Chapter {i + 1}",
@@ -116,7 +131,16 @@ def test_explicit_range_is_imperative(tmp_path, monkeypatch):
     assert [c["status"] for c in db.range(s["id"], 1, 3)] == ["skipped"] * 3
     db.close()
 
-    # declarative: skipped chapters are left alone
+    # declarative: skipped chapters are left alone. Royal Road is read through a
+    # browser, so a sync renders what the browser has brought (here: 4-6)
+    db = DB(cfg.library.state_db)
+    s = db.get_series("salvage-run")
+    for c in db.range(s["id"], 4, 6):
+        page = ('<html><head><meta property="og:url" content="https://www.royalroad.com/'
+                f'fiction/424242/salvage-run/chapter/{c["source_id"]}/x"></head><body>'
+                '<div class="chapter-content"><p>The corridor ended.</p></div></body></html>')
+        assert sync.ingest_raw(cfg, db, page)["result"] == "ingested"
+    db.close()
     sync.run_stage(cfg, "rendered", "salvage-run", backend="null", log=lambda *_: None)
     db = DB(cfg.library.state_db)
     s = db.get_series("salvage-run")
@@ -228,6 +252,7 @@ def test_add_and_sync_offline(tmp_path, monkeypatch):
     db.close()
 
     events = []
+    _bring(cfg)
     res = sync.run_sync(cfg, limit=1, backend="null", log=lambda *_: None,
                         emit=events.append)
     assert res.rendered == 1 and res.errors == 0
@@ -238,7 +263,7 @@ def test_add_and_sync_offline(tmp_path, monkeypatch):
     assert ch["number"] == 5 and "path" in ch and ch["audio_seconds"] >= 0
     # what the UI needs to edit its lists in place: before/after status, the
     # transcript, and the series' real counts once its chapter list is refreshed
-    assert ch["was"] == "new" and ch["status"] == "rendered"
+    assert ch["was"] == "fetched" and ch["status"] == "rendered"      # the browser had fetched it
     assert ch["text_path"].endswith(".md") and os.path.exists(ch["text_path"])
     ser = next(e for e in events if e["event"] == "series")
     assert ser["counts"] == {"rendered": 0, "errors": 0, "pending": 2}
@@ -857,6 +882,7 @@ def test_masters_overlap_and_every_chapter_still_completes(tmp_path, monkeypatch
 
     monkeypatch.setattr(pipeline, "master", slow_master)
     events = []
+    _bring(cfg)
     res = sync.run_sync(cfg, backend="null", log=lambda *_: None, emit=events.append, refresh_first=False)
     assert res.rendered == pending and res.errors == 0
     assert peak[0] >= 2                               # mastering really did overlap
@@ -887,6 +913,7 @@ def test_one_failed_master_marks_only_that_chapter(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pipeline, "master", flaky)
     events = []
+    _bring(cfg)
     res = sync.run_sync(cfg, backend="null", log=lambda *_: None, emit=events.append, refresh_first=False)
     assert res.errors == 1 and res.rendered == pending - 1
     bad = [e for e in _chapter_events(events) if e["result"] == "error"]
@@ -901,6 +928,7 @@ def test_one_failed_master_marks_only_that_chapter(tmp_path, monkeypatch):
 @pytest.mark.skipif(not os.path.exists(FICTION_FIXTURE), reason="needs the fixture")
 def test_re_rendering_unchanged_chapters_does_nothing_unless_forced(tmp_path, monkeypatch):
     cfg, pending = _offline_library(tmp_path, monkeypatch)
+    _bring(cfg)
     sync.run_sync(cfg, backend="null", log=lambda *_: None, refresh_first=False)
     db = DB(cfg.library.state_db)
     s = db.get_series("424242")
@@ -1064,3 +1092,37 @@ def test_series_author_falls_back_to_json_ld():
             '<body></body></html>')
     fi = parse_fiction(html, url="https://www.royalroad.com/fiction/5/x")
     assert (fi.author, fi.author_url) == ("Kienti", "https://www.royalroad.com/profile/1")
+
+
+def test_royal_road_is_read_through_the_browser_not_fetched(tmp_path, monkeypatch):
+    """Nothing here makes a request to Royal Road: a series is added from a page the
+    browser sent, refresh leaves it alone, and sync renders only what was brought."""
+    from webnovel_audio import providers
+
+    if not os.path.exists(FICTION_FIXTURE):
+        return
+    page = open(FICTION_FIXTURE, encoding="utf-8").read()
+    monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
+    cfg = Config()
+    cfg.library.state_db = str(tmp_path / "state.db")
+    cfg.library.library_dir = str(tmp_path / "lib")
+    url = "https://www.royalroad.com/fiction/424242/salvage-run"
+
+    with pytest.raises(providers.BrowserOnly, match="grab"):
+        sync.add_series(cfg, url, log=lambda *_: None)             # no page: it will not fetch
+    info = sync.add_series(cfg, url, start="start", log=lambda *_: None, page=page)
+    assert info["chapters"] == 6 and info["pending"] == 6
+    prev = sync.preview_series(cfg, url, page=page)
+    assert prev["tracked"] and prev["chapters"] == 6
+
+    lines = []
+    assert sync.refresh(cfg, "salvage-run", log=lines.append) == []
+    assert "read through the browser" in lines[0] and "grab --scope salvage-run" in lines[0]
+
+    lines = []
+    res = sync.run_sync(cfg, backend="null", log=lines.append)    # refresh_first, nothing brought
+    assert res.rendered == 0 and res.errors == 0
+    assert any("6 chapter(s) not fetched yet" in ln and "grab" in ln for ln in lines)
+    db = DB(cfg.library.state_db)
+    assert {c["status"] for c in db.chapters(db.get_series("salvage-run")["id"])} == {"new"}
+    db.close()

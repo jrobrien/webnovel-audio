@@ -50,6 +50,7 @@ proc report {} {
         puts $::LOG "tb_scope $::SYNC_SCOPE"
         puts $::LOG "tb_all_checkbox [winfo exists .sync.all]"
         puts $::LOG "tb_label [.sync.l cget -text]"
+        set ::SYNC_BROWSER 0            ;# the plain path; the browser path has its own test
         .sync.b.ok invoke
         puts $::LOG "tb_run [lindex $::RUNCMDS end]"
 

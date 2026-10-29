@@ -78,8 +78,8 @@ M4B export stays available for single-file arcs.
 
 ## RoyalRoad sync (lower priority)
 
-No official API. Log in via browser once, export the session cookie, use it with
-`httpx`. Parse `div.chapter-content`, drop `.author-note` and hidden nodes. Be
+No official API, and plain HTTP is blocked by bot checks, so pages come from the
+user's own browser (a page-grabber extension talking to `grab`, see SETUP.md). Parse `div.chapter-content`, drop `.author-note` and hidden nodes. Be
 polite (1 req / 2–3 s, cache, back off on 429). SQLite tracks
 series/chapter/status; a `sync` command renders new chapters. (Scheduling was
 dropped — with the CLI and data model settled, wiring a timer later is trivial.) Personal use only — respect authors with official audio.
@@ -123,15 +123,15 @@ dropped — with the CLI and data model settled, wiring a timer later is trivial
   handle CamelCase/digit handles, `@`-mentions, unicode emoji, ALL-CAPS.
 
 - **Phase 4 — sync** *(done)*: `royalroad.py` (`RRClient` with a politeness
-  delay + retry + optional stored cookie; `parse_fiction` reads the authoritative
+  delay + retry; `parse_fiction` reads the authoritative
   `window.chapters` JSON via a string-aware bracket scanner, falls back to the
   `#chapters` table). `db.py` is a small SQLite layer (`series`, `chapters` with
   per-chapter `status`). `sync.py`: `add_series` (with a
   `--from latest|start|N|<chapter-url>` skip marker), `refresh`, `run_sync`
   (oldest first, caches raw HTML under `library/<slug>/.raw/`, calls
   `pipeline.render`, keeps going past errors). CLI: `series
-  add|refresh|list`, `sync`, `login` (cookie header or Netscape cookies.txt →
-  `~/.config/webnovel-audio/session.json`).
+  add|refresh|list`, `sync`. (The cookie `login` this phase had is gone: Royal Road is read through a
+  browser, see "Auth".)
 - **Readable text output** *(done)*: `textout.render_markdown(doc)` turns the
   ingest `Document` into a Markdown file written next to every `.opus`
   (`NNN-<slug>.md`), and `render` does the same for one-off HTML/URL input. It's
@@ -371,16 +371,13 @@ with no URLs from `series`, cache the whole file under `ctx.raw_dir`, and serve
 
 ## Auth
 
-A stored session cookie and nothing else. `login` parses cookies out of a
-browser export and saves them 0600 (`providers/session.py`, one file per
-provider that has logins); the provider attaches them to content fetches so a
-subscriber-only chapter can be read. It is deliberately **not verified** —
-0.2.0 checked by GETting `/my/follows`, which meant depending on an account page
-whose markup drifts, and the answer was stale by the next request anyway. A bad
-cookie surfaces where it's actionable instead: `Provider.check_fetchable`
-raises `ChapterLocked` for a chapter whose `unlocked` flag is false, naming
-`login` and saying whether a session exists at all. Nothing reads account state — the follows reader and
-reading-position sync were removed in 0.2.1.
+None stored. Royal Road is `browser_only` (see PROVIDERS.md): its pages arrive from the
+user's own logged-in browser through the page-grabber extension, so a locked chapter is
+simply read there, and `Provider.check_fetchable` raises `ChapterLocked` for a chapter
+whose `unlocked` flag is false, saying so. An earlier design stored a session cookie
+(`login`, `providers/session.py`) and attached it to HTTP fetches; both the cookie and
+that route are gone. Nothing reads account state, apart from the series page's own record
+of where the site has the reader up to, which is reported and not acted on.
 
 ## Source metadata
 

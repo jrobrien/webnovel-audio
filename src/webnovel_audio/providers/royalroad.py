@@ -8,9 +8,10 @@ Royal Road injects anti-piracy decoy text into chapter bodies: a `<style>` rule
 like `.<random>{display:none}` plus a paragraph with that class. The shared
 `html.strip_hidden` removes it.
 
-Auth is a stored session cookie and nothing more (see `session.py`); a
-subscriber-only chapter is fetched with it, and a stale cookie shows up as a
-locked chapter failing to fetch.
+Royal Road is `browser_only`: it answers plain HTTP with a bot check (Anubis,
+Cloudflare), so no page is fetched here. A browser extension sends the pages
+(see `grab.py`, `sync.ingest_raw`), and a logged-in browser covers locked
+chapters, so there is no stored login either.
 """
 from __future__ import annotations
 
@@ -22,13 +23,11 @@ from bs4 import BeautifulSoup
 from ..document import Document
 from ..safepath import safe_slug
 from . import html as H
-from .base import ChapterLocked, ChapterRef, FetchContext, Provider, SeriesInfo, VolumeRef
-from .http import PoliteClient, fetch_asset
-from .session import CookieSession
+from .base import BrowserOnly, ChapterLocked, ChapterRef, FetchContext, Provider, SeriesInfo, VolumeRef
+from .http import fetch_asset
 
 BASE = "https://www.royalroad.com"
 ASSET_HOSTS = ("royalroad.com", "royalroadcdn.com")
-DEFAULT_REQUEST_DELAY = 2.5
 
 
 # --- parsing: fiction page ---------------------------------------------------
@@ -305,7 +304,7 @@ class RoyalRoadProvider(Provider):
     name = "royalroad"
     guid_prefix = "rr"          # published feeds use rr-<id>; never change it
     can_series = True
-    session = CookieSession("session.json", "royalroad.com")
+    browser_only = True         # Anubis + Cloudflare: pages come from a browser
 
     def handles(self, source: str) -> bool:
         return source.startswith(("http://", "https://")) and "royalroad.com" in source
@@ -327,14 +326,10 @@ class RoyalRoadProvider(Provider):
         return m.group(1) if m else None
 
     def _get(self, url: str, ctx: FetchContext) -> str:
-        """The only network call. Tests replace this."""
-        client = PoliteClient(
-            delay=float(ctx.settings.get("request_delay", DEFAULT_REQUEST_DELAY)),
-            cookies=self.session.load(), label=self.name)
-        try:
-            return client.text(url if url.startswith("http") else BASE + url)
-        finally:
-            client.close()
+        """The only network call, and it is not made: Royal Road answers plain HTTP
+        with a bot check. Pages arrive from a browser (`grab`, `ingest`); tests
+        replace this to feed fixtures."""
+        raise BrowserOnly("Royal Road")
 
     def series(self, source: str, ctx: FetchContext) -> SeriesInfo:
         return parse_fiction(self._get(source, ctx), url=source)
@@ -345,9 +340,8 @@ class RoyalRoadProvider(Provider):
     def check_fetchable(self, ref: ChapterRef, ctx: FetchContext) -> None:
         if ref.unlocked:
             return
-        hint = ("run `webnovel-audio login` first" if not self.session.load()
-                else "stored session may be stale — re-run `webnovel-audio login`")
-        raise ChapterLocked(f"chapter is marked locked; {hint}")
+        raise ChapterLocked("chapter is marked locked; read it in the browser while "
+                            "logged in to the site, then it is saved like any other")
 
     def fetch(self, ref: ChapterRef, ctx: FetchContext) -> str:
         return self._get(ref.url, ctx)

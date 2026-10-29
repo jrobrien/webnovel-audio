@@ -285,7 +285,7 @@ first.
 **Delivery + misc:** `serve [--host H] [--port N]`, `feed [--scope S]`,
 `book --scope S [--range R] [-o FILE]`, `retag [--scope S]` (refresh Opus tags
 with no re-encode), `schema` (the command surface as JSON), `models fetch|path`,
-`login --provider P`, `ui`.
+`grab`, `ingest`, `ui`.
 
 **Running the server as a service** (a systemd *user* unit, `webnovel-audio.service`):
 

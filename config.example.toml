@@ -122,8 +122,7 @@ library_dir   = "library"                              # rendered chapters land 
 state_db      = "~/.local/state/webnovel-audio/state.db"
 
 # Content providers: one table per site, named after the provider.
-[royalroad]
-request_delay = 2.5                                     # seconds between royalroad.com requests
+# royalroad has no settings: its pages come through the browser (`grab`).
 
 [scribblehub]
 request_delay = 2.5                                     # seconds between scribblehub.com requests

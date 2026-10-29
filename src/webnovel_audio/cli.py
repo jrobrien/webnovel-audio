@@ -1802,9 +1802,17 @@ def _cmd_series(args) -> int:
     want_json = getattr(args, "json", False)
 
     if args.action == "add":
+        from . import providers
+        extra = {}                    # the page, for a site that is read through a browser
+        prov = providers.resolve_series(args.url)
+        if prov is not None and prov.browser_only:
+            page = _browser_page(args.url, want_json, getattr(args, "no_open", False))
+            if isinstance(page, int):
+                return page
+            extra["page"] = page
         try:
             if args.dry_run:
-                info = sync.preview_series(cfg, args.url)
+                info = sync.preview_series(cfg, args.url, **extra)
                 if want_json:
                     _jprint({"ok": True, "dry_run": True, **info})
                 else:
@@ -1815,7 +1823,8 @@ def _cmd_series(args) -> int:
                         print(f"  but: {info['slug_problem']}; choose one with --slug")
                 return 0
             info = sync.add_series(cfg, args.url, start=args.frm, slug=args.slug,
-                                   log=(lambda *_: None) if want_json else print)
+                                   log=(lambda *_: None) if want_json else print,
+                                   **extra)
         except sync.SlugError as exc:
             return _fail(exc.code, exc.message, json_mode=want_json,
                          hint="pick another with --slug")
@@ -1997,8 +2006,10 @@ def _cmd_series(args) -> int:
     db = DB(cfg.library.state_db)
     rows = db.summary()
     db.close()
+    from . import providers
     for r in rows:
         r["bundle"] = bundle.status(cfg, r)
+        r["browser_only"] = providers.get(r["provider"]).browser_only
     if want_json:
         _jprint({"series": rows})
         return 0
@@ -2154,81 +2165,6 @@ def _cmd_config(args) -> int:
     return 0
 
 
-def _login_provider(name: str | None):
-    """The provider `login` acts on: the named one, else the only one with a
-    session."""
-    from . import providers
-
-    able = providers.with_session()
-    if name:
-        prov = providers.get(name)
-        if prov.session is None:
-            raise SystemExit(f"{name} has no login "
-                             f"(ones that do: {', '.join(p.name for p in able)})")
-        return prov
-    if len(able) != 1:
-        raise SystemExit("say which site: --provider "
-                         + " | ".join(p.name for p in able))
-    return able[0]
-
-
-def _cmd_login(args) -> int:
-    """Store (or clear) a site's session cookie.
-
-    Deliberately does not verify: that would need an account page whose markup
-    drifts, and a bad cookie is reported honestly where it matters — `fetch`
-    says so when a chapter is locked.
-    """
-    from .providers.session import parse_cookie_header
-
-    want_json = getattr(args, "json", False)
-    sess = _login_provider(getattr(args, "provider", None)).session
-
-    if args.logout:
-        sess.clear()
-        if want_json:
-            _jprint({"ok": True, "stored": False, "cleared": True})
-        else:
-            print("session cleared.")
-        return 0
-    if args.status:
-        cookies = sess.load()
-        if want_json:
-            _jprint({"ok": bool(cookies), "stored": bool(cookies),
-                     "cookies": len(cookies or []),
-                     "file": sess.path if cookies else None,
-                     "verified": False})
-            return 0 if cookies else 1
-        if cookies:
-            import time
-            when = time.strftime("%Y-%m-%d %H:%M",
-                                 time.localtime(os.path.getmtime(sess.path)))
-            print(f"{len(cookies)} cookie(s) stored {when} -> {sess.path}")
-            print("  (not verified — a stale cookie shows up as a failed fetch)")
-        else:
-            print("no session stored; chapter fetches are anonymous.")
-        return 0 if cookies else 1
-
-    if args.cookies_file:
-        cookies = sess.parse_cookies_txt(args.cookies_file)
-    elif args.cookie:
-        cookies = parse_cookie_header(args.cookie)
-    else:
-        print(f"paste the Cookie header for {sess.domain} (from your browser devtools):")
-        cookies = parse_cookie_header(input().strip())
-    if not cookies:
-        return _fail("no_cookies", "no cookies parsed from that input",
-                     hint="export cookies.txt, or copy the Cookie: header value",
-                     json_mode=want_json)
-    sess.save(cookies)
-    if want_json:
-        _jprint({"ok": True, "stored": True, "cookies": len(cookies),
-                 "file": sess.path})
-    else:
-        print(f"saved {len(cookies)} cookie(s) for {sess.domain} -> {sess.path}")
-    return 0
-
-
 def _cmd_ingest(args) -> int:
     """File chapter pages saved from a browser into the raw cache (the fetch
     stage, for a site that will not talk to us). `sync` takes it from there."""
@@ -2254,21 +2190,21 @@ def _cmd_ingest(args) -> int:
 
 
 def _cmd_grab(args) -> int:
-    """Fetch, ingest and render one series chapter by chapter, with the browser
-    (and its extension) loading the pages. Holds the sync lock throughout."""
+    """Fetch, ingest and render through the browser (and its extension), one chapter
+    at a time: `sync` for a site that will not talk to us. Scope works like
+    `sync`'s. Holds the sync lock throughout."""
     import json as _json
-    import subprocess
+    import signal
     import sys
 
     from . import sync
-    from .grab import GrabLoop
+    from .grab import GrabLoop, open_in_browser
 
     cfg = Config.load(args.config)
     want_json = getattr(args, "json", False)
     checked = _series_or_all(cfg, args.scope, want_json)
-    if checked is None or isinstance(checked, int):
-        return checked if isinstance(checked, int) else _fail(
-            "scope", "name one series to fetch", json_mode=want_json)
+    if isinstance(checked, int):
+        return checked
     try:
         sys.stdout.reconfigure(line_buffering=True)
     except (AttributeError, ValueError):
@@ -2284,14 +2220,15 @@ def _cmd_grab(args) -> int:
         if args.no_open:
             print(f"open this in the browser with the extension:\n  {url}", flush=True)
         else:
-            subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL,
-                             stderr=subprocess.DEVNULL, start_new_session=True)
+            open_in_browser(url)
 
-    import signal
     try:
         with sync.sync_lock(cfg):
-            loop = GrabLoop(cfg, args.scope, args.count, ahead=args.ahead,
-                            idle_timeout=args.timeout, emit=emit)
+            try:
+                loop = GrabLoop(cfg, checked, args.limit, ahead=args.ahead,
+                                idle_timeout=args.timeout, emit=emit)
+            except SystemExit as exc:
+                return _fail("grab", str(exc), json_mode=want_json)
             signal.signal(signal.SIGTERM, lambda *_: loop.finish("stopped"))
             return loop.run(on_ready=open_it)
     except sync.SyncLocked as exc:
@@ -2300,6 +2237,25 @@ def _cmd_grab(args) -> int:
         else:
             print(f"! {exc}")
         return 2
+
+
+def _browser_page(url: str, want_json: bool, no_open: bool = False):
+    """A series page, read by the browser extension: the way a site that is not
+    fetched directly gets added. Returns the page, or an exit code."""
+    from .grab import PageCatcher, open_in_browser
+
+    def open_it(u):
+        if no_open:
+            print(f"open this in the browser with the extension:\n  {u}", flush=True)
+        else:
+            open_in_browser(u)
+
+    page = PageCatcher(idle_timeout=90.0).run(url, on_ready=open_it)
+    if page is None:
+        return _fail("browser_silent", "the browser did not send the page",
+                     hint="is the page-grabber extension loaded, and the browser "
+                          "the default one? (SETUP.md)", json_mode=want_json)
+    return page
 
 
 def _cmd_serve(args) -> int:
@@ -2558,6 +2514,9 @@ def _build_parser():
     a.add_argument("-n", "--dry-run", action="store_true",
                    help="read the series page and report the title, chapter count and "
                         "the slug it would get, but track nothing")
+    a.add_argument("--no-open", action="store_true",
+                   help="for a site read through the browser: print the address "
+                        "instead of opening it")
     _cfg_json(a)
     rn = se_sub.add_parser(
         "rename", help="change a series' slug (the old one keeps working as an alias)")
@@ -2928,27 +2887,6 @@ def _build_parser():
                        help="where the ONNX model files live (default: from config)")
     md.set_defaults(func=_cmd_models, action="fetch", cache_dir=None)
 
-    lg = sub.add_parser("login", help="store a site's session cookie")
-    lg.add_argument("--provider", metavar="NAME", default=None,
-                    help="which site (default: the only one that has logins)")
-    # Four flags, one of which is really a choice of mode: the handler checked
-    # --logout first and unconditionally, so `login --status --logout` cleared the
-    # session and never reported anything. Whichever lost was silently discarded,
-    # and this is the one command in the surface where the discarded argument was
-    # the read-only one. Declared as a group so the combination cannot parse --
-    # and so `schema` shows callers that it cannot.
-    mode = lg.add_mutually_exclusive_group()
-    mode.add_argument("--cookies-file", metavar="PATH",
-                      help="Netscape cookies.txt exported from your browser")
-    mode.add_argument("--cookie-header", dest="cookie", metavar="STR",
-                      help="the raw Cookie: header value (devtools -> copy)")
-    mode.add_argument("--status", action="store_true",
-                      help="report whether a session is stored (does not verify it)")
-    mode.add_argument("--logout", action="store_true",
-                      help="delete the stored session")
-    _cfg_json(lg)
-    lg.set_defaults(func=_cmd_login)
-
     ig = sub.add_parser("ingest", help="file chapter pages saved from a browser")
     ig.add_argument("--dir", default="~/Downloads/webnovel-audio", metavar="DIR",
                     help="where the pages were saved (default: %(default)s); "
@@ -2958,10 +2896,11 @@ def _build_parser():
     _cfg_json(ig)
     ig.set_defaults(func=_cmd_ingest)
 
-    gr = sub.add_parser("grab", help="fetch, ingest and render a series through the browser")
-    _series_pos(gr, what="fetch")
-    gr.add_argument("--count", type=int, default=10, metavar="N",
-                    help="chapters to fetch this run (default: %(default)s)")
+    gr = sub.add_parser("grab", help="fetch, ingest and render through the browser "
+                                      "(sync, for a site read in a browser)")
+    _series_pos(gr, required=False, what="fetch")
+    gr.add_argument("--limit", type=int, metavar="N",
+                    help="max chapters per series this run (default: everything outstanding)")
     gr.add_argument("--ahead", type=int, default=0, metavar="K",
                     help="chapters fetched but not yet rendered allowed when the next "
                          "is released (default: %(default)s: wait for each render)")

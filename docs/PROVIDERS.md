@@ -20,7 +20,6 @@ providers/
   html.py         site-agnostic HTML -> Blocks toolkit (hidden-text stripping, italics,
                   chat/system lines, container guess); knows no site
   http.py         PoliteClient (per-host rate limit, retries), fetch_asset(url, hosts)
-  session.py      CookieSession: stored cookies for a provider with logins
   royalroad.py    Royal Road
   scribblehub.py  ScribbleHub
   local_html.py   a saved page on disk (hands it to the site that recognises it)
@@ -47,11 +46,16 @@ class Provider:
     guid_prefix: str          # feed GUIDs are f"{guid_prefix}-{source_id}"; never change it
     raw_ext = ".html"         # extension of the cached per-chapter artifact
     can_series = False
-    session = None            # a CookieSession if the site has logged-in content
+    browser_only = False      # True: pages come from a browser (grab/ingest); series()/fetch() raise BrowserOnly
 
     def handles(self, source) -> bool
     def recognizes(self, raw) -> bool                    # "this saved page came from us"
     def series(self, source, ctx) -> SeriesInfo          # if can_series
+    # for a browser_only source, pages saved by a browser are filed by these:
+    def identify(self, raw) -> (series_id, chapter_id) | None   # a saved chapter page
+    def identify_series(self, raw) -> series_id | None          # a saved series page
+    def parse_series_page(self, raw, url) -> SeriesInfo         # series(), from a saved page
+    def reading_position(self, raw) -> chapter_id | None        # where the site has the reader
     def check_fetchable(self, ref, ctx) -> None          # raise ChapterLocked with a hint
     def fetch(self, ref, ctx) -> str                     # raw artifact: network or local slice
     def parse(self, raw, ref, ctx) -> Document           # pure and offline
@@ -87,8 +91,9 @@ Core never looks inside. `None` leaves the stored state alone.
 ## Shipped providers
 
 - **`royalroad`** — `window.chapters` JSON on the fiction page (visible table as
-  fallback), volumes with their own covers, decoy-text stripping, optional
-  login cookie for locked chapters. GUID prefix `rr`.
+  fallback), volumes with their own covers, decoy-text stripping. `browser_only`:
+  Anubis + Cloudflare block plain HTTP, so pages are saved by a browser extension and filed
+  with `ingest` / `grab` (`identify`, `identify_series`, `parse_series_page`). GUID prefix `rr`.
 - **`scribblehub`** — the table of contents is paged (`?toc=N`, newest first,
   `Referer` required); `order` attribute is the reading order and the URL's
   chapter id is not. Refresh walks from the newest page and stops at the first

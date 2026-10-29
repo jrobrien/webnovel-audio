@@ -493,15 +493,17 @@ def check_slug(cfg: Config, db: DB, slug: str, *, mine: int | None = None) -> No
         raise SlugError("slug_taken", f"{d} already exists in the library")
 
 
-def preview_series(cfg: Config, url: str) -> dict:
+def preview_series(cfg: Config, url: str, page: str | None = None) -> dict:
     """What `series add` would do, without doing it: read the series page and
-    report the title, chapter count and the slug it would be tracked under."""
+    report the title, chapter count and the slug it would be tracked under.
+    `page` is the series page already read (by a browser), for a source that is
+    not fetched directly."""
     from .safepath import series_slug
     prov = _series_provider(url)
     db = _db(cfg)
     try:
         ctx = providers.context(cfg, prov)
-        fi = prov.series(url, ctx)
+        fi = prov.parse_series_page(page, url) if page else prov.series(url, ctx)
         fi.provider = prov.name
         if not fi.source_id or not fi.chapters:
             raise SystemExit(f"could not read a series + chapter list from {url}")
@@ -521,16 +523,18 @@ def preview_series(cfg: Config, url: str) -> dict:
 
 
 def add_series(cfg: Config, url: str, start: str = "latest", log=print,
-               slug: str | None = None) -> dict:
+               slug: str | None = None, page: str | None = None) -> dict:
     """Register a series: metadata + chapter list only. No chapter downloads —
     `fetch`/`parse`/`check`/`render` are separate, explicit stages.
 
-    `slug` overrides the handle derived from the title (new series only)."""
+    `slug` overrides the handle derived from the title (new series only). `page`
+    is the series page already read (by a browser), for a source that is not
+    fetched directly."""
     prov = _series_provider(url)
     db = _db(cfg)
     try:
         ctx = providers.context(cfg, prov)
-        fi = prov.series(url, ctx)
+        fi = prov.parse_series_page(page, url) if page else prov.series(url, ctx)
         fi.provider = prov.name
         if not fi.source_id or not fi.chapters:
             raise SystemExit(f"could not read a series + chapter list from {url}")
@@ -655,6 +659,10 @@ def refresh(cfg: Config, key: str | None = None, log=print) -> list[dict]:
     try:
         targets = [db.get_series(key)] if key else db.list_series()
         for s in filter(None, targets):
+            if providers.get(s["provider"]).browser_only:
+                log(f"{s['title']}: read through the browser, not refreshed here "
+                    f"(`webnovel-audio grab --scope {s['slug']}`)")
+                continue
             new, fi = _refresh_one(cfg, db, s)
             log(f"{s['title']}: {len(fi.chapters)} chapters (+{new} new)")
             bundle.sync_bundle(cfg, db, db.series_by_id(s["id"]))
@@ -1138,12 +1146,20 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
             slug = _dir_slug(s)
             prov = providers.get(s["provider"])
             bdir = bundle.bundle_dir(cfg, s)
-            if refresh_first:
+            if refresh_first and not prov.browser_only:
                 _refresh_one(cfg, db, s)
             ctx = _ctx(cfg, db, prov, db.series_by_id(s["id"]), bdir)
             todo = (db.select(s["id"], spans) if explicit
-                    else db.outstanding(s["id"], stage, limit))
-            if explicit and limit:
+                    else db.outstanding(s["id"], stage))
+            if prov.browser_only and not explicit:
+                # nothing here can fetch a page: do what the browser has brought
+                held = [c for c in todo if c["status"] in ("fetched", "parsed")
+                        or (c["raw_path"] and os.path.exists(c["raw_path"]))]
+                if len(held) < len(todo):
+                    log(f"{s['title']}: {len(todo) - len(held)} chapter(s) not fetched "
+                        f"yet: `webnovel-audio grab --scope {slug}` brings them")
+                todo = held
+            if limit:
                 todo = todo[:limit]
             # the series' real counts, taken after any chapter-list refresh, so a
             # UI showing older numbers can resync before it starts applying deltas

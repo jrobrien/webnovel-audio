@@ -77,6 +77,15 @@ class FetchContext:
     known: list[ChapterRef] = field(default_factory=list)
 
 
+class BrowserOnly(Exception):
+    """This source is read through a browser, not over HTTP (see Provider.browser_only)."""
+
+    def __init__(self, what: str = "this source"):
+        super().__init__(f"{what} is read through the browser, not fetched directly: "
+                         "run `webnovel-audio grab` (SETUP.md, 'Fetch, ingest and render "
+                         "in one loop')")
+
+
 class ChapterLocked(Exception):
     """The source says this chapter needs an account we don't have."""
 
@@ -88,8 +97,10 @@ class Provider:
     guid_prefix = ""
     raw_ext = ".html"          # extension of the cached per-chapter artifact
     can_series = False
-    #: a `session.CookieSession`, if this source has logged-in content
-    session = None
+    #: True for a site that will not talk to us over HTTP (a bot check): its pages
+    #: reach us from a browser, via `grab` / `ingest`, and `series()` / `fetch()`
+    #: raise `BrowserOnly` instead of trying
+    browser_only = False
 
     # -- routing ---------------------------------------------------------
     def handles(self, source: str) -> bool:  # pragma: no cover - abstract

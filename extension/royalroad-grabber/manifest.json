@@ -1,14 +1,41 @@
 {
   "manifest_version": 3,
   "name": "webnovel-audio page grabber",
-  "version": "0.3.1",
-  "description": "Read the next N Royal Road chapters in this tab, and save series pages, for `webnovel-audio ingest`.",
-  "permissions": ["downloads", "storage"],
-  "host_permissions": ["http://127.0.0.1/*"],
-  "background": { "service_worker": "background.js" },
-  "content_scripts": [{
-    "matches": ["https://www.royalroad.com/fiction/*"],
-    "js": ["content.js"],
-    "run_at": "document_idle"
-  }]
+  "version": "0.4.0",
+  "description": "Read Royal Road chapters in this tab for `webnovel-audio` (grab, save pages), and close the tab when a run finishes.",
+  "permissions": [
+    "downloads",
+    "storage"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.royalroad.com/fiction/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "http://127.0.0.1/extension",
+        "http://localhost/extension"
+      ],
+      "js": [
+        "announce.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  }
 }

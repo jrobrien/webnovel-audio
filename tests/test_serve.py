@@ -199,3 +199,20 @@ def test_access_log_is_off_when_unset_and_capped_when_on(server, tmp_path):
     (handler,) = lg.handlers
     assert handler.maxBytes == 1_000_000 and handler.backupCount == 3
     assert _access_logger("") is None
+
+
+def test_serve_hosts_the_extension_page_and_zip(server):
+    import io
+    import zipfile
+
+    from webnovel_audio import grab
+
+    port = server()
+    resp, body = get(port, "/extension")
+    assert resp.status == 200 and "text/html" in resp.getheader("Content-Type")
+    assert grab.extension_version().encode() in body
+    resp, body = get(port, "/extension.zip")
+    assert resp.status == 200 and resp.getheader("Content-Type") == "application/zip"
+    names = zipfile.ZipFile(io.BytesIO(body)).namelist()
+    assert any(n.endswith("/manifest.json") for n in names)
+    assert any(n.endswith("/content.js") for n in names)

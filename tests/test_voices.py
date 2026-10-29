@@ -73,7 +73,7 @@ def test_every_subcommand_parses_and_has_its_dests():
         ["cast"], ["cast", "edit"], ["cast", "update"], ["cast", "show"],
         ["lex"], ["lex", "add"], ["lex", "edit"], ["lex", "ignore"], ["lex", "list"],
         ["config"], ["config", "edit"], ["pron"], ["voices"], ["voices", "demo"],
-        ["serve"], ["book"], ["feed"], ["models"], ["login"], ["ui"],
+        ["serve"], ["book"], ["feed"], ["models"], ["ui"],
     ]
     for argv in names:
         with contextlib.redirect_stdout(io.StringIO()):

@@ -122,10 +122,43 @@ async function serverStop(run, why) {
   show(why, button("Close", () => panel().remove()));
 }
 
+const VERSION = chrome.runtime.getManifest().version;
+const newerThan = (a, b) => {
+  const x = a.split(".").map(Number), y = b.split(".").map(Number);
+  for (let i = 0; i < Math.max(x.length, y.length); i++) {
+    const d = (x[i] || 0) - (y[i] || 0);
+    if (d) return d > 0;
+  }
+  return false;
+};
+// a button, when the server has a newer extension bundled than the one running
+const updateButtons = (a) => (a && a.latest && newerThan(a.latest, VERSION))
+  ? [button(`Update to ${a.latest}`, () => chrome.runtime.sendMessage({ type: "update" }))]
+  : [];
+
+// A run that finished cleanly closes its tab, unless the option says not to: a few
+// seconds to see the result, with a button to keep the page.
+async function serverDone(run, reason) {
+  await store.set({ ...run, active: false });
+  const { autoClose } = await chrome.storage.local.get("autoClose");
+  if (autoClose === false) {
+    return show(`Done: ${reason}`, button("Close", () => panel().remove()));
+  }
+  let keep = false;
+  for (let left = 5; left > 0 && !keep; left--) {
+    show(`Done: ${reason}. Closing this tab in ${left}…`,
+         button("Keep open", () => { keep = true; show(`Done: ${reason}`, button("Close", () => panel().remove())); }));
+    await sleep(1000);
+  }
+  if (keep) return;
+  const r = await chrome.runtime.sendMessage({ type: "close" });
+  if (!r || !r.ok) show(`Done: ${reason} (left open: ${r && r.reason || "could not close"})`);
+}
+
 // 426: the server and this extension speak different versions of the protocol.
 const mismatch = (r) => r && r.status === 426
   ? (r.body.message === "reload the extension"
-      ? "This extension is out of date: reload it at chrome://extensions, then start again."
+      ? "This extension is out of date: update it from the page webnovel-audio hosts (the log names it), then start again."
       : "This extension is newer than webnovel-audio: update webnovel-audio, then start again.")
   : "";
 
@@ -157,16 +190,18 @@ async function serverStep(run) {
       show(`Waiting: ${a.reason}`, button("Stop", async () => {
         await api(run, "POST", "/stop", {});
         serverStop(run, "Stopped");
-      }));
+      }), ...updateButtons(a));
       await sleep(5000);
       continue;
     }
     if (a.action === "fetch") {
-      show(`Next: #${a.number} ${a.title}`);
+      show(a.kind === "series" ? `Next series: ${a.title}` : `Next: #${a.number} ${a.title}`,
+           ...updateButtons(a));
       await sleep(PAUSE_MS + Math.random() * JITTER_MS);
       location.href = a.url;                  // the reload resumes the run
       return;
     }
+    if (a.clean) return serverDone(run, a.reason);
     return serverStop(run, `Done: ${a.reason}`);
   }
 }

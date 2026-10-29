@@ -343,11 +343,13 @@ proc refresh_series {} {
     .top.tv delete [.top.tv children {}]
     if {$d eq ""} { status "series list failed" ; return }
     set rows [dict get $d series]
-    array unset ::SURL
+    array unset ::SURL ; array unset ::SBROW ; array unset ::SON
     foreach r $rows {
         set st [dict get $r stages]
         set on [expr {[json::get $r enabled] eq "0" ? 0 : 1}]
         set ::SURL([dict get $r slug]) [json::get $r url]
+        set ::SBROW([dict get $r slug]) [expr {[json::get $r browser_only] eq "1"}]
+        set ::SON([dict get $r slug]) $on
         .top.tv insert {} end -id [dict get $r slug] -values [list \
             [dict get $r title] \
             [expr {$on ? "on" : "paused"}] \
@@ -914,18 +916,18 @@ proc do_reset_errors {} {
 ;# The toolbar button syncs all of them; a series' right-click menu passes its
 ;# own slug, which is kept in ::SYNC_SCOPE while the dialog is open.
 proc dlg_sync {{scope @all}} {
-    if {$scope ne "@all" && [series_paused $scope]} {
-        log "! $scope is paused — right-click the series to resume it"
-        status "$scope is paused"
-        return
-    }
+    ;# a named series is synced even when it is paused (that is asking for it);
+    ;# only the global sync leaves paused series entirely alone
     set ::SYNC_SCOPE $scope
+    set ::SYNC_BROWSER 1
     set w .sync ; catch {destroy $w}
     toplevel $w ; wm title $w "Sync" ; wm transient $w .
     ttk::label $w.l -text "chapters to render:"
     ttk::spinbox $w.n -from 0 -to 999 -width 5 -textvariable ::LIMIT
     ttk::label $w.h -text "(0 = everything outstanding)"
     ttk::label $w.est -text "estimating…" -foreground "#2a7d4f"
+    ttk::checkbutton $w.br -variable ::SYNC_BROWSER \
+        -text "fetch through the browser (the extension loads the pages, one chapter at a time)"
     ttk::frame $w.b
     ttk::button $w.b.ok -text "Sync" -command [list do_sync $w]
     ttk::button $w.b.cx -text "Cancel" -command [list destroy $w]
@@ -934,7 +936,10 @@ proc dlg_sync {{scope @all}} {
     grid $w.n -row 1 -column 0 -padx 10 -sticky w
     grid $w.h -row 1 -column 1 -sticky w
     grid $w.est -row 2 -column 0 -columnspan 3 -padx 10 -pady 6 -sticky w
-    grid $w.b -row 3 -column 0 -columnspan 3 -pady 8
+    if {[sync_has_browser_series]} {
+        grid $w.br -row 3 -column 0 -columnspan 3 -padx 10 -sticky w
+    }
+    grid $w.b -row 4 -column 0 -columnspan 3 -pady 8
     bind $w <Escape> [list destroy $w]
     trace add variable ::LIMIT write [list sync_estimate_soon $w]
     sync_estimate $w
@@ -1008,14 +1013,41 @@ proc do_grab {w slug} {
     set n $::GRAB_N
     destroy $w
     if {![string is integer -strict $n] || $n < 1} { log "! count must be a number" ; return }
-    run_cmd [list grab --scope $slug --count $n]
+    run_cmd [list grab --scope $slug --limit $n]
+}
+
+# Does this sync's scope include a series that is read through the browser? A
+# named series counts even if paused; the global sync only its enabled ones.
+proc sync_has_browser_series {} {
+    if {$::SYNC_SCOPE ne "@all"} {
+        return [expr {[info exists ::SBROW($::SYNC_SCOPE)] && $::SBROW($::SYNC_SCOPE)}]
+    }
+    foreach s [array names ::SBROW] { if {$::SBROW($s) && $::SON($s)} { return 1 } }
+    return 0
+}
+
+# Does the global sync include an enabled series that is NOT read through the
+# browser (so the browser run has to be followed by an ordinary sync)?
+proc sync_has_plain_series {} {
+    foreach s [array names ::SBROW] { if {!$::SBROW($s) && $::SON($s)} { return 1 } }
+    return 0
 }
 
 proc do_sync {w} {
-    set lim $::LIMIT ; set scope $::SYNC_SCOPE ; destroy $w
+    set lim $::LIMIT ; set scope $::SYNC_SCOPE ; set via $::SYNC_BROWSER ; destroy $w
     set a [list sync --scope $scope --yes]
     if {$lim > 0} { lappend a --limit $lim }
-    run_cmd $a
+    if {!($via && [sync_has_browser_series])} { run_cmd $a ; return }
+    ;# through the browser: `grab` fetches, ingests and renders; a global sync
+    ;# then runs the ordinary sync for whatever is not read that way
+    set g [list grab]
+    if {$scope ne "@all"} { lappend g --scope $scope }
+    if {$lim > 0} { lappend g --limit $lim }
+    if {$scope eq "@all" && [sync_has_plain_series]} {
+        run_cmd $g [list run_cmd $a]
+    } else {
+        run_cmd $g
+    }
 }
 
 # Adding is two steps so the handle ("slug") can be checked before anything is

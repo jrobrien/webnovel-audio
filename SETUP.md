@@ -1,8 +1,8 @@
 # Setup & deployment
 
 Offline web-novel narration for personal listening. Everything runs on the CPU;
-no GPU, no cloud, no account required (a Royal Road login is optional, for
-paywalled chapters only).
+no GPU, no cloud, no account required (Royal Road is read through your own browser,
+logged in or not as you like; section 9).
 
 ## 1. Requirements
 
@@ -226,40 +226,33 @@ Only one `render`/`sync` runs at a time per library (a `flock`), so a command
 launched here while one is already going is refused with a log line rather than
 fighting for the CPU.
 
-## 9. Royal Road login (optional)
+## 9. Royal Road: through your browser
 
-Only needed for chapters that require an account (adult content, some
-early-access). Credentials are never stored — only the session cookie.
+Royal Road sits behind two bot checks (Anubis, Cloudflare) that plain HTTP cannot pass,
+so this tool does not fetch its pages itself: adding a series, refreshing its chapter
+list and fetching chapters all go through your own browser, with the page-grabber
+extension in `extension/`. A logged-in browser also reads locked chapters. There is no
+stored login and no cookie handling. (Replaying a browser's cookies was tried and does
+not hold up: Cloudflare judges the connection, not just the cookie.) `sync` therefore
+never contacts Royal Road: it renders what the browser has brought, and says how many
+chapters are still to fetch. `grab` is the sync that fetches. ScribbleHub is still
+fetched directly.
 
-1. In your browser, log in to royalroad.com and export cookies for the site
-   (a "cookies.txt" browser extension, or devtools → copy the `Cookie` header).
-2. ```sh
-   uv run webnovel-audio login --cookies-file ~/Downloads/cookies.txt
-   # or:  uv run webnovel-audio login --cookie-header "name=value; name2=value2"
-   uv run webnovel-audio login --status     # is one stored? (does NOT verify it)
-   ```
-   `--provider royalroad` picks the site; it's optional while Royal Road is
-   the only provider with logins.
+Install the extension once: `chrome://extensions` → Developer mode → **Load unpacked** →
+the `extension/` folder's one subfolder. `webnovel-audio serve` (and `grab` while it runs)
+host a page, `http://localhost:<port>/extension`, that says whether the extension is
+installed in that browser and whether it is older than the bundled one, with an **Update
+now** button (it reloads the extension from its folder, so it picks up files a `git pull`
+changed) and a zip download for another browser profile. `grab` says in the log when the
+browser has not answered within 20 seconds, or answers with an older version, and the page
+the extension draws offers an update when the server has a newer one bundled. The
+extension's options (`chrome://extensions` → Details → Extension options) have **Close the
+tab when a fetch run finishes cleanly**, on by default: it waits a few seconds with a
+**Keep open** button, then closes only the tab the run was using, never the only tab in a
+window, and never after an error or a stop. Chrome cannot install an extension from a
+web page, so the first install is the Load unpacked step.
 
-Stored at `~/.config/webnovel-audio/session.json` (mode 600). `login --logout`
-forgets it.
-
-The cookie is **never verified up front** — that would mean scraping an account
-page whose markup drifts, and the answer would be stale by the next fetch
-anyway. Instead a missing or expired cookie shows up where it's actionable:
-`fetch` refuses a chapter Royal Road marks locked and tells you to log in. If a
-fetch of a normal chapter starts returning a login page, `login --logout` then
-re-export. Nothing in this tool reads your account state — no follows, no
-reading position.
-
-### The bot checks
-
-Royal Road sits behind two bot checks (Anubis, Cloudflare). Plain HTTP from this tool
-cannot pass them, and replaying a browser's cookies was tried and does not hold up
-(Cloudflare judges the connection, not just the cookie). A blocked fetch stops with a
-message saying which check it was; the way through is the next section.
-
-### Saving pages from your browser
+### Saving pages by hand
 
 If Royal Road's Cloudflare check turns the tool away (a 403 "Cloudflare challenge"
 message, or the Anubis one), read the chapters in Chrome and hand the pages over:
@@ -292,25 +285,36 @@ save it**: the extension saves the series page, and `ingest` reads its chapter l
 and status like `series refresh` would, and reports where the site has you up to.
 The page opens in your default browser, which must be the one with the extension.
 
-### Fetch, ingest and render in one loop
-
-Right-click a series → **Fetch in browser…**, pick how many chapters, and the series
-page opens in your browser. From there the extension is led by `grab`, which the UI runs:
+### Fetch, ingest and render in one loop: `grab`
 
 ```sh
-uv run webnovel-audio grab --scope intelligent-design --count 10   # what the UI runs
+uv run webnovel-audio grab                          # every enabled series, like sync
+uv run webnovel-audio grab --scope intelligent-design --limit 10
+uv run webnovel-audio series add --url https://www.royalroad.com/fiction/…   # through the browser too
 ```
 
-`grab` runs a small server on the loopback address only (a random port, a one-time
-token passed in the page address after the `#`, and nothing accepted from web pages).
-The extension sends each page it loads; `grab` files it, renders that chapter, and
-only when the render is finished tells the browser which chapter to load next, so
-fetching is paced by rendering. `--ahead K` lets K chapters wait unrendered
-(default 0). It stops at the count, when nothing is outstanding, on a page that is not
-a chapter (a bot-check), on Stop in the page or the UI, or when the browser has been
-silent for `--timeout` seconds. It holds the same lock as `sync`, so the two never run
-together. Pressing Stop in the UI ends it within about 15 seconds, once any chapter
-already rendering finishes.
+Scope and limit work like `sync`'s: with no scope, every **enabled** series, in sync's
+order, and a paused series is left entirely alone (its chapter list too); a named
+series is worked on even if it is paused. `--limit` is chapters per series (default:
+everything outstanding). In the UI, **Sync…** has a "fetch through the browser" option
+(on by default when a Royal Road series is in scope), and a series' right-click menu has
+**Fetch in browser…**. **Add series…** opens the page in the browser and takes the chapter
+list from it on the first pass, so mark chapters skipped (or use "start from") for
+anything you do not want fetched.
+
+For each series, in turn, the browser is sent to its series page first (the chapter
+list, and where the site has you up to), then to each chapter in order. `grab` runs a
+small server on the loopback address only (a random port, a one-time token passed in the
+page address after the `#`, nothing accepted from web pages, a protocol-version check).
+The extension sends each page it loads; `grab` files it, renders that chapter, and only
+when the render is finished tells the browser which chapter to load next, so fetching is
+paced by rendering. `--ahead K` lets K chapters wait unrendered (default 0). Chapters an
+earlier run fetched but never rendered are rendered first. It stops when every series is
+done, on a page that is not a chapter (a bot-check), on Stop in the page or the UI, or
+when the browser has been silent for `--timeout` seconds. It holds the same lock as
+`sync`, so the two never run together. Pressing Stop in the UI ends it within about 15
+seconds, once any chapter already rendering finishes. A chapter marked **skipped** is
+never fetched.
 
 Personal use only — respect authors who sell their own audiobooks.
 
@@ -326,7 +330,6 @@ Personal use only — respect authors who sell their own audiobooks.
 | `library/<slug>/.raw/*.html` | cached chapter HTML (provenance) | yes (re-fetched on next `sync`) |
 | `.cache/segments/<backend>/*.wav` | per-sentence synth cache | yes (just re-synthesises) |
 | `~/.cache/webnovel-audio/` | the Kokoro model files (~400 MB) | yes (re-run `models fetch`) |
-| `~/.config/webnovel-audio/session.json` | RR session cookie, mode 600 | yes (re-`login`) |
 
 ## 11. Update / uninstall
 

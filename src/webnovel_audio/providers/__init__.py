@@ -7,15 +7,15 @@ and talks to it only through `base.Provider`. See docs/PROVIDERS.md.
 """
 from __future__ import annotations
 
-from .base import (ChapterLocked, ChapterRef, FetchContext, Provider, SeriesInfo,
+from .base import (BrowserOnly, ChapterLocked, ChapterRef, FetchContext, Provider, SeriesInfo,
                    VolumeRef)
 from .local_html import LocalHtmlProvider
 from .royalroad import RoyalRoadProvider
 from .scribblehub import ScribbleHubProvider
 
-__all__ = ["ChapterLocked", "ChapterRef", "FetchContext", "Provider", "SeriesInfo",
+__all__ = ["BrowserOnly", "ChapterLocked", "ChapterRef", "FetchContext", "Provider", "SeriesInfo",
            "VolumeRef", "PROVIDERS", "resolve", "resolve_series", "get", "for_raw",
-           "context", "with_session"]
+           "context"]
 
 PROVIDERS: list[Provider] = [RoyalRoadProvider(), ScribbleHubProvider(),
                              LocalHtmlProvider()]
@@ -51,8 +51,6 @@ def for_raw(raw: str) -> Provider | None:
     return None
 
 
-def with_session() -> list[Provider]:
-    return [p for p in PROVIDERS if p.session is not None]
 
 
 def context(cfg, prov: Provider, *, raw_dir: str = "", state: dict | None = None) -> FetchContext:

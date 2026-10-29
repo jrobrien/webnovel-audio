@@ -1,7 +1,6 @@
 import os
 
 from webnovel_audio.providers.royalroad import _extract_js_array, parse_fiction
-from webnovel_audio.providers.session import parse_cookie_header
 
 FIXTURE = os.path.join(os.path.dirname(__file__), "..", "samples", "salvage-run-fiction.html")
 
@@ -10,11 +9,6 @@ def test_extract_js_array_handles_brackets_in_strings():
     html = 'x window.chapters = [{"title":"Ch [1] end","slug":"a"},{"title":"b"}]; more'
     got = _extract_js_array(html, "chapters")
     assert got == '[{"title":"Ch [1] end","slug":"a"},{"title":"b"}]'
-
-
-def test_parse_cookie_header():
-    c = parse_cookie_header(" a=1;  b=two=x ; ")
-    assert c == {"a": "1", "b": "two=x"}
 
 
 def test_parse_fiction_fixture():

@@ -13,7 +13,7 @@ after 900 {
     check "dialog exists" [winfo exists .grab]
     set ::GRAB_N 7
     do_grab .grab demo
-    check "starts grab with the count" [expr {$::RAN eq {{grab --scope demo --count 7}}}]
+    check "starts grab with the count" [expr {$::RAN eq {{grab --scope demo --limit 7}}}]
     check "dialog closed" [expr {![winfo exists .grab]}]
     dlg_grab demo
     set ::GRAB_N abc

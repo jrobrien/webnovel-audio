@@ -174,6 +174,16 @@ def test_fetch_in_browser_dialog_starts_grab_and_grab_events_are_logged(tmp_path
 
 
 @needs_display
+def test_sync_dialog_goes_through_the_browser_like_sync_scopes(tmp_path):
+    out = tmp_path / "sync.log"
+    r = _run(os.path.join(ROOT, "tests", "ui", "sync_dialog.tcl"), str(out),
+             ui_conf=tmp_path / "ui.conf")
+    log = out.read_text() if out.exists() else ""
+    assert r.returncode == 0, f"{r.stderr}\n{log}"
+    assert "FAILURES: 0" in log, log
+
+
+@needs_display
 def test_selecting_a_series_shows_the_first_unfinished_chapter(tmp_path):
     """Selecting a series must land on the edge of the work, not on chapter 1.
 

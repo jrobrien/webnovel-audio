@@ -50,7 +50,7 @@ uv run webnovel-audio <cmd> [<sub>] --help   # one command
 ```sh
 webnovel-audio series list                                  # dashboard
 webnovel-audio series add --url <url> --dry-run             # preview title + proposed slug, track nothing
-webnovel-audio series add --url <url> [--from N] [--slug S] # track (metadata only)
+webnovel-audio series add --url <url> [--from N] [--slug S] # track (metadata only; Royal Road opens the browser)
 webnovel-audio series rename --scope S --slug NEW [--move]  # old slug stays as an alias
 webnovel-audio series enable|disable --scope S              # include/exclude from sync
 webnovel-audio series priority --scope S --priority 200     # render order, higher first
@@ -63,7 +63,7 @@ webnovel-audio check  --target S --range 2-10               # report only, write
 webnovel-audio render --target S --range 1-10 [--force] [--dry-run] [-o out.opus]
 
 webnovel-audio ingest [--dir D] [--force]                   # file pages saved from a browser (SETUP.md)
-webnovel-audio grab --scope S [--count N] [--ahead K]        # fetch via the browser extension, render each (SETUP.md)
+webnovel-audio grab [--scope S] [--limit N] [--ahead K]       # Royal Road: fetch via the browser extension + render each (SETUP.md)
 webnovel-audio sync [--scope S] [--limit N] [--estimate] [-y]   # refresh + render outstanding
 webnovel-audio progress [--scope S] [--watch]
 
@@ -81,11 +81,11 @@ webnovel-audio book --scope S [--range R] -o x.m4b
 ```
 
 Everything else (`profile`, `feed`, `retag`, `series archive|scan|import|migrate|
-reclaim`, `voices`, `tagger`, `models`, `login`, `ui`, `config`) is in `schema`.
+reclaim`, `voices`, `tagger`, `models`, `ui`, `config`) is in `schema`.
 
 ## Workflows
 
-- **New series**: `series add --dry-run` (check the slug) -> `series add` -> `fetch`+`parse` the first ~10 -> `check` ->
+- **New series**: `series add --dry-run` (check the slug) -> `series add` -> `fetch`+`parse` the first ~10 (Royal Road: `grab --scope S --limit 10` fetches and renders through the browser) -> `check` ->
   `cast update` / `cast edit` / `lex add` -> `render` -> listen -> unpause/`sync`.
 - **Re-render after a config or lexicon change**: just `render --target S --range
   A-B`; the recipe changes, so those chapters re-synthesize (cache makes it cheap).

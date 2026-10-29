@@ -73,39 +73,14 @@ def test_yaml_strips_control_chars():
     assert "\n" not in _yaml("a\r\nb")
 
 
-def test_login_does_not_verify(tmp_path, monkeypatch, capsys):
-    """0.2.1: `login` stores cookies and says so — it never claims to have
-    verified them (that needed an account page whose markup drifts)."""
-    import types
-
-    from webnovel_audio import cli
-    from webnovel_audio.providers import session
-
-    monkeypatch.setattr(session, "CONFIG_DIR", str(tmp_path))
-
-    rc = cli._cmd_login(types.SimpleNamespace(
-        provider=None, logout=False, status=False, cookies_file=None,
-        cookie="__cfduid=abc; .AspNetCore.Identity.Application=xyz"))
-    out = capsys.readouterr().out
-    assert rc == 0 and "saved 2 cookie(s)" in out
-    assert "authenticated" not in out.lower()
-    assert (tmp_path / "session.json").exists()
-
-    rc = cli._cmd_login(types.SimpleNamespace(
-        provider=None, logout=False, status=True, cookies_file=None, cookie=None))
-    out = capsys.readouterr().out
-    assert rc == 0 and "not verified" in out
-
-
-def test_locked_chapter_points_at_login(tmp_path, monkeypatch):
+def test_locked_chapter_is_refused_with_a_way_forward(tmp_path, monkeypatch):
     """A locked chapter fails with an actionable message rather than silently
     caching a paywall page."""
     from webnovel_audio import providers, sync
     from webnovel_audio.config import Config
     from webnovel_audio.db import DB
-    from webnovel_audio.providers import ChapterRef, SeriesInfo, session
+    from webnovel_audio.providers import ChapterRef, SeriesInfo
 
-    monkeypatch.setattr(session, "CONFIG_DIR", str(tmp_path))
     cfg = Config()
     cfg.library.state_db = str(tmp_path / "s.db")
     cfg.library.library_dir = str(tmp_path / "lib")
@@ -124,5 +99,5 @@ def test_locked_chapter_points_at_login(tmp_path, monkeypatch):
     ctx = providers.context(cfg, prov)
     with pytest.raises(sync.ChapterLocked) as exc:
         sync._do_fetch(cfg, db, prov, ctx, str(tmp_path / "demo"), c)
-    assert "login" in str(exc.value)
+    assert "browser" in str(exc.value)
     db.close()

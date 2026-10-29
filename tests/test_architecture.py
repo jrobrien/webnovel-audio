@@ -45,8 +45,7 @@ def test_core_never_names_a_site():
 
 
 def test_core_imports_only_the_provider_interface():
-    allowed = {"webnovel_audio.providers", "webnovel_audio.providers.http",
-               "webnovel_audio.providers.session"}
+    allowed = {"webnovel_audio.providers", "webnovel_audio.providers.http"}
     bad = []
     for name, text in _core_modules():
         for node in ast.walk(ast.parse(text)):

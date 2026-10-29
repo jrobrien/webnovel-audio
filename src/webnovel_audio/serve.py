@@ -231,6 +231,11 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._static("player.html")
             if path.startswith("/player/"):
                 return self._static(path[len("/player/"):])
+            if path in ("/extension", "/extension.zip"):
+                from . import grab
+                if path == "/extension":
+                    return self._send(200, grab.extension_page(), "text/html; charset=utf-8")
+                return self._send(200, grab.extension_zip(), "application/zip")
             if path.startswith("/api/"):
                 return self._api_get(path)
             if path.startswith("/feed/") and path.endswith(".xml"):
