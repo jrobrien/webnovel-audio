@@ -810,6 +810,7 @@ proc handle_event {ev {raw ""}} {
         start  { log "start: [json::get $ev stage], [json::get $ev series] series" }
         locked { log "! refused: another render/sync holds the lock"
                  status "refused — another run is active" }
+        grab   { if {[json::get $ev quiet] ne "1"} { log "  [json::get $ev message]" } }
         series { log "  [json::get $ev title]: [json::get $ev pending] to do"
                  live live_series $ev }
         chapter_begin {
@@ -977,6 +978,37 @@ proc do_ingest {} {
     log "ingest: $n of [llength $results] page(s) filed"
     status "ingest: $n filed"
     refresh_series ; refresh_chapters
+}
+
+;# Fetch a series through the browser, one chapter at a time: `grab` serves the
+;# browser extension, files each page it sends and renders that chapter, and only
+;# then lets the next page be fetched. The series page opens in the default
+;# browser (which must have the extension) when this is confirmed.
+proc dlg_grab {slug} {
+    if {$::RUNNING} { log "! busy: a command is already running" ; return }
+    set w .grab ; catch {destroy $w}
+    toplevel $w ; wm title $w "Fetch in browser" ; wm transient $w .
+    set ::GRAB_N 10
+    ttk::label $w.l -text "Fetch $slug — chapters:"
+    ttk::spinbox $w.n -from 1 -to 100 -width 5 -textvariable ::GRAB_N
+    ttk::label $w.h -text "fetched one at a time, each after the last has rendered"
+    ttk::frame $w.b
+    ttk::button $w.b.ok -text "Open browser" -command [list do_grab $w $slug]
+    ttk::button $w.b.cx -text "Cancel" -command [list destroy $w]
+    pack $w.b.ok $w.b.cx -side left -padx 4
+    grid $w.l -row 0 -column 0 -padx 10 -pady {10 0} -sticky w
+    grid $w.n -row 0 -column 1 -padx 4 -pady {10 0} -sticky w
+    grid $w.h -row 1 -column 0 -columnspan 2 -padx 10 -pady 6 -sticky w
+    grid $w.b -row 2 -column 0 -columnspan 2 -pady 8
+    bind $w <Return> [list do_grab $w $slug] ; bind $w <Escape> [list destroy $w]
+    focus $w.n
+}
+
+proc do_grab {w slug} {
+    set n $::GRAB_N
+    destroy $w
+    if {![string is integer -strict $n] || $n < 1} { log "! count must be a number" ; return }
+    run_cmd [list grab --scope $slug --count $n]
 }
 
 proc do_sync {w} {
@@ -1762,6 +1794,9 @@ menu .sctx -tearoff 0
 .sctx add command -label "Rename…" -command dlg_rename
 .sctx add command -label "Open source page" -command open_source
 .sctx add command -label "Open source page and save it" -command open_source_and_save
+.sctx add command -label "Fetch in browser…" -command {
+    if {[selected_series] ne ""} { dlg_grab [selected_series] }
+}
 .sctx add separator
 .sctx add command -label "Delete series…" -command dlg_delete
 

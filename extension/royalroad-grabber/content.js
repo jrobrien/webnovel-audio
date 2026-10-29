@@ -111,7 +111,78 @@ async function seriesPage() {
   show("webnovel-audio:", button("Save series page", go));
 }
 
+// --- the loop led by `webnovel-audio grab` ---------------------------------
+// The server decides everything: this sends each page it is given and asks what
+// next. A run is remembered in storage because every chapter is a fresh page load.
+const api = (run, method, path, body) =>
+  chrome.runtime.sendMessage({ type: "api", port: run.port, token: run.token, method, path, body });
+
+async function serverStop(run, why) {
+  await store.set({ ...run, active: false });
+  show(why, button("Close", () => panel().remove()));
+}
+
+// 426: the server and this extension speak different versions of the protocol.
+const mismatch = (r) => r && r.status === 426
+  ? (r.body.message === "reload the extension"
+      ? "This extension is out of date: reload it at chrome://extensions, then start again."
+      : "This extension is newer than webnovel-audio: update webnovel-audio, then start again.")
+  : "";
+
+async function serverStep(run) {
+  const kind = SERIES ? "series" : "chapter";
+  if (kind === "chapter" && !(await chapterPresent())) {
+    api(run, "POST", "/stop", {});
+    return serverStop(run, "No chapter text on this page (a bot-check?). Stopped.");
+  }
+  show(`Sending this ${kind}…`, button("Stop", async () => {
+    await api(run, "POST", "/stop", {});
+    serverStop(run, "Stopped");
+  }));
+  const sent = await api(run, "POST", "/page", { kind, html: "<!DOCTYPE html>\n" + document.documentElement.outerHTML });
+  if (mismatch(sent)) return serverStop(run, mismatch(sent));
+  if (!sent || sent.status === 0) return serverStop(run, "webnovel-audio is not answering. Stopped.");
+  if (!sent.ok || !sent.body.ok) {
+    return serverStop(run, `Not accepted: ${sent.body && sent.body.detail || sent.status}. Stopped.`);
+  }
+  for (;;) {                                  // ask until the server says go
+    const live = await store.get();
+    if (!live || !live.active) return;        // Stop was pressed
+    await store.set({ ...live, t: Date.now() });
+    const nx = await api(run, "GET", "/next");
+    if (mismatch(nx)) return serverStop(run, mismatch(nx));
+    if (!nx || nx.status === 0) return serverStop(run, "webnovel-audio is not answering. Stopped.");
+    const a = nx.body;
+    if (a.action === "wait") {
+      show(`Waiting: ${a.reason}`, button("Stop", async () => {
+        await api(run, "POST", "/stop", {});
+        serverStop(run, "Stopped");
+      }));
+      await sleep(5000);
+      continue;
+    }
+    if (a.action === "fetch") {
+      show(`Next: #${a.number} ${a.title}`);
+      await sleep(PAUSE_MS + Math.random() * JITTER_MS);
+      location.href = a.url;                  // the reload resumes the run
+      return;
+    }
+    return serverStop(run, `Done: ${a.reason}`);
+  }
+}
+
 async function main() {
+  const wa = location.hash.match(/wa-run=(\d+):([\w-]+)/);   // opened by `grab`
+  if (wa) {
+    history.replaceState(null, "", location.pathname + location.search);
+    const fresh = { mode: "server", port: wa[1], token: wa[2], active: true, t: Date.now() };
+    await store.set(fresh);
+    return serverStep(fresh);
+  }
+  const live = await store.get();
+  if (live && live.mode === "server" && live.active && Date.now() - live.t < STALE_MS) {
+    return serverStep(live);
+  }
   if (SERIES) return seriesPage();
   if (!CHAPTER) return;
   const run = await store.get();

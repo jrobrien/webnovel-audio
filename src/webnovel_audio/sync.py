@@ -777,23 +777,20 @@ def _do_fetch(cfg, db, prov, ctx, bdir, c, *, force=False) -> str:
     return path
 
 
-def _ingest_series_page(cfg, db, prov, raw, path, note, retire) -> None:
+def _ingest_series_page(cfg, db, prov, raw) -> dict:
     """A series page saved from a browser: what `series refresh` would have read."""
     sid = prov.identify_series(raw)
     s = db.find_series(prov.name, sid)
     if s is None:
-        note(path, "skipped", f"{prov.name} series {sid} is not tracked")
-        return
+        return {"result": "skipped", "detail": f"{prov.name} series {sid} is not tracked"}
     bdir = bundle.bundle_dir(cfg, s)
     ctx = _ctx(cfg, db, prov, s, bdir)
     try:
         fi = prov.parse_series_page(raw, s["url"])
     except Exception as exc:                       # providers raise SystemExit too
-        note(path, "rejected", f"could not read a series page ({exc})")
-        return
+        return {"result": "rejected", "detail": f"could not read a series page ({exc})"}
     if not fi.chapters:
-        note(path, "rejected", "no chapter list in that page")
-        return
+        return {"result": "rejected", "detail": "no chapter list in that page"}
     # a browser can be served a different layout from the one we parse, so a
     # field the page did not yield keeps what we already hold
     for f in ("author", "author_url", "status", "cover_url", "rating"):
@@ -812,37 +809,67 @@ def _ingest_series_page(cfg, db, prov, raw, path, note, retire) -> None:
                            (s["id"], pos)).fetchone()
         if c:
             detail += f"; the site has you at #{c['ord'] + 1}"
-    retire(path)
-    note(path, "ingested", detail, series=s["slug"], kind="series", new=new)
+    return {"result": "ingested", "detail": detail, "series": s["slug"],
+            "kind": "series", "new": new}
+
+
+def ingest_raw(cfg: Config, db: DB, raw: str, *, force: bool = False) -> dict:
+    """File one page saved from a browser; says what became of it.
+
+    The page is matched to a tracked chapter (or series) by the ids in the page
+    itself, checked to be a chapter and not a bot-check, written where `fetch`
+    would have put it and the chapter marked fetched. A chapter we already hold is
+    left alone unless `force`. Returns {"result": ingested | have | skipped |
+    rejected, "detail": ..., and series/number/kind when known}.
+    """
+    from .providers.http import bot_check
+
+    check = bot_check(raw.encode("utf-8", "replace"))
+    if check:
+        return {"result": "rejected", "detail": f"a {check} bot-check page, not a chapter"}
+    prov = providers.for_raw(raw)
+    ids = prov.identify(raw) if prov else None
+    if not ids and prov and prov.identify_series(raw):
+        return _ingest_series_page(cfg, db, prov, raw)
+    if not ids:
+        return {"result": "skipped",
+                "detail": "not a chapter or series page from a site we know"}
+    s = db.find_series(prov.name, ids[0])
+    if s is None:
+        return {"result": "skipped", "detail": f"{prov.name} series {ids[0]} is not tracked"}
+    c = db.con.execute("SELECT * FROM chapters WHERE series_id=? AND source_id=?",
+                       (s["id"], ids[1])).fetchone()
+    if c is None:
+        return {"result": "skipped", "detail": f"{s['slug']} has no chapter {ids[1]} "
+                                               "(run `series refresh`)"}
+    bdir = bundle.bundle_dir(cfg, s)
+    target = _raw_path(bdir, prov, c)
+    tag = {"series": s["slug"], "number": c["ord"] + 1, "kind": "chapter"}
+    if os.path.exists(target) and not force:
+        if c["status"] == "new":            # the page is cached but the database never heard
+            db.mark_stage(c["id"], "fetched", raw_path=target)
+        return {"result": "have", "detail": f"{s['slug']} #{c['ord'] + 1} is already fetched", **tag}
+    try:
+        prov.parse(raw, _ref(c), _ctx(cfg, db, prov, s, bdir))
+    except (SystemExit, Exception) as exc:      # providers raise SystemExit
+        return {"result": "rejected", "detail": f"no chapter text found ({exc})", **tag}
+    _write_raw(target, raw)
+    db.mark_stage(c["id"], "fetched", raw_path=target)
+    return {"result": "ingested", "detail": f"{s['slug']} #{c['ord'] + 1} {c['title']}", **tag}
 
 
 def ingest_pages(cfg: Config, directory: str, *, force: bool = False,
                  log=print) -> list[dict]:
-    """File chapter pages saved from a browser into the raw cache.
+    """File chapter and series pages saved from a browser into the raw cache.
 
     The fetch stage for a site that will not talk to us: the page was read in a
-    real browser and saved to `directory`. Each one is matched to a tracked chapter
-    by the ids in the page itself (not its filename), checked to be a chapter and
-    not a bot-check, written where `fetch` would have put it and marked fetched.
-    Done files move to `directory/done/`, and a page for a chapter we already hold
-    is left alone unless `force`. Returns one {file, result, ...} per page.
+    real browser and saved to `directory`. Done files move to `directory/done/`.
+    Returns one {file, result, detail, ...} per page.
     """
-    from .providers.http import bot_check
-
     directory = os.path.expanduser(directory)
     done_dir = os.path.join(directory, "done")
     db = _db(cfg)
     out: list[dict] = []
-
-    def note(path, result, detail="", **kw):
-        out.append({"file": os.path.basename(path), "result": result,
-                    "detail": detail, **kw})
-        log(f"  {os.path.basename(path)}: {result}" + (f" — {detail}" if detail else ""))
-
-    def retire(path):
-        os.makedirs(done_dir, exist_ok=True)
-        os.replace(path, os.path.join(done_dir, os.path.basename(path)))
-
     try:
         names = sorted(n for n in os.listdir(directory)
                        if n.lower().endswith((".html", ".htm")))
@@ -850,44 +877,12 @@ def ingest_pages(cfg: Config, directory: str, *, force: bool = False,
             path = os.path.join(directory, name)
             with open(path, encoding="utf-8", errors="replace") as fh:
                 raw = fh.read()
-            check = bot_check(raw.encode("utf-8", "replace"))
-            if check:
-                note(path, "rejected", f"a {check} bot-check page, not a chapter")
-                continue
-            prov = providers.for_raw(raw)
-            ids = prov.identify(raw) if prov else None
-            if not ids and prov and prov.identify_series(raw):
-                _ingest_series_page(cfg, db, prov, raw, path, note, retire)
-                continue
-            if not ids:
-                note(path, "skipped", "not a chapter or series page from a site we know")
-                continue
-            s = db.find_series(prov.name, ids[0])
-            if s is None:
-                note(path, "skipped", f"{prov.name} series {ids[0]} is not tracked")
-                continue
-            c = db.con.execute("SELECT * FROM chapters WHERE series_id=? AND source_id=?",
-                               (s["id"], ids[1])).fetchone()
-            if c is None:
-                note(path, "skipped", f"{s['slug']} has no chapter {ids[1]} "
-                                      "(run `series refresh`)")
-                continue
-            bdir = bundle.bundle_dir(cfg, s)
-            target = _raw_path(bdir, prov, c)
-            tag = {"series": s["slug"], "number": c["ord"] + 1}
-            if os.path.exists(target) and not force:
-                retire(path)
-                note(path, "have", f"{s['slug']} #{c['ord'] + 1} is already fetched", **tag)
-                continue
-            try:
-                prov.parse(raw, _ref(c), _ctx(cfg, db, prov, s, bdir))
-            except (SystemExit, Exception) as exc:      # providers raise SystemExit
-                note(path, "rejected", f"no chapter text found ({exc})", **tag)
-                continue
-            _write_raw(target, raw)
-            db.mark_stage(c["id"], "fetched", raw_path=target)
-            retire(path)
-            note(path, "ingested", f"{s['slug']} #{c['ord'] + 1} {c['title']}", **tag)
+            r = ingest_raw(cfg, db, raw, force=force)
+            out.append({"file": name, **r})
+            log(f"  {name}: {r['result']}" + (f" — {r['detail']}" if r["detail"] else ""))
+            if r["result"] in ("ingested", "have"):
+                os.makedirs(done_dir, exist_ok=True)
+                os.replace(path, os.path.join(done_dir, name))
     finally:
         db.close()
     return out

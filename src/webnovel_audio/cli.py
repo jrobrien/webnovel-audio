@@ -2253,6 +2253,55 @@ def _cmd_ingest(args) -> int:
     return 1 if bad else 0
 
 
+def _cmd_grab(args) -> int:
+    """Fetch, ingest and render one series chapter by chapter, with the browser
+    (and its extension) loading the pages. Holds the sync lock throughout."""
+    import json as _json
+    import subprocess
+    import sys
+
+    from . import sync
+    from .grab import GrabLoop
+
+    cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
+    checked = _series_or_all(cfg, args.scope, want_json)
+    if checked is None or isinstance(checked, int):
+        return checked if isinstance(checked, int) else _fail(
+            "scope", "name one series to fetch", json_mode=want_json)
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError):
+        pass
+
+    def emit(d):
+        if want_json:
+            print(_json.dumps(d, ensure_ascii=False), flush=True)
+        elif d.get("event") == "grab" and not d.get("quiet"):
+            print(d["message"], flush=True)
+
+    def open_it(url):
+        if args.no_open:
+            print(f"open this in the browser with the extension:\n  {url}", flush=True)
+        else:
+            subprocess.Popen(["xdg-open", url], stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+
+    import signal
+    try:
+        with sync.sync_lock(cfg):
+            loop = GrabLoop(cfg, args.scope, args.count, ahead=args.ahead,
+                            idle_timeout=args.timeout, emit=emit)
+            signal.signal(signal.SIGTERM, lambda *_: loop.finish("stopped"))
+            return loop.run(on_ready=open_it)
+    except sync.SyncLocked as exc:
+        if want_json:
+            emit({"event": "locked", "path": exc.path, "message": str(exc)})
+        else:
+            print(f"! {exc}")
+        return 2
+
+
 def _cmd_serve(args) -> int:
     import sys
 
@@ -2908,6 +2957,21 @@ def _build_parser():
                     help="replace a chapter's page that is already fetched")
     _cfg_json(ig)
     ig.set_defaults(func=_cmd_ingest)
+
+    gr = sub.add_parser("grab", help="fetch, ingest and render a series through the browser")
+    _series_pos(gr, what="fetch")
+    gr.add_argument("--count", type=int, default=10, metavar="N",
+                    help="chapters to fetch this run (default: %(default)s)")
+    gr.add_argument("--ahead", type=int, default=0, metavar="K",
+                    help="chapters fetched but not yet rendered allowed when the next "
+                         "is released (default: %(default)s: wait for each render)")
+    gr.add_argument("--timeout", type=float, default=300.0, metavar="SEC",
+                    help="give up when the browser has been silent this long "
+                         "(default: %(default)s)")
+    gr.add_argument("--no-open", action="store_true",
+                    help="print the address instead of opening it")
+    _cfg_json(gr)
+    gr.set_defaults(func=_cmd_grab)
 
     ui = sub.add_parser("ui", help="launch the Tcl/Tk control UI")
     ui.add_argument("--interpreter", default="",

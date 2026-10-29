@@ -63,6 +63,7 @@ webnovel-audio check  --target S --range 2-10               # report only, write
 webnovel-audio render --target S --range 1-10 [--force] [--dry-run] [-o out.opus]
 
 webnovel-audio ingest [--dir D] [--force]                   # file pages saved from a browser (SETUP.md)
+webnovel-audio grab --scope S [--count N] [--ahead K]        # fetch via the browser extension, render each (SETUP.md)
 webnovel-audio sync [--scope S] [--limit N] [--estimate] [-y]   # refresh + render outstanding
 webnovel-audio progress [--scope S] [--watch]
 

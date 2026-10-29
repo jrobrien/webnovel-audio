@@ -292,6 +292,26 @@ save it**: the extension saves the series page, and `ingest` reads its chapter l
 and status like `series refresh` would, and reports where the site has you up to.
 The page opens in your default browser, which must be the one with the extension.
 
+### Fetch, ingest and render in one loop
+
+Right-click a series → **Fetch in browser…**, pick how many chapters, and the series
+page opens in your browser. From there the extension is led by `grab`, which the UI runs:
+
+```sh
+uv run webnovel-audio grab --scope intelligent-design --count 10   # what the UI runs
+```
+
+`grab` runs a small server on the loopback address only (a random port, a one-time
+token passed in the page address after the `#`, and nothing accepted from web pages).
+The extension sends each page it loads; `grab` files it, renders that chapter, and
+only when the render is finished tells the browser which chapter to load next, so
+fetching is paced by rendering. `--ahead K` lets K chapters wait unrendered
+(default 0). It stops at the count, when nothing is outstanding, on a page that is not
+a chapter (a bot-check), on Stop in the page or the UI, or when the browser has been
+silent for `--timeout` seconds. It holds the same lock as `sync`, so the two never run
+together. Pressing Stop in the UI ends it within about 15 seconds, once any chapter
+already rendering finishes.
+
 Personal use only — respect authors who sell their own audiobooks.
 
 ## 10. Where things live

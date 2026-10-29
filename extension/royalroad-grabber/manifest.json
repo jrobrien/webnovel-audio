@@ -1,9 +1,10 @@
 {
   "manifest_version": 3,
   "name": "webnovel-audio page grabber",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "Read the next N Royal Road chapters in this tab, and save series pages, for `webnovel-audio ingest`.",
   "permissions": ["downloads", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
   "background": { "service_worker": "background.js" },
   "content_scripts": [{
     "matches": ["https://www.royalroad.com/fiction/*"],
