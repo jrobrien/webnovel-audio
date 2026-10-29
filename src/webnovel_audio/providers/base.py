@@ -100,6 +100,23 @@ class Provider:
         saved page be parsed by the site that produced it."""
         return False
 
+    def identify(self, raw: str) -> tuple[str, str] | None:
+        """(series source_id, chapter source_id) of a saved chapter page, or
+        None if it isn't one. Lets `ingest` file a page saved from a browser."""
+        return None
+
+    def identify_series(self, raw: str) -> str | None:
+        """The series source_id of a saved series page, or None."""
+        return None
+
+    def parse_series_page(self, raw: str, url: str) -> SeriesInfo:  # pragma: no cover
+        """A saved series page -> SeriesInfo (what `series()` reads over the network)."""
+        raise NotImplementedError
+
+    def reading_position(self, raw: str) -> str | None:
+        """Chapter source_id the reader is up to, if a saved series page says."""
+        return None
+
     # -- series ----------------------------------------------------------
     def series(self, source: str, ctx: FetchContext) -> SeriesInfo:  # pragma: no cover
         raise NotImplementedError

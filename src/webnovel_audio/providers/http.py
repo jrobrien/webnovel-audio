@@ -17,6 +17,18 @@ USER_AGENT = (
 )
 
 
+def bot_check(content: bytes, headers=None) -> str | None:
+    """Which bot check a response is, if it is one instead of the page asked for.
+    Both are interstitials served with a normal-looking status, so a parser would
+    otherwise take them for a chapter."""
+    if b'id="anubis_challenge"' in content[:20000]:
+        return "Anubis"
+    if (headers or {}).get("cf-mitigated") == "challenge" or \
+            b"<title>Just a moment...</title>" in content[:5000]:
+        return "Cloudflare"
+    return None
+
+
 class PoliteClient:
     _last_request: dict[str, float] = {}
     _rate_lock = threading.Lock()
@@ -48,11 +60,19 @@ class PoliteClient:
             try:
                 resp = self._c.get(url, headers=headers)
                 PoliteClient._last_request[host] = time.monotonic()
-                if b'id="anubis_challenge"' in resp.content[:20000]:
+                check = bot_check(resp.content, resp.headers)
+                if check == "Anubis":
                     raise SystemExit(
                         f"{self.label}: {host} is asking for a bot-check (Anubis "
-                        "proof of work). Pass it in your browser, then run "
-                        "`webnovel-audio login --from-browser chrome`")
+                        "proof of work) that this client can't pass. Read the chapters in "
+                        "your browser and save them, then `webnovel-audio ingest` "
+                        "(SETUP.md, 'Saving pages from your browser')")
+                if check == "Cloudflare":
+                    raise SystemExit(
+                        f"{self.label}: {host} is asking for a bot-check (Cloudflare "
+                        "challenge) that this client can't pass. Read the chapters in "
+                        "your browser and save them, then `webnovel-audio ingest` "
+                        "(SETUP.md, 'Saving pages from your browser')")
                 if resp.status_code in (429, 500, 502, 503, 504):
                     time.sleep(self.delay * (attempt + 2))
                     continue

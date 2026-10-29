@@ -470,6 +470,7 @@ proc refresh_chapters {} {
             [list $n $v [dict get $c title] $st $dur $note] -tags $st
         ;# stashed for the Markdown pane, so selecting a row costs no subprocess
         set ::MD(ch$n,path)   [json::get $c text_path]
+        set ::MD(ch$n,url)    [json::get $c url]
         set ::MD(ch$n,status) $st
     }
     retag_rows
@@ -530,6 +531,26 @@ proc open_source {} {
     if {![regexp {^https?://} $url]} { log "! $slug has no source page recorded" ; return }
     open_url $url
 }
+;# The chapter page, in the browser that has the grabber extension. With `grab`
+;# the extension starts reading from it at once: that many chapters, saved for
+;# `ingest`, with Royal Road's own position following along.
+proc open_chapter {{grab 0}} {
+    set sel [.bl.tv selection]
+    if {[llength $sel] != 1} return
+    set url [expr {[info exists ::MD([lindex $sel 0],url)] ? $::MD([lindex $sel 0],url) : ""}]
+    if {![regexp {^https?://} $url]} { log "! no page recorded for that chapter" ; return }
+    if {$grab} { append url "#wa-grab=$grab" }
+    open_url $url
+}
+
+;# The series page, which the extension saves for `ingest` (chapter list, status).
+proc open_source_and_save {} {
+    set slug [selected_series]
+    set url [expr {[info exists ::SURL($slug)] ? $::SURL($slug) : ""}]
+    if {![regexp {^https?://} $url]} { log "! $slug has no source page recorded" ; return }
+    open_url "$url#wa-index"
+}
+
 proc open_url {url} {
     if {[catch {exec xdg-open $url >&/dev/null &} e]} { log "! could not open $url: $e" }
 }
@@ -656,6 +677,11 @@ proc chapter_ctx {X Y x y} {
     .ctx entryconfigure 7 -label "Update cast from selection ($n)"
     .ctx entryconfigure 0 -state [expr {$n == 1 ? "normal" : "disabled"}]
     .ctx entryconfigure 1 -state [expr {$n == 1 ? "normal" : "disabled"}]
+    ;# the two browser entries are the last two; menus take no "end-1"
+    set last [.ctx index end]
+    foreach i [list [expr {$last - 1}] $last] {
+        .ctx entryconfigure $i -state [expr {$n == 1 ? "normal" : "disabled"}]
+    }
     tk_popup .ctx $X $Y
 }
 
@@ -934,27 +960,23 @@ proc sync_estimate {w args} {
     $w.est configure -text "[json::get $d chapters] chapter(s), ~[json::get $d human] of CPU"
 }
 
-;# Royal Road puts a proof-of-work bot check in front of its pages; the
-;# clearance cookie it earns lasts about a week. This copies it out of the
-;# browser (which has to have passed the check) so syncs can go on. It is quick
-;# and touches no chapter, so it works while a sync is running too.
-proc import_cookies {} {
-    foreach browser {chrome chromium} {
-        set d [run_json_soft login --from-browser $browser]
-        set err [json_error $d]
-        if {$d ne "" && $err eq ""} {
-            set n [llength [json::get $d cookies]]
-            log "imported $n bot-check cookie(s) from $browser"
-            status "cookies imported from $browser"
-            return
-        }
-        if {$err ne ""} { lappend errs "$browser: $err" }
+;# File the pages the browser extension saved into the raw cache (the fetch
+;# stage, for a site that will not talk to us); `sync` renders them from there.
+proc do_ingest {} {
+    set d [run_json_soft ingest]
+    if {$d eq ""} return
+    set err [json_error $d]
+    if {$err ne "" && [json::get $d results] eq ""} {
+        log "! ingest: $err" ; status "ingest failed" ; return
     }
-    set msg [join $errs "\n"]
-    log "! cookie import failed — $msg"
-    status "cookie import failed"
-    tk_messageBox -parent . -icon warning -title "Re-import cookies" -message \
-        "Could not import cookies.\n\n$msg\n\nOpen royalroad.com in Chrome or Chromium, let it pass the check, and try again."
+    set results [json::get $d results]
+    foreach r $results {
+        log "  [dict get $r file]: [dict get $r result] — [dict get $r detail]"
+    }
+    set n [json::get $d ingested]
+    log "ingest: $n of [llength $results] page(s) filed"
+    status "ingest: $n filed"
+    refresh_series ; refresh_chapters
 }
 
 proc do_sync {w} {
@@ -1666,7 +1688,7 @@ ttk::button .tool.sync    -text "Sync…"       -command {dlg_sync @all}
 ttk::button .tool.stop    -text "Stop"        -command stop_cmd
 ttk::separator .tool.s2 -orient vertical
 ttk::button .tool.svc     -text "Service…" -command dlg_service
-ttk::button .tool.cookies -text "Re-import cookies" -command import_cookies
+ttk::button .tool.ingest  -text "Ingest" -command do_ingest
 ;# Labelled "View" rather than "Theme": it carries both appearance settings
 ;# now, and the widget path stays .tool.theme so repaint_theme keeps finding
 ;# the menu.
@@ -1700,7 +1722,7 @@ pack .tool.s1 -side left -fill y -padx 6
 pack .tool.sync .tool.stop -side left -padx 2
 pack .tool.s2 -side left -fill y -padx 6
 pack .tool.svc -side left -padx 2
-pack .tool.cookies -side left -padx 2
+pack .tool.ingest -side left -padx 2
 grid .tool -row 0 -column 0 -sticky ew
 
 # -- vertical split: series on top, everything else below
@@ -1739,6 +1761,7 @@ menu .sctx -tearoff 0
 .sctx add command -label "Set priority…" -command dlg_priority
 .sctx add command -label "Rename…" -command dlg_rename
 .sctx add command -label "Open source page" -command open_source
+.sctx add command -label "Open source page and save it" -command open_source_and_save
 .sctx add separator
 .sctx add command -label "Delete series…" -command dlg_delete
 
@@ -1781,6 +1804,9 @@ menu .ctx -tearoff 0
 .ctx add command -label "Mark skipped" -command {do_state skipped}
 .ctx add command -label "Mark new (re-do)" -command {do_state new}
 .ctx add command -label "Reset errors" -command do_reset_errors
+.ctx add separator
+.ctx add command -label "Open in browser" -command open_chapter
+.ctx add command -label "Open in browser and save the next 10" -command {open_chapter 10}
 
 # -- notebook: Cast | Lexicon | Markdown | Segments | Log
 ttk::notebook .br

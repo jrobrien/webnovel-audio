@@ -632,6 +632,12 @@ def _refresh_one(cfg: Config, db: DB, s):
     ctx = _ctx(cfg, db, prov, s, bdir)
     fi = prov.series(s["url"], ctx)
     fi.provider = prov.name
+    return _apply_series_info(db, prov, ctx, s, bdir, fi), fi
+
+
+def _apply_series_info(db: DB, prov, ctx, s, bdir: str, fi) -> int:
+    """Store a freshly read SeriesInfo for tracked series `s`; returns how many
+    chapters are new."""
     # refresh the series metadata too, not just the chapter list: tags,
     # warnings, status and rating all drift, and a series added before
     # those columns existed would otherwise stay null forever
@@ -640,7 +646,7 @@ def _refresh_one(cfg: Config, db: DB, s):
     new = db.replace_chapters(s["id"], fi.chapters)
     _cache_cover(prov, ctx, fi.slug, fi.cover_url, bdir)
     _cache_volume_covers(prov, ctx, fi.slug, fi.volumes, bdir)
-    return new, fi
+    return new
 
 
 def refresh(cfg: Config, key: str | None = None, log=print) -> list[dict]:
@@ -769,6 +775,122 @@ def _do_fetch(cfg, db, prov, ctx, bdir, c, *, force=False) -> str:
         _write_raw(path, prov.fetch(_ref(c), ctx))
     db.mark_stage(c["id"], "fetched", raw_path=path)
     return path
+
+
+def _ingest_series_page(cfg, db, prov, raw, path, note, retire) -> None:
+    """A series page saved from a browser: what `series refresh` would have read."""
+    sid = prov.identify_series(raw)
+    s = db.find_series(prov.name, sid)
+    if s is None:
+        note(path, "skipped", f"{prov.name} series {sid} is not tracked")
+        return
+    bdir = bundle.bundle_dir(cfg, s)
+    ctx = _ctx(cfg, db, prov, s, bdir)
+    try:
+        fi = prov.parse_series_page(raw, s["url"])
+    except Exception as exc:                       # providers raise SystemExit too
+        note(path, "rejected", f"could not read a series page ({exc})")
+        return
+    if not fi.chapters:
+        note(path, "rejected", "no chapter list in that page")
+        return
+    # a browser can be served a different layout from the one we parse, so a
+    # field the page did not yield keeps what we already hold
+    for f in ("author", "author_url", "status", "cover_url", "rating"):
+        if not getattr(fi, f):
+            setattr(fi, f, s[f] if f in s.keys() else getattr(fi, f))
+    for f in ("tags", "warnings"):
+        if not getattr(fi, f) and s[f]:
+            setattr(fi, f, json.loads(s[f]))
+    fi.provider = prov.name
+    new = _apply_series_info(db, prov, ctx, s, bdir, fi)
+    bundle.sync_bundle(cfg, db, db.series_by_id(s["id"]))
+    detail = f"{s['slug']}: {len(fi.chapters)} chapters (+{new} new)"
+    pos = prov.reading_position(raw)
+    if pos:
+        c = db.con.execute("SELECT ord FROM chapters WHERE series_id=? AND source_id=?",
+                           (s["id"], pos)).fetchone()
+        if c:
+            detail += f"; the site has you at #{c['ord'] + 1}"
+    retire(path)
+    note(path, "ingested", detail, series=s["slug"], kind="series", new=new)
+
+
+def ingest_pages(cfg: Config, directory: str, *, force: bool = False,
+                 log=print) -> list[dict]:
+    """File chapter pages saved from a browser into the raw cache.
+
+    The fetch stage for a site that will not talk to us: the page was read in a
+    real browser and saved to `directory`. Each one is matched to a tracked chapter
+    by the ids in the page itself (not its filename), checked to be a chapter and
+    not a bot-check, written where `fetch` would have put it and marked fetched.
+    Done files move to `directory/done/`, and a page for a chapter we already hold
+    is left alone unless `force`. Returns one {file, result, ...} per page.
+    """
+    from .providers.http import bot_check
+
+    directory = os.path.expanduser(directory)
+    done_dir = os.path.join(directory, "done")
+    db = _db(cfg)
+    out: list[dict] = []
+
+    def note(path, result, detail="", **kw):
+        out.append({"file": os.path.basename(path), "result": result,
+                    "detail": detail, **kw})
+        log(f"  {os.path.basename(path)}: {result}" + (f" — {detail}" if detail else ""))
+
+    def retire(path):
+        os.makedirs(done_dir, exist_ok=True)
+        os.replace(path, os.path.join(done_dir, os.path.basename(path)))
+
+    try:
+        names = sorted(n for n in os.listdir(directory)
+                       if n.lower().endswith((".html", ".htm")))
+        for name in names:
+            path = os.path.join(directory, name)
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                raw = fh.read()
+            check = bot_check(raw.encode("utf-8", "replace"))
+            if check:
+                note(path, "rejected", f"a {check} bot-check page, not a chapter")
+                continue
+            prov = providers.for_raw(raw)
+            ids = prov.identify(raw) if prov else None
+            if not ids and prov and prov.identify_series(raw):
+                _ingest_series_page(cfg, db, prov, raw, path, note, retire)
+                continue
+            if not ids:
+                note(path, "skipped", "not a chapter or series page from a site we know")
+                continue
+            s = db.find_series(prov.name, ids[0])
+            if s is None:
+                note(path, "skipped", f"{prov.name} series {ids[0]} is not tracked")
+                continue
+            c = db.con.execute("SELECT * FROM chapters WHERE series_id=? AND source_id=?",
+                               (s["id"], ids[1])).fetchone()
+            if c is None:
+                note(path, "skipped", f"{s['slug']} has no chapter {ids[1]} "
+                                      "(run `series refresh`)")
+                continue
+            bdir = bundle.bundle_dir(cfg, s)
+            target = _raw_path(bdir, prov, c)
+            tag = {"series": s["slug"], "number": c["ord"] + 1}
+            if os.path.exists(target) and not force:
+                retire(path)
+                note(path, "have", f"{s['slug']} #{c['ord'] + 1} is already fetched", **tag)
+                continue
+            try:
+                prov.parse(raw, _ref(c), _ctx(cfg, db, prov, s, bdir))
+            except (SystemExit, Exception) as exc:      # providers raise SystemExit
+                note(path, "rejected", f"no chapter text found ({exc})", **tag)
+                continue
+            _write_raw(target, raw)
+            db.mark_stage(c["id"], "fetched", raw_path=target)
+            retire(path)
+            note(path, "ingested", f"{s['slug']} #{c['ord'] + 1} {c['title']}", **tag)
+    finally:
+        db.close()
+    return out
 
 
 def _do_parse(cfg, db, prov, ctx, bdir, c, raw_path, *, force=False) -> str:

@@ -144,9 +144,19 @@ def test_ui_handles_every_event_shape(tmp_path):
 
 
 @needs_display
-def test_reimport_cookies_button_reports_each_outcome(tmp_path):
-    out = tmp_path / "cookies.log"
-    r = _run(os.path.join(ROOT, "tests", "ui", "import_cookies.tcl"), str(out),
+def test_ingest_button_lists_each_page_and_reports_failure(tmp_path):
+    out = tmp_path / "ingest.log"
+    r = _run(os.path.join(ROOT, "tests", "ui", "ingest_button.tcl"), str(out),
+             ui_conf=tmp_path / "ui.conf")
+    log = out.read_text() if out.exists() else ""
+    assert r.returncode == 0, f"{r.stderr}\n{log}"
+    assert "FAILURES: 0" in log, log
+
+
+@needs_display
+def test_chapter_and_series_pages_open_in_the_browser_with_the_extension_marker(tmp_path):
+    out = tmp_path / "open.log"
+    r = _run(os.path.join(ROOT, "tests", "ui", "open_chapter.tcl"), str(out),
              ui_conf=tmp_path / "ui.conf")
     log = out.read_text() if out.exists() else ""
     assert r.returncode == 0, f"{r.stderr}\n{log}"

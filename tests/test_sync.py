@@ -961,3 +961,106 @@ def test_chapters_the_source_dropped_keep_a_unique_place(tmp_path):
         c.order = n
     db.replace_chapters(sid, full)
     assert [r["ord"] for r in db.chapters(sid)] == list(range(7))
+
+
+def _page(fiction, chapter, body='<div class="chapter-content"><p>Hello there.</p></div>'):
+    return (f'<html><head><meta property="og:url" content="https://www.royalroad.com/fiction/'
+            f'{fiction}/salvage-run/chapter/{chapter}/x"></head><body>{body}</body></html>')
+
+
+def test_ingest_files_saved_pages_into_the_raw_cache(tmp_path, monkeypatch):
+    """A site that will not talk to us is read in a browser; `ingest` files the
+    saved pages where `fetch` would have put them, matched by the ids in the page."""
+    from webnovel_audio import providers
+
+    if not os.path.exists(FICTION_FIXTURE):
+        return
+    fiction_html = open(FICTION_FIXTURE, encoding="utf-8").read()
+    monkeypatch.setattr(providers.RoyalRoadProvider, "_get", lambda self, url, ctx: fiction_html)
+    monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
+    cfg = Config()
+    cfg.library.state_db = str(tmp_path / "state.db")
+    cfg.library.library_dir = str(tmp_path / "lib")
+    sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run",
+                    log=lambda *_: None)
+    db = DB(cfg.library.state_db)
+    rows = db.chapters(db.get_series("salvage-run")["id"])
+    a, b = rows[0]["source_id"], rows[1]["source_id"]
+    db.close()
+
+    d = tmp_path / "dl"
+    d.mkdir()
+    (d / "one.html").write_text(_page(424242, a))
+    (d / "two.html").write_text(_page(424242, b, '<script id="anubis_challenge"></script>'))
+    (d / "three.html").write_text(_page(424242, "999999"))
+    (d / "four.html").write_text(_page(777, a))
+    (d / "five.html").write_text(_page(424242, b, "<p>no chapter text</p>"))
+    (d / "six.html").write_text("<html><body>some other page</body></html>")
+
+    got = {r["file"]: r["result"] for r in sync.ingest_pages(cfg, str(d), log=lambda *_: None)}
+    assert got == {"one.html": "ingested", "two.html": "rejected", "three.html": "skipped",
+                   "four.html": "skipped", "five.html": "rejected", "six.html": "skipped"}
+    assert sorted(os.listdir(d / "done")) == ["one.html"]
+
+    db = DB(cfg.library.state_db)
+    c = db.chapters(db.get_series("salvage-run")["id"])[0]
+    assert c["status"] == "fetched" and os.path.exists(c["raw_path"])
+    assert "Hello there." in open(c["raw_path"], encoding="utf-8").read()
+    db.close()
+
+    # the same page again: already held, so left alone (and filed away) without --force
+    (d / "again.html").write_text(_page(424242, a, '<div class="chapter-content"><p>Changed.</p></div>'))
+    r = sync.ingest_pages(cfg, str(d), log=lambda *_: None)
+    assert [x["result"] for x in r if x["file"] == "again.html"] == ["have"]
+    assert "Changed." not in open(c["raw_path"], encoding="utf-8").read()
+
+
+def test_ingest_reads_a_saved_series_page_like_a_refresh(tmp_path, monkeypatch):
+    """The series page saved from a browser updates the chapter list. A browser can
+    be served a layout whose author/status we cannot read; those must not be blanked."""
+    from webnovel_audio import providers
+
+    if not os.path.exists(FICTION_FIXTURE):
+        return
+    fiction_html = open(FICTION_FIXTURE, encoding="utf-8").read()
+    monkeypatch.setattr(providers.RoyalRoadProvider, "_get", lambda self, url, ctx: fiction_html)
+    monkeypatch.setattr(sync, "_cache_cover", lambda *a, **k: None)
+    cfg = Config()
+    cfg.library.state_db = str(tmp_path / "state.db")
+    cfg.library.library_dir = str(tmp_path / "lib")
+    sync.add_series(cfg, "https://www.royalroad.com/fiction/424242/salvage-run",
+                    log=lambda *_: None)
+    db = DB(cfg.library.state_db)
+    s = db.get_series("salvage-run")
+    pos = db.chapters(s["id"])[3]["source_id"]
+    db.set_status([c["id"] for c in db.chapters(s["id"])], "rendered")   # nothing outstanding
+    db.close()
+
+    page = fiction_html.replace(
+        "<head>", '<head><meta property="og:url" content="https://www.royalroad.com/fiction/424242/salvage-run">', 1)
+    page = page.replace("</body>", f"<script>window.readingProgress = {pos};</script></body>", 1)
+    # the redesigned layout: no author link, no status
+    import re
+    page = re.sub(r'<a[^>]+href="/profile/[^>]*>.*?</a>', "", page, flags=re.S)
+    d = tmp_path / "dl"
+    d.mkdir()
+    (d / "series.html").write_text(page)
+    r = sync.ingest_pages(cfg, str(d), log=lambda *_: None)
+    assert [x["result"] for x in r] == ["ingested"], r
+    assert "6 chapters" in r[0]["detail"] and "has you at #4" in r[0]["detail"]
+    db = DB(cfg.library.state_db)
+    s = db.get_series("salvage-run")
+    assert s["author"] == "voidwright"             # kept, not blanked
+    assert len(db.chapters(s["id"])) == 6
+    db.close()
+
+
+def test_series_author_falls_back_to_json_ld():
+    from webnovel_audio.providers.royalroad import parse_fiction
+
+    html = ('<html><head><meta property="og:url" content="https://www.royalroad.com/fiction/5/x">'
+            '<script type="application/ld+json">{"@type":"Book","author":{"@type":"Person",'
+            '"name":"Kienti","url":"https://www.royalroad.com/profile/1"}}</script></head>'
+            '<body></body></html>')
+    fi = parse_fiction(html, url="https://www.royalroad.com/fiction/5/x")
+    assert (fi.author, fi.author_url) == ("Kienti", "https://www.royalroad.com/profile/1")

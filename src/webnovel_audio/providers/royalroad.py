@@ -149,6 +149,19 @@ def _parse_rating(soup) -> float:
     return _soft(go, 0.0)
 
 
+def _jsonld_author(soup) -> tuple[str, str]:
+    for tag in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(tag.string or "")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for item in (data if isinstance(data, list) else [data]):
+            a = item.get("author") if isinstance(item, dict) else None
+            if isinstance(a, dict) and a.get("name"):
+                return str(a["name"]).strip(), str(a.get("url") or "")
+    return "", ""
+
+
 def parse_fiction(html: str, url: str = "") -> SeriesInfo:
     soup = BeautifulSoup(html, "lxml")
     rr_id, slug = _fiction_id_slug(soup, url)
@@ -166,6 +179,8 @@ def parse_fiction(html: str, url: str = "") -> SeriesInfo:
     a = soup.select_one('h4 a[href^="/profile/"], a[href^="/profile/"]')
     if a:
         author, author_url = a.get_text(strip=True), BASE + a["href"]
+    if not author:      # the redesigned page links absolute URLs; its JSON-LD still names the author
+        author, author_url = _jsonld_author(soup)
     cover = ""
     og_img = soup.find("meta", property="og:image")
     if og_img and og_img.get("content"):
@@ -280,6 +295,10 @@ def parse_chapter(html: str, *, url: str = "") -> Document:
 # --- the provider ------------------------------------------------------------
 
 _OG_URL_RE = re.compile(r"""<meta[^>]+og:url[^>]+royalroad\.com""", re.I)
+_FICTION_URL_RE = re.compile(
+    r"""<meta[^>]+og:url[^>]+royalroad\.com/fiction/(\d+)(?:/[^/"']*)?["']""", re.I)
+_CHAPTER_URL_RE = re.compile(
+    r"""<meta[^>]+og:url[^>]+royalroad\.com/fiction/(\d+)/[^/"']+/chapter/(\d+)""", re.I)
 
 
 class RoyalRoadProvider(Provider):
@@ -294,12 +313,24 @@ class RoyalRoadProvider(Provider):
     def recognizes(self, raw: str) -> bool:
         return bool(_OG_URL_RE.search(raw[:20000]))
 
+    def identify(self, raw: str) -> tuple[str, str] | None:
+        m = _CHAPTER_URL_RE.search(raw[:20000])
+        return (m.group(1), m.group(2)) if m else None
+
+    def identify_series(self, raw: str) -> str | None:
+        m = _FICTION_URL_RE.search(raw[:20000])
+        return m.group(1) if m else None
+
+    def reading_position(self, raw: str) -> str | None:
+        """The chapter the logged-in reader is up to, as the series page records it."""
+        m = re.search(r"window\.readingProgress\s*=\s*(\d+)", raw)
+        return m.group(1) if m else None
+
     def _get(self, url: str, ctx: FetchContext) -> str:
         """The only network call. Tests replace this."""
         client = PoliteClient(
             delay=float(ctx.settings.get("request_delay", DEFAULT_REQUEST_DELAY)),
-            cookies=self.session.load(), label=self.name,
-            headers=({"User-Agent": ua} if (ua := self.session.user_agent()) else None))
+            cookies=self.session.load(), label=self.name)
         try:
             return client.text(url if url.startswith("http") else BASE + url)
         finally:
@@ -307,6 +338,9 @@ class RoyalRoadProvider(Provider):
 
     def series(self, source: str, ctx: FetchContext) -> SeriesInfo:
         return parse_fiction(self._get(source, ctx), url=source)
+
+    def parse_series_page(self, raw: str, url: str) -> SeriesInfo:
+        return parse_fiction(raw, url=url)
 
     def check_fetchable(self, ref: ChapterRef, ctx: FetchContext) -> None:
         if ref.unlocked:

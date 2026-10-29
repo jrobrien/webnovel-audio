@@ -252,22 +252,45 @@ fetch of a normal chapter starts returning a login page, `login --logout` then
 re-export. Nothing in this tool reads your account state — no follows, no
 reading position.
 
-### The bot check
+### The bot checks
 
-Royal Road sits behind Anubis, a proof-of-work check. Without its clearance
-cookie every fetch gets the "Making sure you're not a bot!" page, and the tool
-stops with a message saying so. Open royalroad.com in Chrome or Chromium so it
-passes the check, then:
+Royal Road sits behind two bot checks (Anubis, Cloudflare). Plain HTTP from this tool
+cannot pass them, and replaying a browser's cookies was tried and does not hold up
+(Cloudflare judges the connection, not just the cookie). A blocked fetch stops with a
+message saying which check it was; the way through is the next section.
 
-```sh
-uv run webnovel-audio login --from-browser chrome     # or chromium; --profile "Profile 1"
-```
+### Saving pages from your browser
 
-This copies only the bot-check cookies (and the browser's User-Agent, which they
-are tied to) out of the browser's cookie file, which may be open, and adds them to
-`session.json` without touching a stored login. The key comes from the desktop
-keyring via `secret-tool`. The control UI has a **Re-import cookies** toolbar button that does the same (Chrome, then Chromium). `--all-cookies` takes the logged-in session too. The
-clearance lasts about a week; repeat when fetches start refusing again.
+If Royal Road's Cloudflare check turns the tool away (a 403 "Cloudflare challenge"
+message, or the Anubis one), read the chapters in Chrome and hand the pages over:
+
+1. `chrome://extensions` → turn on Developer mode → **Load unpacked** →
+   `extension/royalroad-grabber/` in this repo.
+2. Open the chapter you are up to on royalroad.com. A small panel appears at the
+   bottom right: set a number and press **Start**. The tab saves this chapter and
+   steps through **Next** by itself, a few seconds apart, as if you were reading,
+   so Royal Road moves your reading position along too. It stops at the number,
+   at the last chapter, on a page with no chapter text (a bot-check), or on **Stop**.
+3. Pages land in `~/Downloads/webnovel-audio/`. Then:
+
+   ```sh
+   uv run webnovel-audio ingest              # files them into the raw cache
+   uv run webnovel-audio sync                # parse and render as usual
+   ```
+
+   `ingest` matches each page to a tracked chapter by the ids inside the page (so
+   a plain "Save page as" works too), refuses bot-check pages, and moves what it has
+   dealt with to `done/`. A chapter you already hold is left alone unless `--force`.
+   If it says a chapter is unknown, run `series refresh` first (or save that series'
+   page, below).
+
+The control UI's **Ingest** button does the `ingest` step (it lists each page's
+result in the log and refreshes the lists). It also starts the extension for you. Right-click a chapter → **Open in
+browser** (just the page) or **Open in browser and save the next 10** (the extension
+starts at once and walks 10 chapters). Right-click a series → **Open source page and
+save it**: the extension saves the series page, and `ingest` reads its chapter list
+and status like `series refresh` would, and reports where the site has you up to.
+The page opens in your default browser, which must be the one with the extension.
 
 Personal use only — respect authors who sell their own audiobooks.
 

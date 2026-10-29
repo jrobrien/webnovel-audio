@@ -72,6 +72,7 @@ class _FakeResp:
     status_code = 200
     text = "<html></html>"
     content = b"<html></html>"
+    headers: dict = {}
     url = "https://www.royalroad.com/x"
 
     def raise_for_status(self):

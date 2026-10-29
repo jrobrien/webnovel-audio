@@ -2209,34 +2209,6 @@ def _cmd_login(args) -> int:
             print("no session stored; chapter fetches are anonymous.")
         return 0 if cookies else 1
 
-    ua = None
-    if getattr(args, "from_browser", None):
-        from .providers import browser_cookies as bc
-        try:
-            cookies = bc.read_cookies(
-                args.from_browser, sess.domain, profile=args.profile,
-                only=None if args.all_cookies else bc.CLEARANCE)
-        except bc.BrowserCookieError as exc:
-            return _fail("browser_cookies", str(exc), json_mode=want_json)
-        if not cookies:
-            return _fail("no_cookies",
-                         f"{args.from_browser} has no unexpired "
-                         f"{'cookies' if args.all_cookies else 'bot-check cookies'}"
-                         f" for {sess.domain}",
-                         hint=f"open {sess.domain} in {args.from_browser}, pass "
-                              "the check, then retry (--profile if not Default)",
-                         json_mode=want_json)
-        ua = bc.user_agent(args.from_browser)
-        sess.merge(cookies, ua)
-        if want_json:
-            _jprint({"ok": True, "stored": True, "cookies": sorted(cookies),
-                     "user_agent": ua, "file": sess.path})
-        else:
-            print(f"merged {len(cookies)} cookie(s) from {args.from_browser} "
-                  f"into {sess.path}: {', '.join(sorted(cookies))}")
-            if not ua:
-                print("  (could not read the browser's version; User-Agent unchanged)")
-        return 0
     if args.cookies_file:
         cookies = sess.parse_cookies_txt(args.cookies_file)
     elif args.cookie:
@@ -2255,6 +2227,30 @@ def _cmd_login(args) -> int:
     else:
         print(f"saved {len(cookies)} cookie(s) for {sess.domain} -> {sess.path}")
     return 0
+
+
+def _cmd_ingest(args) -> int:
+    """File chapter pages saved from a browser into the raw cache (the fetch
+    stage, for a site that will not talk to us). `sync` takes it from there."""
+    from . import sync
+
+    want_json = getattr(args, "json", False)
+    cfg = Config.load(args.config)
+    directory = os.path.expanduser(args.dir)
+    if not os.path.isdir(directory):
+        return _fail("no_folder", f"{directory} does not exist",
+                     hint="save chapter pages there (the browser extension does)",
+                     json_mode=want_json)
+    results = sync.ingest_pages(cfg, directory, force=args.force,
+                                log=(lambda *_: None) if want_json else print)
+    n = sum(1 for r in results if r["result"] == "ingested")
+    bad = sum(1 for r in results if r["result"] == "rejected")
+    if want_json:
+        _jprint({"ok": bad == 0, "ingested": n, "results": results})
+    else:
+        print(f"{n} ingested, {len(results) - n - bad} skipped, {bad} rejected "
+              f"(of {len(results)} page(s) in {directory})")
+    return 1 if bad else 0
 
 
 def _cmd_serve(args) -> int:
@@ -2897,23 +2893,21 @@ def _build_parser():
                       help="Netscape cookies.txt exported from your browser")
     mode.add_argument("--cookie-header", dest="cookie", metavar="STR",
                       help="the raw Cookie: header value (devtools -> copy)")
-    mode.add_argument("--from-browser", choices=("chrome", "chromium"),
-                      metavar="BROWSER",
-                      help="copy the site's bot-check cookies (Anubis, Cloudflare) "
-                           "out of chrome or chromium, running or not; adds to "
-                           "any stored login rather than replacing it")
     mode.add_argument("--status", action="store_true",
                       help="report whether a session is stored (does not verify it)")
     mode.add_argument("--logout", action="store_true",
                       help="delete the stored session")
-    lg.add_argument("--profile", default="Default", metavar="NAME",
-                    help="with --from-browser: the browser profile directory "
-                         "(default: Default)")
-    lg.add_argument("--all-cookies", action="store_true",
-                    help="with --from-browser: take every cookie for the site, "
-                         "including its logged-in session, not just the bot check")
     _cfg_json(lg)
     lg.set_defaults(func=_cmd_login)
+
+    ig = sub.add_parser("ingest", help="file chapter pages saved from a browser")
+    ig.add_argument("--dir", default="~/Downloads/webnovel-audio", metavar="DIR",
+                    help="where the pages were saved (default: %(default)s); "
+                         "done ones move to DIR/done")
+    ig.add_argument("--force", action="store_true",
+                    help="replace a chapter's page that is already fetched")
+    _cfg_json(ig)
+    ig.set_defaults(func=_cmd_ingest)
 
     ui = sub.add_parser("ui", help="launch the Tcl/Tk control UI")
     ui.add_argument("--interpreter", default="",
