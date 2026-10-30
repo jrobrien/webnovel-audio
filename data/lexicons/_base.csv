@@ -16,10 +16,13 @@
 # `d=` in the notes is edit distance to the reference pronunciation in Google's
 # WikipediaHomographData, 0 being exact.
 #
-# Deliberately absent: bare `lead` `bass` `row` `tear` `bow` and the other
+# Deliberately absent: bare `lead` `bass` `row` `bow` and the other
 # readings that split on meaning rather than grammar. A tag cannot choose those
 # (the tagger gives the metal and the position/modifier senses of `lead` the
-# same NN/JJ); pin them per series with a phrase, e.g.  a tear in,,a tair in
+# same NN/JJ); pin them per series with a phrase, e.g.  offered me a bow
+# `tear` is the exception: ripping is ~80% of singular uses in this fiction and the
+# tagger reads the noun (and a verb after a noun subject) as crying, so it defaults
+# to ripping and the crying collocations are pinned as phrases (end of file).
 # Only the metal collocations of `lead` are pinned, as phrases, at the end.
 surface,pos,respell,notes
 
@@ -382,10 +385,43 @@ stagger a bow,,stagger a bough,"the gesture (rhymes with cow), not the weapon"
 fist and a bow,,fist and a bough,"the gesture (rhymes with cow), not the weapon"
 chitin,,kytin,read as CHIH-tin; it is KY-tin
 chitinous,,kytinous,
-talon,,tal-un,bird's claw; reads as TALAHN otherwise
-talons,,tal-ens,plural of talon
+talon,,tallin,bird's claw; reads as TALAHN otherwise; single-stress respell
+talons,,tallins,plural of talon
 protégé,,prohtuzhay,g2p says PRUH-tayg-ay
 protégés,,prohtuzhays,plural of protégé
 jugulars,,jug-yuh-lerz,plural of jugular
 infantrymen,,infantry men,compound read with stress on -tree-; split so IN-fun-tree stays stressed
 infantryman,,infantry mun,see infantrymen
+
+# --- tear: ripping by default, crying by phrase -------------------
+tear,,tair,default to ripping (~80% of singular uses); tagger gave the noun and noun-subject verb the crying reading. Crying phrases below
+shed a tear,,shed a teer,crying sense; bare `tear` defaults to ripping
+shed a single tear,,shed a single teer,crying sense; bare `tear` defaults to ripping
+sheds a single tear,,sheds a single teer,crying sense; bare `tear` defaults to ripping
+wiped a tear,,wiped a teer,crying sense; bare `tear` defaults to ripping
+wipe a tear,,wipe a teer,crying sense; bare `tear` defaults to ripping
+wiped away a tear,,wiped away a teer,crying sense; bare `tear` defaults to ripping
+wiping away a tear,,wiping away a teer,crying sense; bare `tear` defaults to ripping
+wipe away a tear,,wipe away a teer,crying sense; bare `tear` defaults to ripping
+brought a tear,,brought a teer,crying sense; bare `tear` defaults to ripping
+brings a tear,,brings a teer,crying sense; bare `tear` defaults to ripping
+bring a tear,,bring a teer,crying sense; bare `tear` defaults to ripping
+let slip a tear,,let slip a teer,crying sense; bare `tear` defaults to ripping
+a single tear,,a single teer,crying sense; bare `tear` defaults to ripping
+solitary tear,,solitary teer,crying sense; bare `tear` defaults to ripping
+second tear,,second teer,crying sense; bare `tear` defaults to ripping
+hot tear,,hot teer,crying sense; bare `tear` defaults to ripping
+warm tear,,warm teer,crying sense; bare `tear` defaults to ripping
+baby's tear,,baby's teer,crying sense; bare `tear` defaults to ripping
+summoned a tear,,summoned a teer,crying sense; bare `tear` defaults to ripping
+tear ran,,teer ran,crying sense; bare `tear` defaults to ripping
+tear rolled,,teer rolled,crying sense; bare `tear` defaults to ripping
+tear fell,,teer fell,crying sense; bare `tear` defaults to ripping
+tear slid,,teer slid,crying sense; bare `tear` defaults to ripping
+tear trickled,,teer trickled,crying sense; bare `tear` defaults to ripping
+tear stains,,teer stains,crying sense; bare `tear` defaults to ripping
+tear streaks,,teer streaks,crying sense; bare `tear` defaults to ripping
+tear ducts,,teer ducts,crying sense; bare `tear` defaults to ripping
+tear-stained,,teer-stained,crying sense; bare `tear` defaults to ripping
+Tear of Stone,,Teer of Stone,crying sense; bare `tear` defaults to ripping
+wear and tear,,wear and tair,the ripping sense; tagger reads the noun as crying
