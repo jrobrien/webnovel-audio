@@ -15,6 +15,7 @@ from dataclasses import asdict, dataclass
 
 from .normalize import (
     Block,
+    is_scene_break,
     normalize_chat_message,
     normalize_heading,
     normalize_system,
@@ -149,6 +150,30 @@ def _slice_block(b: Block, a: int, e: int) -> Block:
     return Block(kind=b.kind, text=b.text[a:e], italic=italic, meta=b.meta)
 
 
+_PARA_GAP_RE = re.compile(r"\n[ \t]*\n+")
+
+
+def paragraph_pieces(blocks: list[Block]):
+    """Split a paragraph block at blank lines, and read a lone `***` line as a scene break.
+
+    Some authors put a whole chapter in one `<p>` with `<br><br>` between paragraphs:
+    the bold title, an epigraph, a `***` line and the text all arrive as one block. A
+    title with no full stop then ran into the first sentence, and the `***` was
+    spoken. Italic spans are re-based on each piece."""
+    for b in blocks:
+        if b.kind != "paragraph" or not _PARA_GAP_RE.search(b.text):
+            yield b
+            continue
+        pos = 0
+        for m in [*_PARA_GAP_RE.finditer(b.text), None]:
+            end = m.start() if m else len(b.text)
+            piece = b.text[pos:end]
+            if piece.strip():
+                yield (Block("scene_break") if is_scene_break(piece)
+                       else _slice_block(b, pos, end))
+            pos = m.end() if m else end
+
+
 def machine_pieces(blocks: list[Block], cfg):
     """Yield (block, is_machine), splitting out text wrapped in the series'
     machine marker (`cfg.synth.machine_marker`, e.g. `//`).
@@ -209,7 +234,7 @@ def build_segments(blocks: list[Block], cfg, lexicon=None, nlp=None) -> list[Seg
     chat_voices: dict[str, str] = {}
     chat_run_open = False
 
-    for block, machine in machine_pieces(blocks, cfg):
+    for block, machine in machine_pieces(list(paragraph_pieces(blocks)), cfg):
         if machine:
             chat_run_open = False
             norm = normalize_system if block.kind == "system" else normalize_text
@@ -275,8 +300,8 @@ def build_segments(blocks: list[Block], cfg, lexicon=None, nlp=None) -> list[Seg
         if block.kind == "heading":
             text = _finish(normalize_heading(block.text), lexicon, nlp)
             fic = _finish(normalize_text(block.meta.get("fiction", "")), lexicon, nlp).strip(" .")
-            if fic and text:
-                text = f"{fic}. {text}"          # "Salvage Run. Chapter One. Dead Air."
+            if fic:
+                text = f"{fic}. {text}" if text else fic   # "Salvage Run. Chapter One. Dead Air."
             if text and text[-1] not in ".!?…":
                 text += "."                     # unterminated -> Kokoro clips the last word
             if text:

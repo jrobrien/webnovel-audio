@@ -21,6 +21,7 @@ from . import bundle, pipeline, providers
 from .config import Config
 from .db import DB
 from .document import stamp_provenance
+from .normalize import short_title
 from .providers import ChapterRef
 from .safepath import safe_slug
 
@@ -222,6 +223,33 @@ def _toml_str(s: str) -> str:
     return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
+def add_spoken_title(path: str, title: str) -> bool:
+    """Give a series' config.toml a `[general] spoken_title` if it has none (the
+    title with its bracket/paren announcements removed). Returns True if it wrote.
+    An existing value, even an empty one, is left alone."""
+    if not os.path.exists(path):
+        return False
+    text = open(path, encoding="utf-8").read()
+    if "spoken_title" in text:
+        return False
+    line = f"spoken_title = {_toml_str(short_title(title))}"
+    lines = text.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.strip() == "[general]":                   # the section exists: add the key to it
+            lines.insert(i + 1, line)
+            break
+    else:                                                # else a new section above [voices]
+        block = ["[general]",
+                 "# what is said for the series title before each chapter; the source title",
+                 "# with its [bracket] and (paren) announcements removed. Edit freely.",
+                 line, ""]
+        at = next((i for i, ln in enumerate(lines) if ln.strip().startswith("[")), len(lines))
+        lines[at:at] = block
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+    return True
+
+
 def _fetch_chapter_blocks(cfg: Config, prov, ctx, bdir: str, rows, log=print):
     """rows: chapter rows to sample. Returns (blocks, [ord fetched]).
 
@@ -338,7 +366,7 @@ def lead_of(tags, lead: str = "auto") -> str:
     return "female" if "female lead" in low and "male lead" not in low else "male"
 
 
-def pin_defaults_text(cfg: Config, slug: str, lead: str = "male") -> str:
+def pin_defaults_text(cfg: Config, slug: str, lead: str = "male", title: str = "") -> str:
     """The starting content for a series config: the *resolved* voices, written
     out explicitly.
 
@@ -356,6 +384,10 @@ def pin_defaults_text(cfg: Config, slug: str, lead: str = "male") -> str:
         f"# {slug} — voices pinned at `series add` ({lead} lead set) so this series keeps",
         "# sounding the same even if the global defaults in config.toml change later.",
         "",
+        *([ "[general]",
+            "# what is said for the series title before each chapter; the source title",
+            "# with its [bracket] and (paren) announcements removed. Edit freely.",
+            f"spoken_title = {_toml_str(short_title(title))}", ""] if title else []),
         "[voices]",
         f'narrator         = "{v.narrator}"',
         f'thought          = "{v.thought}"',
@@ -576,7 +608,7 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print,
         if not os.path.exists(overlay):
             os.makedirs(os.path.dirname(overlay), exist_ok=True)
             with open(overlay, "w", encoding="utf-8") as fh:
-                fh.write(pin_defaults_text(cfg, slug, picked))
+                fh.write(pin_defaults_text(cfg, slug, picked, fi.title))
             log(f"  voices pinned -> {overlay}  ({picked} lead set"
                 f"{', from the tags' if lead == 'auto' else ''})")
         # an empty but *named* lexicon, so the editor pane shows which series

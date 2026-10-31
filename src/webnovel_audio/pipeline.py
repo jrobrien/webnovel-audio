@@ -60,9 +60,10 @@ def document_script(doc: Document, cfg: Config):
     """(blocks, meta) for a Document: its blocks, optionally led by a spoken
     title heading, and the Opus tags it carries."""
     blocks = list(doc.blocks)
-    if cfg.general.speak_title and doc.chapter_title:
-        fic = doc.fiction_title if cfg.general.speak_series else ""
-        blocks.insert(0, Block("heading", doc.chapter_title, meta={"fiction": fic}))
+    fic = (cfg.general.spoken_title or doc.fiction_title) if cfg.general.speak_series else ""
+    chapter = doc.chapter_title if cfg.general.speak_chapter_title else ""
+    if cfg.general.speak_title and (chapter or (fic and doc.chapter_title)):
+        blocks.insert(0, Block("heading", chapter, meta={"fiction": fic}))
     meta = {k: v for k, v in {
         "title": doc.chapter_title,
         "album": doc.fiction_title,

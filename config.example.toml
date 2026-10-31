@@ -1,12 +1,17 @@
 # Copy to config.toml and edit. CLI flags (--voice, --speed, --backend) override these.
 
 [general]
+# spoken_title = ""   # what is said for the series title before each chapter; "" = the title
+#                     # as the source gives it. `series add` pins the title with its [bracket]
+#                     # and (paren) announcements removed into each series' own config.toml
 lexicon = "data/lexicons/salvage-run.csv"     # per-series pronunciation rules (CSV); `sync` auto-picks data/lexicons/<slug>.csv
 base_lexicon = "data/lexicons/_base.csv"      # always-on rules: names + heteronyms (per-series rows win); "" disables
 cache_dir = ".cache/segments"                 # per-segment wav cache (hash-keyed)
 tagger = ""                                   # spaCy model the POS rules resolve against; "" = en_core_web_sm
                                               #   required to render; `webnovel-audio tagger install`
 speak_title  = true                           # narrate the chapter title first (html/url input)
+# speak_chapter_title = true                  # false: say only the series title (for a series whose text opens
+#                                             #   with its own "Chapter N - Title"); set per series
 speak_series = true                           # ...prefixed with the series title
 
 [voices]

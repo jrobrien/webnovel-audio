@@ -318,6 +318,19 @@ def normalize_text(s: str, *, dampen_caps: bool = True) -> str:
     return s.strip()
 
 
+_ANNOUNCE_RE = re.compile(r"\s*(?:\[[^\]]*\]|\([^)]*\))")
+
+
+def short_title(title: str) -> str:
+    """A series title as it is said aloud: the `[...]` and `(...)` chunks removed.
+
+    Authors use them for announcements ("[Book 1 & 2 Completed]", "(LitRPG / OP MC)"),
+    which are noise read aloud before every chapter. A title that is nothing but
+    brackets is returned unchanged."""
+    out = _WS_RE.sub(" ", _ANNOUNCE_RE.sub("", title or "")).strip(" -–—:,;")
+    return out or (title or "").strip()
+
+
 _CHAPTER_HEAD_RE = re.compile(r"^\s*(?:chapter\s+|ch\.?\s*)?(\d{1,4})\s*[.\-:)\]]*\s*(.*)$", re.I)
 
 

@@ -1178,3 +1178,66 @@ def test_default_config_is_found_from_another_directory(tmp_path, monkeypatch):
     found = os.path.normpath(os.path.join(os.getcwd(), cli._default_config()))
     assert os.path.basename(found) in ("config.toml", "config.example.toml")
     assert os.path.exists(cli._default_config())
+
+
+def test_short_title_drops_bracket_and_paren_announcements():
+    from webnovel_audio.normalize import short_title
+    assert short_title("Stray Cat Strut [Will Stub Yesterday... as soon as the time machine is done!]") \
+        == "Stray Cat Strut"
+    assert short_title("I Made A Railgun with Lightning Magic (LitRPG / OP MC / Isekai) "
+                       "[Book 1 & 2 Completed]") == "I Made A Railgun with Lightning Magic"
+    assert short_title("Intelligent Design: A Monster Evolution LitRPG") \
+        == "Intelligent Design: A Monster Evolution LitRPG"
+    assert short_title("[Announcement only]") == "[Announcement only]"      # never left empty
+
+
+def test_spoken_title_is_pinned_added_to_old_configs_and_announced(tmp_path):
+    import tomllib
+    cfg = Config()
+    data = tomllib.loads(sync.pin_defaults_text(cfg, "x", "male", "Foo Bar [Hiatus!]"))
+    assert data["general"]["spoken_title"] == "Foo Bar"
+    old = tmp_path / "config.toml"
+    old.write_text('# old\n\n[voices]\nnarrator = "af_nova"\n')
+    assert sync.add_spoken_title(str(old), "Foo Bar [Hiatus!]") is True
+    assert tomllib.loads(old.read_text())["general"]["spoken_title"] == "Foo Bar"
+    assert sync.add_spoken_title(str(old), "Other") is False               # idempotent
+    # and it is the series title the voice announces
+    from webnovel_audio.document import Document
+    from webnovel_audio.pipeline import document_script
+    doc = Document(fiction_title="Foo Bar [Hiatus!]", chapter_title="One", blocks=[])
+    c = Config.overlay(Config(), str(old))
+    blocks, _ = document_script(doc, c)
+    assert blocks[0].meta["fiction"] == "Foo Bar"
+    assert document_script(doc, Config())[0][0].meta["fiction"] == "Foo Bar [Hiatus!]"
+
+
+def test_speak_chapter_title_false_announces_only_the_series(tmp_path):
+    from webnovel_audio.document import Document
+    from webnovel_audio.pipeline import document_script
+    from webnovel_audio.segment import build_segments
+    doc = Document(fiction_title="Foo Bar [x]", chapter_title="Chapter Two - Punks", blocks=[])
+    cfg = Config()
+    cfg.general.spoken_title = "Foo Bar"
+    both = build_segments(document_script(doc, cfg)[0], cfg)
+    assert both[0].text == "Foo Bar. Chapter Two - Punks."
+    cfg.general.speak_chapter_title = False
+    only = build_segments(document_script(doc, cfg)[0], cfg)
+    assert only[0].text == "Foo Bar." and only[0].style == "heading"
+    # nothing to announce when the series is off too
+    cfg.general.speak_series = False
+    assert document_script(doc, cfg)[0] == []
+
+
+def test_one_paragraph_chapter_with_double_breaks_is_split_and_the_star_line_is_a_pause():
+    # a whole chapter in one <p>, paragraphs separated by <br><br>: bold title,
+    # italic epigraph, a lone *** line, then the text
+    from webnovel_audio.normalize import Block
+    from webnovel_audio.segment import build_segments
+    b = [Block("paragraph", "Chapter Two - Punks\n\nThe quote.\n\n***\n\nThen the story began.",
+               italic=[(21, 31)])]
+    segs = build_segments(b, Config())
+    assert [s.text for s in segs if s.kind == "speech"] == [
+        "Chapter Two - Punks", "The quote.", "Then the story began."]     # the title is its own line
+    assert [s.style for s in segs if s.kind == "speech"][1] == "thought"  # italics re-based on the piece
+    assert sum(s.kind == "pause" for s in segs) == 1                      # *** is silence, not spoken
+    assert not any("star" in s.text.lower() or "*" in s.text for s in segs)

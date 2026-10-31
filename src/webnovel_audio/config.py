@@ -51,6 +51,8 @@ class General:
     models_dir: str = os.path.expanduser("~/.cache/webnovel-audio")
     speak_title: bool = True
     speak_series: bool = True    # prefix the chapter announcement with the series title
+    speak_chapter_title: bool = True   # False: announce only the series (the text opens with its own chapter title)
+    spoken_title: str = ""       # what is said for the series title; "" = the title as the source gives it
 
 
 @dataclass
