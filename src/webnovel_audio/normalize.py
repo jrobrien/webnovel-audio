@@ -66,6 +66,22 @@ _TEXT_SUBS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?<=\d)\s*%"), " percent"),
     (re.compile(r"(?<=\d)\s*°"), " degrees"),
 ]
+# Star ratings in a stat box: `Offense: *****`, `a 1 * increase`, `Maximum 5* Rating`. The
+# g2p says every asterisk, and the italic stripper below would swallow a lone one, so
+# they become "N stars" first. A run glued to a word (`f***`, `**bold**`) is not a rating.
+_STAR_RUN_RE = re.compile(r"(?<![\w*])\*{2,}(?![\w*])")
+_STAR_COUNT_RE = re.compile(r"(?<![\w*])(\d+|one|two|three|four|five|six|seven|eight|nine|ten)(\s?)\*(?![\w*])", re.I)
+_STAR_LONE_RE = re.compile(r"(?<=:)\s\*(?![\w*])")
+
+
+def _stars(s: str) -> str:
+    if "*" not in s:
+        return s
+    s = _STAR_RUN_RE.sub(lambda m: f" {len(m.group(0))} stars ", s)
+    s = _STAR_COUNT_RE.sub(lambda m: f"{m.group(1)} " + ("star" if m.group(1).lower() in ("1", "one") else "stars"), s)
+    return _STAR_LONE_RE.sub(" 1 star", s)
+
+
 _MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)")
 _EMOJI_RE = re.compile(
     "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF←-⇿"
@@ -279,6 +295,7 @@ def normalize_text(s: str, *, dampen_caps: bool = True) -> str:
     s = s.translate(_INVERTED_PUNCT)
     s = _strip_foreign_scripts(s)
     s = _dequote(s)
+    s = _stars(s)
     s = _MD_ITALIC_RE.sub(r"\1", s)
     if dampen_caps:
         s = _dampen_caps(s)

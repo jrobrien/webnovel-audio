@@ -87,6 +87,8 @@ def test_show_notes_carry_provenance():
     # the positional number must NOT be asserted as a chapter number: it drifts
     # from the author's numbering whenever a volume contains an interstitial
     assert "chapter 16" not in plain
+    # ...but it is printed, labelled, so a chapter can be named from a phone
+    assert "narrated 2026-09-12 · library #69 · 13:22" in plain
     # html variant has a real clickable link, correctly quoted
     assert f'<a href="{chapter["url"]}">' in html
     assert "<p>" in html and "]]>" not in html

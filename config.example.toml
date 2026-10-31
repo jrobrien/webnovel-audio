@@ -16,7 +16,7 @@ speak_series = true                           # ...prefixed with the series titl
 narrator          = "am_michael"
 thought           = "bm_george"   # internal monologue
 dialogue_default  = "am_michael"  # dialogue whose speaker isn't in [cast.voices]
-system_ui         = "af_sky"      # LitRPG status boxes / stat lines
+system_ui         = "af_kore"     # LitRPG status boxes / stat lines (robotized by [dsp.system])
 # machine         = "af_kore"     # [synth] machine_marker text; unset = system_ui
 
 [cast]
@@ -93,11 +93,14 @@ gain_db = -1.5
 hp_hz   = 115
 lp_hz   = 3600
 
-[dsp.system]
-gain_db = -1.0
-hp_hz   = 250
-lp_hz   = 3900
-tilt_db = 2.0              # brighten -> "readout" feel
+[dsp.system]              # the System reads as a robot: monotone vocoder, still intelligible
+robot_hz  = 130
+robot_mix = 0.45
+ring_hz   = 55
+ring_mix  = 0.08
+hp_hz     = 150
+lp_hz     = 6000
+tilt_db   = 0.5
 
 [dsp.chat]
 gain_db = -3.0            # sit chat behind the narration

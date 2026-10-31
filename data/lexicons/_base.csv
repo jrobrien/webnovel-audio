@@ -425,3 +425,21 @@ tear ducts,,teer ducts,crying sense; bare `tear` defaults to ripping
 tear-stained,,teer-stained,crying sense; bare `tear` defaults to ripping
 Tear of Stone,,Teer of Stone,crying sense; bare `tear` defaults to ripping
 wear and tear,,wear and tair,the ripping sense; tagger reads the noun as crying
+mantis,,mantiss,g2p reads MAN-teez (the Greek plural pattern); it is MAN-tis
+mantises,,mantisses,plural of mantis; g2p says MAN-tize-iz
+dove,,dohv,past of dive (rhymes with stove): ~97% of uses in this fiction; g2p gives the bird (duhv) and the tagger calls the verb a noun. Bird phrases below
+the dove,,the duv,the bird; bare `dove` defaults to the verb
+a dove,,a duv,the bird; bare `dove` defaults to the verb
+white dove,,white duv,the bird; bare `dove` defaults to the verb
+turtle dove,,turtle duv,the bird; bare `dove` defaults to the verb
+mourning dove,,mourning duv,the bird; bare `dove` defaults to the verb
+orchard dove,,orchard duv,the bird; bare `dove` defaults to the verb
+dove feathers,,duv feathers,the bird; bare `dove` defaults to the verb
+dove's,,duv's,the bird; bare `dove` defaults to the verb
+dove cooed,,duv cooed,the bird; bare `dove` defaults to the verb
+mech,,mek,g2p reads MEHCH; it is MEK (short for mechanical)
+mechs,,meks,plural of mech
+mech-suit,,mek suit,hyphenated compound ran together as "meksoot"
+mech-suits,,mek suits,plural of mech-suit
+cuneiform,,kewneeiform,g2p says KUH-nayf-awrm; it is KYOO-nee-ih-form
+cuneiforms,,kewneeiforms,plural of cuneiform

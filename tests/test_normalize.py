@@ -167,3 +167,18 @@ def test_zalgo_glitch_text_reads_as_its_letters():
     assert n("̷̨̙̙̈́") == ""                       # marks alone: nothing to say, not an error
     for kept in ("café", "naïve", "Xiāo", "résumé", "Brontë"):
         assert n(kept) == kept                      # NFC-composed accents are letters, not marks
+
+
+def test_star_ratings_are_spoken_as_stars_not_asterisks():
+    # a stat box rates things in asterisks; the g2p said each one, and a lone
+    # star was swallowed by the italic stripper along with the text after it
+    assert (normalize_text("Offense: ***** Defense: *** Speed: * Regeneration: ****")
+            == "Offense: five stars Defense: three stars Speed: one star Regeneration: four stars")
+    assert (normalize_text("A 1 * increase. Limit: 2 *, Maximum 5* Rating.")
+            == "A one star increase. Limit: two stars, Maximum five stars Rating.")
+
+
+def test_asterisks_that_are_not_ratings_are_left_alone():
+    # italics still strip, and a censored word keeps its stars (not "four stars")
+    assert normalize_text("*Why?* she asked") == "Why? she asked"
+    assert "stars" not in normalize_text("What the f*** was that")

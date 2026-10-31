@@ -237,6 +237,12 @@ def blocks_from_container(content: Tag) -> list[Block]:
                 blocks.append(Block("heading", text))
             continue
 
+        if name == "div" and el.find("table") is not None:
+            el, name = el.find("table"), "table"        # a box wrapped in a scroll div
+        if name == "table":
+            blocks.extend(_table_blocks(el))
+            continue
+
         raw, spans = text_with_italics(el)
         if not raw.strip():
             continue
@@ -267,6 +273,35 @@ def blocks_from_container(content: Tag) -> list[Block]:
 
         blocks.append(Block("paragraph", raw, italic=spans))
     return _stat_runs_are_system(blocks)
+
+
+def _table_blocks(table: Tag) -> list[Block]:
+    """A table is a boxed system readout: one system block per line in it.
+
+    Authors build the stat box as a one-cell table of `<p>` lines, or as a row per
+    line (`Name | Mara`). Flattened into one paragraph it ran together and was read
+    in the narrator's voice, so a cell's `<p>` lines are each a block and a row of
+    plain cells is one."""
+    out: list[Block] = []
+
+    def add(parts: list[str]) -> None:
+        text = system_clause_text(" ".join(p for p in parts if p.strip())).strip("[]").strip()
+        if any(ch.isalnum() for ch in text):
+            out.append(Block("system", text))
+
+    for row in table.find_all("tr") or [table]:
+        parts: list[str] = []
+        for cell in row.find_all(["td", "th"]) or [row]:
+            lines = cell.find_all("p")
+            if len(lines) > 1:
+                add(parts)
+                parts = []
+                for line in lines:
+                    add([text_with_italics(line)[0]])
+            else:
+                parts.append(text_with_italics(cell)[0])
+        add(parts)
+    return out
 
 
 def _stat_runs_are_system(blocks: list[Block]) -> list[Block]:

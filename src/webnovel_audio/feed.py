@@ -71,11 +71,11 @@ def _show_notes(series, c, vol, num, dur):
     where = series["title"]
     if vol and vol.get("title"):
         where += f" · {vol['title']}"
-    # Deliberately NOT printing the positional number here. It drifts from the
-    # author's numbering as soon as a volume contains an interstitial — Sky
-    # Pride V2 has "Just wanted to say thank you" at position 11, so every
-    # later chapter is one ahead of its own title. The title already carries
-    # the author's number; contradicting it would be worse than omitting it.
+    # The positional number drifts from the author's numbering as soon as a volume
+    # contains an interstitial (Sky Pride V2 has "Just wanted to say thank you" at
+    # position 11, so every later chapter is one ahead of its own title), so it is
+    # labelled "library #N" and never printed bare: the title keeps the author's
+    # number, this one is what the UI, `state show` and `--range` use.
     by = f" · by {series['author']}" if _col(series, "author") else ""
 
     pub = str(_col(c, "published_at", ""))[:10]
@@ -85,6 +85,7 @@ def _show_notes(series, c, vol, num, dur):
         bits.append(f"published {pub}")
     if ren:
         bits.append(f"narrated {ren}")
+    bits.append(f"library #{num}")
     if dur:
         bits.append(dur)
     line2 = " · ".join(bits)

@@ -59,7 +59,7 @@ class Voices:
     narrator: str = "am_michael"
     thought: str = "bm_george"
     dialogue_default: str = "am_michael"
-    system_ui: str = "af_sky"
+    system_ui: str = "af_kore"
     machine: str = ""               # `machine` style (see Synth.machine_marker); "" = system_ui
 
 
@@ -167,7 +167,10 @@ class Audio:
 # tilt_db, robot_hz/robot_mix, ring_hz/ring_mix. The defaults below ship built in.
 _DSP_DEFAULTS: dict[str, dict] = {
     "thought": {"gain_db": -1.5, "hp_hz": 115.0, "lp_hz": 3600.0},
-    "system": {"gain_db": -1.0, "hp_hz": 250.0, "lp_hz": 3900.0, "tilt_db": 2.0},
+    # the System: a vocoder robot, mostly intelligible (robot_mix well under the
+    # `machine` style's 0.85, little ring-mod grit)
+    "system": {"robot_hz": 130.0, "robot_mix": 0.45, "ring_hz": 55.0, "ring_mix": 0.08,
+               "hp_hz": 150.0, "lp_hz": 6000.0, "tilt_db": 0.5},
     "chat": {"gain_db": -3.0, "hp_hz": 300.0, "lp_hz": 3400.0, "tilt_db": 1.0},
     # monotone vocoder robot, a little ring-mod grit, band-limited like a speaker
     "machine": {"robot_hz": 110.0, "robot_mix": 0.85, "ring_hz": 55.0, "ring_mix": 0.25,

@@ -91,3 +91,19 @@ def test_stat_box_lines_are_system_not_chat_and_headers_are_titled():
     assert [s.text for s in segs] == [
         "Karmic Level one", "Attributes.", "Ambition: fifteen", "Attunement: nine",
         "hit points: five hundred seventy-seven"]
+
+
+def test_stat_box_table_in_a_scroll_div_is_one_system_block_per_line():
+    # the evolution screen: a one-cell table of <p> lines inside a scroll wrapper.
+    # It used to be flattened into one narrated paragraph (and its `***` ratings
+    # spoken); each line is its own system block.
+    html = (
+        "<div><p>He saw a menu.</p>"
+        '<div style="overflow:auto"><table><tbody><tr><td>'
+        "<p>|Twilight Corruptor| → |Gloomshade Deceiver|</p><p>Confirmed</p>"
+        "<p>Offense: ***</p><p>You have 46 Pts.</p>"
+        "</td></tr></tbody></table></div><p>David eyed it.</p></div>"
+    )
+    blocks = blocks_from_container(BeautifulSoup(html, "lxml").div)
+    assert [b.kind for b in blocks] == ["paragraph"] + ["system"] * 4 + ["paragraph"]
+    assert blocks[3].text == "Offense: ***"
