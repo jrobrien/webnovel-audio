@@ -213,6 +213,7 @@ first.
 | `fetch --target T [--range R] [--limit N]` | download chapter source into the raw cache |
 | `parse --target T [--range R]` | raw → blocks → readable `.md`. `--explain` dumps the parse |
 | `check --target T [--range R]` | cast / heteronyms / unknown names report. **Never writes** |
+| `compounds [--scope S] [--range R] [--top N] [--all]` | closed compounds the TTS may mispronounce, across the whole library (or one series / range): words not in a dictionary that split into two common words, phonemized whole and as halves, flagged where they differ or where two sounds fuse at the join (`night`+`shade` → "ch"). **Never writes**; fix with `lex add` |
 | `render --target T [--range R]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only. Reports how many segments came from cache. A chapter whose audio recipe (segments + audio settings) is unchanged is left alone; `--force` re-renders it anyway |
 | `sync [--scope S] [--limit N]` | refresh + render everything outstanding; shows a size estimate and confirms first (`-y` to skip) |
 | `tagger status` \| `install` \| `test` | the spaCy POS tagger the rules resolve against. **Required to render**, so `--extra kokoro` installs it and the small model; `install --model en_core_web_md` (or `_lg`) upgrades |

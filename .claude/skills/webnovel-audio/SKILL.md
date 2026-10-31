@@ -60,6 +60,7 @@ webnovel-audio state reset --scope S                        # errors -> new, to 
 webnovel-audio fetch  --target S --range 1-10
 webnovel-audio parse  --target S --range 1-10 [--explain]
 webnovel-audio check  --target S --range 2-10               # report only, writes nothing
+webnovel-audio compounds [--scope S] [--range 90-100]    # compound words the TTS may misread; whole library by default
 webnovel-audio render --target S --range 1-10 [--force] [--dry-run] [-o out.opus]
 
 webnovel-audio ingest [--dir D] [--force]                   # file pages saved from a browser (SETUP.md)

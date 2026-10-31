@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import glob
 import os
 
 # Keep ONNX Runtime / OpenMP from oversubscribing the mobile APU (8 cores).
@@ -314,6 +315,90 @@ def _explain(source: str, cfg: Config) -> int:
             print("  [            cue] <earcon>")
         else:
             print(f"  [{s.speaker or s.style:>15}] {s.text[:96]}")
+    return 0
+
+
+def _cmd_compounds(args) -> int:
+    """Closed compounds the TTS front end may mispronounce, across the library."""
+    import re as _re
+    from . import bundle, compounds, sync
+    from .db import DB
+    from .lexicon import Lexicon
+
+    cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
+    spans = _parse_range(args.range) if args.range else []
+    db = DB(cfg.library.state_db)
+    try:
+        rows = ([db.get_series(args.scope)] if args.scope else db.list_series())
+    finally:
+        db.close()
+    rows = [r for r in rows if r]
+    if args.scope and not rows:
+        return _no_series(args.scope, want_json)
+
+    def wanted(n: int) -> bool:
+        return not spans or any((lo is None or n >= lo) and (hi is None or n <= hi)
+                                for lo, hi in spans)
+
+    texts, vocab, known = [], [], set()
+    base = resolve_data_path(cfg.general.base_lexicon)
+    paths = [base] if base else []
+    # which words are common is judged over the whole library, however narrow the check
+    db2 = DB(cfg.library.state_db)
+    try:
+        everything = [r for r in db2.list_series() if r]
+    finally:
+        db2.close()
+    for r in everything:
+        slug = sync._dir_slug(r)
+        bdir = _bundle_dir_for(cfg, slug)
+        mine = any(r["id"] == x["id"] for x in rows)
+        if mine:
+            paths.append(bundle.resolve(cfg, slug, bdir, "lexicon"))
+        for f in sorted(glob.glob(os.path.join(bdir, "chapters", "*.md"))):
+            m = _re.match(r"(\d+)-", os.path.basename(f))
+            if not m:
+                continue
+            body = open(f, encoding="utf-8").read().split("\n---\n", 1)[-1]
+            vocab.append((f"{r['slug']}#{int(m.group(1))}", body))
+            if mine and wanted(int(m.group(1))):
+                texts.append(vocab[-1])
+    for path in paths:
+        if path and os.path.exists(path):
+            known |= {x.surface.lower() for x in Lexicon.load(path).rules if " " not in x.surface}
+    if not texts:
+        return _fail("no_text", "no parsed chapters to read", json_mode=want_json,
+                     hint="chapters need to be parsed (or rendered) first")
+
+    found = compounds.scan(texts, _phonemes, compounds.load_dictionary(), known=known,
+                           min_count=args.min_count, vocabulary=vocab)
+    if args.emit:
+        import csv
+        with open(args.emit, "w", newline="", encoding="utf-8") as fh:
+            w = csv.writer(fh, lineterminator="\n")
+            w.writerow(["surface", "pos", "respell", "notes"])
+            for f in found:
+                if f.why != "ok":
+                    series = sorted({x.split("#")[0] for x in f.where})
+                    w.writerow([f.word, "", " ".join(f.parts),
+                                f"{f.why}; x{f.count}; {', '.join(series)}"])
+        print(f"wrote {sum(f.why != 'ok' for f in found)} proposed rule(s) to {args.emit}")
+    shown = found if args.all else [f for f in found if f.why != "ok"]
+    top = shown if args.top <= 0 else shown[:args.top]
+    if want_json:
+        _jprint({"ok": True, "chapters": len(texts), "series": len(rows),
+                 "flagged": sum(f.why != "ok" for f in found), "candidates": len(found),
+                 "words": [vars(f) | {"parts": list(f.parts)} for f in top]})
+        return 0
+    print(f"{len(texts)} chapter(s), {len(rows)} series: {len(found)} compound(s), "
+          f"{sum(f.why != 'ok' for f in found)} to check"
+          + ("" if args.top <= 0 else f" (showing {len(top)})"))
+    for f in top:
+        print(f"  {f.word:<18} x{f.count:<4} {f.parts[0]}+{f.parts[1]:<12} {f.why:<20} "
+              f"reads {f.whole}   parts {f.split}   {', '.join(f.where[:3])}")
+    if top:
+        print("\n  fix one:  webnovel-audio lex add --scope <slug|@base> --surface WORD --respell \"...\"")
     return 0
 
 
@@ -2485,6 +2570,23 @@ def _build_parser():
                     help="words of context around a flagged heteronym (default 6)")
     _cfg_json(ck)
     ck.set_defaults(func=_cmd_check)
+
+    cp = sub.add_parser("compounds", help="compound words the TTS may mispronounce (whole library)")
+    cp.add_argument("--scope", metavar="SERIES",
+                    help="the series to check (default: every tracked series)")
+    cp.add_argument("--range", metavar="SPEC",
+                    help="chapters N | N-M | N- | -M | 1-3,7 (default: all of them)")
+    cp.add_argument("--top", type=int, default=40,
+                    help="how many to list, 0 for all (default 40)")
+    cp.add_argument("--min-count", type=int, default=1, metavar="N",
+                    help="only words used at least N times (default 1)")
+    cp.add_argument("--emit", metavar="FILE",
+                    help="write every flagged word as lexicon rows (the two halves as separate "
+                         "words) to FILE, to review and append to a lexicon")
+    cp.add_argument("--all", action="store_true",
+                    help="also list compounds that read the same as their halves")
+    _cfg_json(cp)
+    cp.set_defaults(func=_cmd_compounds)
 
     rd = _stage_parser("render", "synthesize -> mastered .opus")
     rd.add_argument("-o", "--out", help="output path (file/URL target only)")
