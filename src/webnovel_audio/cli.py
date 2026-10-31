@@ -23,8 +23,13 @@ _EN_VOICES = sorted(set(MALE_VOICE_POOL + FEMALE_VOICE_POOL) | {
 
 
 def _default_config() -> str:
+    """The config to read when -c is not given: ./config.toml, else the checkout's
+    own config.toml (so a launcher that starts in $HOME still finds it), else the
+    bundled example."""
     here = os.path.dirname(__file__)
-    for candidate in ("config.toml", os.path.join(here, "..", "..", "config.example.toml")):
+    root = os.path.join(here, "..", "..")
+    for candidate in ("config.toml", os.path.join(root, "config.toml"),
+                      os.path.join(root, "config.example.toml")):
         if os.path.exists(candidate):
             return candidate
     return "config.toml"
@@ -1817,13 +1822,15 @@ def _cmd_series(args) -> int:
                     _jprint({"ok": True, "dry_run": True, **info})
                 else:
                     print(f"{info['title']}  ({info['chapters']} chapters)")
+                    print(f"  voice set: {sync.lead_of(info['tags'], args.lead)} lead"
+                          + (" (from the tags)" if args.lead == "auto" else ""))
                     print(f"  would be tracked as: {info['slug']}"
                           + ("  (already tracked)" if info["tracked"] else ""))
                     if not info["slug_free"]:
                         print(f"  but: {info['slug_problem']}; choose one with --slug")
                 return 0
             info = sync.add_series(cfg, args.url, start=args.frm, slug=args.slug,
-                                   log=(lambda *_: None) if want_json else print,
+                                   lead=args.lead, log=(lambda *_: None) if want_json else print,
                                    **extra)
         except sync.SlugError as exc:
             return _fail(exc.code, exc.message, json_mode=want_json,
@@ -2130,8 +2137,7 @@ def _cmd_config(args) -> int:
         "state_db": os.path.abspath(os.path.expanduser(cfg.library.state_db)),
         "library_dir": os.path.abspath(os.path.expanduser(cfg.library.library_dir)),
         "lexicon_dir": resolve_data_path(cfg.general.lexicon_dir or "data/lexicons"),
-        "base_lexicon": (os.path.abspath(os.path.expanduser(cfg.general.base_lexicon))
-                         if cfg.general.base_lexicon else ""),
+        "base_lexicon": resolve_data_path(cfg.general.base_lexicon),
         "series_config_dir": resolve_data_path(
             cfg.general.series_config_dir or "data/series"),
         "models_dir": cfg.general.models_dir,
@@ -2514,6 +2520,10 @@ def _build_parser():
     a.add_argument("-n", "--dry-run", action="store_true",
                    help="read the series page and report the title, chapter count and "
                         "the slug it would get, but track nothing")
+    a.add_argument("--lead", choices=("auto", "male", "female"), default="auto",
+                   help="voice set to pin: male (the [voices] defaults), female (the "
+                        "inverted set, [voices.female_lead]), or auto (default) to read "
+                        "the source's Female Lead / Male Lead tag")
     a.add_argument("--no-open", action="store_true",
                    help="for a site read through the browser: print the address "
                         "instead of opening it")

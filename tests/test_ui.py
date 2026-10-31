@@ -628,6 +628,9 @@ def test_add_verifies_the_slug_and_series_can_be_renamed(tmp_path):
     s1 = val("add_stage1")
     assert "confirm" in s1 and "button=Add" in s1 and "slug=between-beast-and-buddha-a-drunken" in s1
     assert "--slug drunken-monkey" in val("add_call") and "--dry-run" not in val("add_call")
+    # the voice set is preselected from the source's Female Lead tag, and the choice is passed on
+    assert val("lead_ui") == "Female lead | (from the source's tags) | mapped=1"
+    assert "--lead female" in val("add_call")
     assert val("add_closed") == "1"
     # a taken slug is flagged up front, and a refusal stays inline with the dialog open
     assert "already belongs" in val("taken_msg")

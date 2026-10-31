@@ -19,7 +19,8 @@ proc run_json_soft {args} {
                 "slug_problem": "'sky-pride' already belongs to 'Sky Pride'"}}]
         }
         return [json::parse {{"ok": true, "dry_run": true, "title": "Drunken Monkey", "chapters": 105,
-            "slug": "between-beast-and-buddha-a-drunken", "tracked": false, "slug_free": true}}]
+            "slug": "between-beast-and-buddha-a-drunken", "tracked": false, "slug_free": true,
+            "lead": "female", "tags": ["LitRPG", "Female Lead"]}}]
     }
     if {[lrange $args 0 1] eq {series add}} {
         if {"--slug" in $args && [lindex $args [expr {[lsearch $args --slug] + 1}]] eq "taken"} {
@@ -55,6 +56,7 @@ proc report {} {
         .add.b.ok invoke ; update
         puts $::LOG "lookup_call [last_call]"
         puts $::LOG "add_stage1 $::ADD_STAGE(.add) button=[.add.b.ok cget -text] slug=[.add.s get] title=[.add.t cget -text]"
+        puts $::LOG "lead_ui [.add.v.c get] | [.add.v.n cget -text] | mapped=[winfo ismapped .add.v]"
         .add.s delete 0 end ; .add.s insert 0 drunken-monkey
         .add.b.ok invoke ; update
         puts $::LOG "add_call [last_call]"

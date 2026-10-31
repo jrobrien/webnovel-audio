@@ -1066,6 +1066,11 @@ proc dlg_add {} {
     ttk::label $w.l3 -text "Slug:"
     ttk::entry $w.s -width 40
     ttk::label $w.m -text "" -justify left
+    ttk::label $w.l4 -text "Voice set:"
+    ttk::frame $w.v
+    ttk::combobox $w.v.c -width 12 -state readonly -values {"Male lead" "Female lead"}
+    ttk::label $w.v.n -text "" -foreground [pal dim]
+    pack $w.v.c $w.v.n -side left -padx {0 8}
     ttk::frame $w.b
     ttk::button $w.b.ok -text "Look up" -command [list add_step $w]
     ttk::button $w.b.cx -text Cancel -command [list destroy $w]
@@ -1080,7 +1085,7 @@ proc dlg_add {} {
 proc add_reset {w} {
     if {$::ADD_STAGE($w) ne "confirm"} return
     set ::ADD_STAGE($w) lookup
-    grid remove $w.t $w.l3 $w.s $w.m
+    grid remove $w.t $w.l3 $w.s $w.m $w.l4 $w.v
     $w.b.ok configure -text "Look up"
 }
 proc add_step {w} {
@@ -1118,13 +1123,27 @@ proc add_step {w} {
         grid $w.l3 -row 3 -column 0 -padx 8 -sticky w
         grid $w.s -row 3 -column 1 -padx 8 -sticky w
         grid $w.m -row 4 -column 0 -columnspan 2 -padx 8 -pady 4 -sticky w
+        # which of the two default voice sets gets pinned: picked from the source's
+        # Female Lead / Male Lead tag, changeable here
+        set female [expr {[json::get $d lead] eq "female"}]
+        $w.v.c set [expr {$female ? "Female lead" : "Male lead"}]
+        set tagged [expr {[lsearch -exact [json::get $d tags] "Female Lead"] >= 0
+                          || [lsearch -exact [json::get $d tags] "Male Lead"] >= 0}]
+        $w.v.n configure -text [expr {$tagged ? "(from the source's tags)" : "(no lead tag; default)"}]
+        if {!$::ADD_TRACKED($w)} {
+            grid $w.l4 -row 5 -column 0 -padx 8 -sticky w
+            grid $w.v -row 5 -column 1 -padx 8 -pady 2 -sticky w
+        }
         $w.b.ok configure -text Add
         set ::ADD_STAGE($w) confirm
         focus $w.s ; $w.s selection range 0 end
         return
     }
     set cmd [list series add --url $url --from [$w.f get]]
-    if {!$::ADD_TRACKED($w)} { lappend cmd --slug [string trim [$w.s get]] }
+    if {!$::ADD_TRACKED($w)} {
+        lappend cmd --slug [string trim [$w.s get]] \
+            --lead [expr {[$w.v.c get] eq "Female lead" ? "female" : "male"}]
+    }
     $w.b.ok configure -state disabled
     set d [run_json_soft {*}$cmd]
     set err [json_error $d]

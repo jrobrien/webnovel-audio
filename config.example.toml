@@ -19,6 +19,16 @@ dialogue_default  = "am_michael"  # dialogue whose speaker isn't in [cast.voices
 system_ui         = "af_kore"     # LitRPG status boxes / stat lines (robotized by [dsp.system])
 # machine         = "af_kore"     # [synth] machine_marker text; unset = system_ui
 
+# The second default set, for a series with a female lead: the inversion of the one
+# above. `series add` pins one of the two into the series (see --lead), reading the
+# source's "Female Lead" / "Male Lead" tag unless told. Keys left out fall back to
+# [voices]; cast_default is the [cast] default dialogue voice for this set.
+[voices.female_lead]
+narrator         = "am_michael"
+thought          = "am_adam"
+dialogue_default = "af_nova"
+cast_default     = "af_nova"
+
 [cast]
 # Per-series casting (example: the samples/salvage-run-ch1.html fixture).
 # `webnovel-audio cast update <series> <range>` writes one for a real series.

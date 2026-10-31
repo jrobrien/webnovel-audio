@@ -209,6 +209,15 @@ def _merge_dsp(user: dict | None) -> dict:
     return out
 
 
+#: The lead-character voice sets. The `[voices]` table is the male-lead set (narrator
+#: and thoughts in a female voice, dialogue default male); `[voices.female_lead]` is its
+#: inversion. Both are pinned into a series at `series add`; these are the built-in
+#: values for the second set when config.toml does not give one.
+LEADS = ("male", "female")
+_FEMALE_LEAD_DEFAULTS = {"narrator": "am_michael", "thought": "am_adam",
+                         "dialogue_default": "af_nova", "cast_default": "af_nova"}
+
+
 @dataclass
 class Config:
     general: General = field(default_factory=General)
@@ -222,8 +231,24 @@ class Config:
     serve: Serve = field(default_factory=Serve)
     book: Book = field(default_factory=Book)
     dsp: dict = field(default_factory=lambda: _merge_dsp(None))
+    female_lead: dict = field(default_factory=dict)   # [voices.female_lead] overrides
     metadata: dict = field(default_factory=dict)
     providers: dict = field(default_factory=dict)   # [<provider name>] tables
+
+    def lead_voices(self, lead: str = "male") -> tuple[Voices, str]:
+        """(voices, default dialogue voice) for a male- or female-lead series.
+
+        The male set is `[voices]` + `[cast] default` as written. The female set is
+        that with `[voices.female_lead]` laid over it, or the built-in inversion."""
+        if lead != "female":
+            return self.voices, self.cast.default or self.voices.dialogue_default
+        over = {**_FEMALE_LEAD_DEFAULTS, **self.female_lead}
+        names = {f.name for f in fields(Voices)}
+        v = copy.deepcopy(self.voices)
+        for k, val in over.items():
+            if k in names:
+                setattr(v, k, val)
+        return v, over.get("cast_default") or v.dialogue_default
 
     def overlay(self, path: str | None) -> "Config":
         """Return a copy of this config with the TOML at `path` merged over it.
@@ -261,6 +286,13 @@ class Config:
         audio = _build(Audio, data.get("audio"))
         if data.get("audio", {}).get("thought_dsp") is not None:  # back-compat alias
             audio.dsp = bool(data["audio"]["thought_dsp"])
+        library = _build(Library, data.get("library"))
+        # a relative library_dir means "next to this config", not "next to wherever the
+        # process happened to start": the UI launched from a menu starts in $HOME and
+        # put a new series in ~/library, away from the rest.
+        if library.library_dir and not os.path.isabs(os.path.expanduser(library.library_dir)):
+            library.library_dir = os.path.join(
+                os.path.dirname(os.path.abspath(path)), library.library_dir)
         return cls(
             general=_build(General, data.get("general")),
             voices=_build(Voices, data.get("voices")),
@@ -269,10 +301,11 @@ class Config:
             synth=_build(Synth, data.get("synth")),
             pauses=_build(Pauses, data.get("pauses")),
             audio=audio,
-            library=_build(Library, data.get("library")),
+            library=library,
             serve=_build(Serve, data.get("serve")),
             book=_build(Book, data.get("book")),
             dsp=_merge_dsp(data.get("dsp")),
+            female_lead=dict((data.get("voices") or {}).get("female_lead") or {}),
             metadata=data.get("metadata", {}) or {},
             providers=_provider_sections(data),
         )

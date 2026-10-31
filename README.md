@@ -222,7 +222,7 @@ first.
 
 | command | what |
 |---|---|
-| `series add --url U [--from N] [--slug S] [-n]` | start tracking — metadata only; `--from` marks 1..N `skipped`. The slug (the CLI name, folder and feed URL) is derived from the title; `--slug` sets it, `-n` reads the page and reports the title, chapter count and slug without tracking anything |
+| `series add --url U [--from N] [--slug S] [--lead auto\|male\|female] [-n]` | start tracking — metadata only; `--from` marks 1..N `skipped`. The slug (the CLI name, folder and feed URL) is derived from the title; `--slug` sets it, `-n` reads the page and reports the title, chapter count, slug and voice set without tracking anything. `--lead` picks which default voice set is pinned: `male` is `[voices]`, `female` is `[voices.female_lead]` (the inversion); `auto` (default) reads the source's Female Lead / Male Lead tag |
 | `series rename --scope S --slug NEW [--move] [-n]` | change the slug. The old one stays as an alias, so `--scope old` still works and `/feed/old.xml` redirects to the new URL; `--move` also renames the folder. Refused while a sync or render runs |
 | `series list` | dashboard: per-stage counts, what's next, errors |
 | `series show --scope S` | one series in detail |
@@ -637,6 +637,14 @@ without a pin, re-rendering chapter 12 of an old one would come out in a
 different voice than 11 and 13. Same reasoning as a lockfile. (Timing and DSP
 are *not* pinned — those are global taste, and a change there is one you want
 everywhere.)
+
+Which voices get pinned depends on the series' lead. `[voices]` is the male-lead
+set; `[voices.female_lead]` is its inversion (male narrator and thoughts, female
+dialogue default). `series add` reads the source's `Female Lead` / `Male Lead` tag
+to choose (no tag, or both, means the male set), `--lead male|female` overrides it,
+and the UI's Add dialog shows the choice after Look up. The system robot voice is
+shared by both. After adding, the pinned `config.toml` is the series' own and is
+edited like any other.
 
 `cast update --scope <slug> [--range R]` then samples the range and appends a
 `[cast.voices]` entry per speaker it hasn't seen, commented with line count and

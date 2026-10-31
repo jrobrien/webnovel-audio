@@ -119,3 +119,16 @@ def test_saved_page_is_recognised():
         return
     assert for_raw(open(p, encoding="utf-8").read()).name == "royalroad"
     assert for_raw("<html><body><p>hi</p></body></html>") is None
+
+
+def test_tags_are_read_from_a_browser_saved_series_page():
+    # the saved page has no `a.fiction-tag`; its tags are links to the tag search
+    from webnovel_audio.providers.royalroad import RoyalRoadProvider
+    html = ('<html><head><meta property="og:url" content="https://www.royalroad.com/fiction/1/x">'
+            '<meta property="og:title" content="X"></head><body><h1>X</h1>'
+            '<a href="https://www.royalroad.com/fictions/search?tagsAdd=litrpg" class="p">LitRPG</a>'
+            '<a href="https://www.royalroad.com/fictions/search?tagsAdd=female_lead">Female Lead</a>'
+            '</body></html>')
+    from bs4 import BeautifulSoup
+    from webnovel_audio.providers import royalroad
+    assert royalroad._parse_tags(BeautifulSoup(html, "lxml")) == ["LitRPG", "Female Lead"]

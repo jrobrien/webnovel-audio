@@ -328,7 +328,17 @@ def _append_cast_voices(text: str, new_lines: list[str]) -> str:
     return "\n".join([*lines[:end], *new_lines, *lines[end:]]) + "\n"
 
 
-def pin_defaults_text(cfg: Config, slug: str) -> str:
+def lead_of(tags, lead: str = "auto") -> str:
+    """"male" or "female": the voice set for a series. `auto` reads the source's own
+    tags (`Female Lead` / `Male Lead`); a series tagged both, neither, or only
+    `Multiple Lead Characters` gets the male set, the global default."""
+    if lead in ("male", "female"):
+        return lead
+    low = {str(t).strip().lower() for t in tags or []}
+    return "female" if "female lead" in low and "male lead" not in low else "male"
+
+
+def pin_defaults_text(cfg: Config, slug: str, lead: str = "male") -> str:
     """The starting content for a series config: the *resolved* voices, written
     out explicitly.
 
@@ -340,10 +350,11 @@ def pin_defaults_text(cfg: Config, slug: str) -> str:
     Timing/DSP are deliberately not pinned — they're global taste, and a change
     there is one you want everywhere.
     """
-    v, cast = cfg.voices, cfg.cast
+    cast = cfg.cast
+    v, cast_default = cfg.lead_voices(lead)
     lines = [
-        f"# {slug} — voices pinned at `series add` so this series keeps sounding",
-        "# the same even if the global defaults in config.toml change later.",
+        f"# {slug} — voices pinned at `series add` ({lead} lead set) so this series keeps",
+        "# sounding the same even if the global defaults in config.toml change later.",
         "",
         "[voices]",
         f'narrator         = "{v.narrator}"',
@@ -352,7 +363,7 @@ def pin_defaults_text(cfg: Config, slug: str) -> str:
         f'system_ui        = "{v.system_ui}"',
         "",
         "[cast]",
-        f'default = "{cast.default or v.dialogue_default}"',
+        f'default = "{cast_default}"',
     ]
     if cast.narrator:
         lines.append(f'narrator = "{cast.narrator}"')
@@ -511,7 +522,8 @@ def preview_series(cfg: Config, url: str, page: str | None = None) -> dict:
         slug = series_slug(fi.title, fi.slug)
         out = {"title": fi.title, "author": fi.author, "provider": fi.provider,
                "chapters": len(fi.chapters), "slug": have["slug"] if have else slug,
-               "tracked": bool(have), "slug_free": True}
+               "tracked": bool(have), "slug_free": True,
+               "lead": lead_of(fi.tags), "tags": list(fi.tags or [])}
         if not have:
             try:
                 check_slug(cfg, db, slug)
@@ -523,11 +535,14 @@ def preview_series(cfg: Config, url: str, page: str | None = None) -> dict:
 
 
 def add_series(cfg: Config, url: str, start: str = "latest", log=print,
-               slug: str | None = None, page: str | None = None) -> dict:
+               slug: str | None = None, page: str | None = None,
+               lead: str = "auto") -> dict:
     """Register a series: metadata + chapter list only. No chapter downloads —
     `fetch`/`parse`/`check`/`render` are separate, explicit stages.
 
-    `slug` overrides the handle derived from the title (new series only). `page`
+    `lead` picks the voice set pinned into the series: male, female, or auto (from the
+    source's `Female Lead` / `Male Lead` tag). `slug` overrides the handle derived from
+    the title (new series only). `page`
     is the series page already read (by a browser), for a source that is not
     fetched directly."""
     prov = _series_provider(url)
@@ -556,12 +571,14 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print,
         # pin the resolved voices now, so this series keeps sounding the same
         # when the global defaults are retuned later (see pin_defaults_text)
         slug = _dir_slug(row)
+        picked = lead_of(fi.tags, lead)
         overlay = os.path.join(bdir, bundle.LAYOUT["config"])
         if not os.path.exists(overlay):
             os.makedirs(os.path.dirname(overlay), exist_ok=True)
             with open(overlay, "w", encoding="utf-8") as fh:
-                fh.write(pin_defaults_text(cfg, slug))
-            log(f"  voices pinned -> {overlay}")
+                fh.write(pin_defaults_text(cfg, slug, picked))
+            log(f"  voices pinned -> {overlay}  ({picked} lead set"
+                f"{', from the tags' if lead == 'auto' else ''})")
         # an empty but *named* lexicon, so the editor pane shows which series
         # is open and the format is documented where it is used
         lexicon = os.path.join(bdir, bundle.LAYOUT["lexicon"])
@@ -577,7 +594,7 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print,
             f"{through} skipped, {pend} outstanding")
         log(f"  next:  webnovel-audio fetch --target {row['slug']} --range 1-10")
         return {"slug": row["slug"], "title": fi.title, "provider": fi.provider,
-                "chapters": len(fi.chapters), "new": new,
+                "lead": picked, "chapters": len(fi.chapters), "new": new,
                 "skipped": through, "pending": pend}
     finally:
         db.close()

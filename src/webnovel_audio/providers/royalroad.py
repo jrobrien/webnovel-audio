@@ -86,7 +86,7 @@ _STATUS_LABELS = {"ONGOING", "COMPLETED", "HIATUS", "STUB", "DROPPED"}
 # Presentational classes Royal Road can rename at will. Every extractor below is
 # wrapped so that drift degrades to an empty value — losing a tag list must never
 # break a sync, and an empty list is a truthful "we don't know".
-_TAG_SEL = "a.fiction-tag"
+_TAG_SEL = 'a.fiction-tag, a[href*="tagsAdd="]'   # the second is the browser-saved layout
 _WARN_SEL = ".text-center.font-red-sunglo li"
 
 

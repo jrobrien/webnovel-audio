@@ -1126,3 +1126,55 @@ def test_royal_road_is_read_through_the_browser_not_fetched(tmp_path, monkeypatc
     db = DB(cfg.library.state_db)
     assert {c["status"] for c in db.chapters(db.get_series("salvage-run")["id"])} == {"new"}
     db.close()
+
+
+def test_lead_set_is_read_from_the_source_tags():
+    assert sync.lead_of(["LitRPG", "Female Lead"]) == "female"
+    assert sync.lead_of(["Male Lead", "Progression"]) == "male"
+    # no tag, both tags, or an explicit choice: the explicit one wins, else the default set
+    assert sync.lead_of([]) == "male"
+    assert sync.lead_of(["Female Lead", "Male Lead"]) == "male"
+    assert sync.lead_of(["Female Lead"], "male") == "male"
+    assert sync.lead_of(["Male Lead"], "female") == "female"
+
+
+def test_female_lead_set_inverts_the_defaults_and_is_overridable(tmp_path):
+    import tomllib
+
+    cfg = Config()                       # built-in: [voices] is the male-lead set
+    cfg.voices.narrator, cfg.voices.thought = "af_nova", "af_sky"
+    cfg.voices.dialogue_default, cfg.cast.default = "am_michael", "am_michael"
+    male = tomllib.loads(sync.pin_defaults_text(cfg, "m", "male"))
+    fem = tomllib.loads(sync.pin_defaults_text(cfg, "f", "female"))
+    assert male["voices"]["narrator"] == "af_nova" and male["cast"]["default"] == "am_michael"
+    assert fem["voices"]["narrator"].startswith("am_") and fem["voices"]["thought"].startswith("am_")
+    assert fem["voices"]["dialogue_default"].startswith("af_") and fem["cast"]["default"].startswith("af_")
+    assert fem["voices"]["system_ui"] == male["voices"]["system_ui"]    # the robot is shared
+    # config.toml's [voices.female_lead] replaces the built-in inversion, key by key
+    p = tmp_path / "c.toml"
+    p.write_text('[voices]\nnarrator="af_nova"\n[voices.female_lead]\nnarrator="bm_george"\n'
+                 'cast_default="af_heart"\n')
+    c2 = Config.load(str(p))
+    fem2 = tomllib.loads(sync.pin_defaults_text(c2, "f", "female"))
+    assert fem2["voices"]["narrator"] == "bm_george" and fem2["cast"]["default"] == "af_heart"
+    assert c2.voices.narrator == "af_nova"
+
+
+def test_relative_library_dir_is_anchored_at_the_config_not_the_cwd(tmp_path, monkeypatch):
+    # the UI started from a menu runs in $HOME: it used to put a new series in ~/library
+    (tmp_path / "proj").mkdir()
+    (tmp_path / "proj" / "c.toml").write_text('[library]\nlibrary_dir = "library"\n')
+    monkeypatch.chdir(tmp_path)
+    cfg = Config.load(str(tmp_path / "proj" / "c.toml"))
+    assert cfg.library.library_dir == str(tmp_path / "proj" / "library")
+    # an absolute or ~ path is left alone
+    (tmp_path / "abs.toml").write_text('[library]\nlibrary_dir = "~/books"\n')
+    assert Config.load(str(tmp_path / "abs.toml")).library.library_dir == "~/books"
+
+
+def test_default_config_is_found_from_another_directory(tmp_path, monkeypatch):
+    from webnovel_audio import cli
+    monkeypatch.chdir(tmp_path)
+    found = os.path.normpath(os.path.join(os.getcwd(), cli._default_config()))
+    assert os.path.basename(found) in ("config.toml", "config.example.toml")
+    assert os.path.exists(cli._default_config())
