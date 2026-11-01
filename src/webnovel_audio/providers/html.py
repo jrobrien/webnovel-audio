@@ -289,9 +289,18 @@ def _table_blocks(table: Tag) -> list[Block]:
         if any(ch.isalnum() for ch in text):
             out.append(Block("system", text))
 
-    for row in table.find_all("tr") or [table]:
+    rows = [r for r in table.find_all("tr") if r.find_parent("table") is table]
+    for row in rows or [table]:
         parts: list[str] = []
-        for cell in row.find_all(["td", "th"]) or [row]:
+        cells = [c for c in row.find_all(["td", "th"]) if c.find_parent("tr") is row]
+        for cell in cells or [row]:
+            inner = [t for t in cell.find_all("table") if t.find_parent(["td", "th"]) is cell]
+            if inner:       # a box inside a box: read the inner one, not the outer's flattened text
+                add(parts)
+                parts = []
+                for t in inner:
+                    out.extend(_table_blocks(t))
+                continue
             lines = cell.find_all("p")
             if len(lines) > 1:
                 add(parts)

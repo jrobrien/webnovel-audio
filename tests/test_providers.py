@@ -107,3 +107,20 @@ def test_stat_box_table_in_a_scroll_div_is_one_system_block_per_line():
     blocks = blocks_from_container(BeautifulSoup(html, "lxml").div)
     assert [b.kind for b in blocks] == ["paragraph"] + ["system"] * 4 + ["paragraph"]
     assert blocks[3].text == "Offense: ***"
+
+
+def test_stat_box_nested_tables_are_read_once():
+    # the Status screen: an outer one-cell table holding an inner table of rows.
+    # The outer cell's flattened text used to be emitted as well as each inner row,
+    # so every section was read two or three times.
+    html = (
+        "<div><p>He opened it.</p>"
+        '<div><table><tbody><tr><td><div><table><tbody>'
+        "<tr><td><strong>Sub-Adult</strong></td><td>Rank: D</td></tr>"
+        "<tr><td>Health</td><td>650/650</td></tr>"
+        "</tbody></table></div></td></tr></tbody></table></div>"
+        "<p>He closed it.</p></div>"
+    )
+    blocks = blocks_from_container(BeautifulSoup(html, "lxml").div)
+    assert [b.kind for b in blocks] == ["paragraph", "system", "system", "paragraph"]
+    assert [b.text for b in blocks[1:3]] == ["Sub-Adult Rank: D", "Health 650/650"]
