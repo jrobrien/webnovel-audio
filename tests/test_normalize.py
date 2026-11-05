@@ -182,3 +182,21 @@ def test_asterisks_that_are_not_ratings_are_left_alone():
     # italics still strip, and a censored word keeps its stars (not "four stars")
     assert normalize_text("*Why?* she asked") == "Why? she asked"
     assert "stars" not in normalize_text("What the f*** was that")
+
+
+def test_rank_abbreviations_are_spoken_as_the_rank():
+    from webnovel_audio.normalize import normalize_text
+    cases = {
+        "2LT Hale saluted.": "second lieutenant Hale saluted.",
+        "2nd Lt. Hale and 1st Lt. Ross": "second lieutenant Hale and first lieutenant Ross",
+        "Capt. Voss, Sgt. Pike, Cpl Dune": "captain Voss, sergeant Pike, corporal Dune",
+        "LTC Marsh, Lt. Col. Ames, LtCol Bo": "lieutenant colonel Marsh, lieutenant colonel Ames, lieutenant colonel Bo",
+        "SSgt Roe and 1SG Tan": "staff sergeant Roe and first sergeant Tan",
+        "PO2 Reyes": "petty officer second class Reyes",
+        "Col. Sanders": "colonel Sanders",
+    }
+    for src, want in cases.items():
+        assert normalize_text(src) == want
+    # a bare word that merely looks like a rank is left alone
+    assert normalize_text("Col Sanders, the col of data, He is a Major.") == \
+        "Col Sanders, the col of data, He is a Major."

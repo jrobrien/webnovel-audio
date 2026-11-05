@@ -82,6 +82,49 @@ def _stars(s: str) -> str:
     return _STAR_LONE_RE.sub(" 1 star", s)
 
 
+# Military rank abbreviations, spoken as the rank: `2LT` / `2nd Lt.` -> "second lieutenant",
+# `Capt. Hale` -> "captain Hale". Case-sensitive, and a bare `Col`/`Gen`/`Lt` needs its
+# period (or a name after it) so a word or acronym that merely looks like a rank is left alone.
+_RANK_ORD = {"1": "first", "2": "second"}
+_RANK_FULL = {
+    "LTJG": "lieutenant junior grade", "LCDR": "lieutenant commander", "LCdr": "lieutenant commander",
+    "LTC": "lieutenant colonel", "LtCol": "lieutenant colonel", "LTCOL": "lieutenant colonel",
+    "MCPO": "master chief petty officer", "CPO": "chief petty officer",
+    "RADM": "rear admiral", "VADM": "vice admiral",
+    "SSgt": "staff sergeant", "SSG": "staff sergeant", "SFC": "sergeant first class",
+    "MSG": "master sergeant", "SGM": "sergeant major", "PFC": "private first class",
+    "SPC": "specialist", "CPT": "captain", "CAPT": "captain", "Capt": "captain",
+    "SGT": "sergeant", "Sgt": "sergeant", "CDR": "commander", "Cdr": "commander",
+    "Cpl": "corporal", "Pvt": "private", "Maj": "major", "Midn": "midshipman",
+    "Ens": "ensign", "ENS": "ensign", "Adm": "admiral", "Col": "colonel", "Gen": "general",
+    "Lt": "lieutenant",
+}
+_RANK_NEEDS_DOT = {"Col", "Gen", "Adm", "Ens"}    # words or names as well
+_RANK_ORD_RE = re.compile(r"(?<![\w.])([12])(?:st|nd|d)?\s?(Lt|LT|Sgt|SGT|SG)\b\.?")
+_RANK_PO_RE = re.compile(r"\bPO([123])\b")
+_RANK_RE = re.compile(
+    r"(?<![\w.])(Lt\.? ?Col|" + "|".join(sorted(_RANK_FULL, key=len, reverse=True))
+    + r")(\.|(?=\s+[A-Z][a-z]))(?!\w)")
+_RANK_LT_RE = re.compile(r"(?<![\w.])LT(?=\s+[A-Z][a-z])")
+
+
+def _rank_word(m: re.Match[str]) -> str:
+    key, dot = m.group(1), m.group(2)
+    if re.fullmatch(r"Lt\.? ?Col", key):
+        return "lieutenant colonel"
+    if key in _RANK_NEEDS_DOT and dot != ".":
+        return m.group(0)
+    return _RANK_FULL[key]
+
+
+def _ranks(s: str) -> str:
+    s = _RANK_ORD_RE.sub(lambda m: _RANK_ORD[m.group(1)] + (
+        " sergeant" if m.group(2).upper().startswith("S") else " lieutenant"), s)
+    s = _RANK_PO_RE.sub(lambda m: "petty officer " + {"1": "first", "2": "second", "3": "third"}[m.group(1)] + " class", s)
+    s = _RANK_LT_RE.sub("lieutenant", s)
+    return _RANK_RE.sub(_rank_word, s)
+
+
 _MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)")
 _EMOJI_RE = re.compile(
     "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF←-⇿"
@@ -296,6 +339,7 @@ def normalize_text(s: str, *, dampen_caps: bool = True) -> str:
     s = _strip_foreign_scripts(s)
     s = _dequote(s)
     s = _stars(s)
+    s = _ranks(s)
     s = _MD_ITALIC_RE.sub(r"\1", s)
     if dampen_caps:
         s = _dampen_caps(s)
