@@ -1453,22 +1453,18 @@ version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
+    { name = "en-core-web-sm" },
     { name = "httpx" },
     { name = "lxml" },
     { name = "numpy" },
     { name = "soundfile" },
+    { name = "spacy" },
 ]
 
 [package.optional-dependencies]
 kokoro = [
-    { name = "en-core-web-sm" },
     { name = "kokoro-onnx" },
     { name = "onnxruntime" },
-    { name = "spacy" },
-]
-spacy = [
-    { name = "en-core-web-sm" },
-    { name = "spacy" },
 ]
 
 [package.dev-dependencies]
@@ -1479,17 +1475,16 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "beautifulsoup4", specifier = ">=4.12" },
-    { name = "en-core-web-sm", marker = "extra == 'spacy'", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" },
+    { name = "en-core-web-sm", url = "https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl" },
     { name = "httpx", specifier = ">=0.27" },
     { name = "kokoro-onnx", marker = "extra == 'kokoro'", specifier = ">=0.4.0" },
     { name = "lxml", specifier = ">=5.0" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "onnxruntime", marker = "extra == 'kokoro'", specifier = ">=1.18" },
     { name = "soundfile", specifier = ">=0.12" },
-    { name = "spacy", marker = "extra == 'spacy'", specifier = ">=3.8,<3.9" },
-    { name = "webnovel-audio", extras = ["spacy"], marker = "extra == 'kokoro'" },
+    { name = "spacy", specifier = ">=3.8,<3.9" },
 ]
-provides-extras = ["kokoro", "spacy"]
+provides-extras = ["kokoro"]
 
 [package.metadata.requires-dev]
 dev = [{ name = "pytest", specifier = ">=8" }]
