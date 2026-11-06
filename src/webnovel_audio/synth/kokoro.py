@@ -5,6 +5,8 @@ Model files are ~350 MB total and are fetched once with `webnovel-audio models f
 """
 from __future__ import annotations
 
+from ..errors import DependencyMissing
+
 import os
 
 import hashlib
@@ -103,6 +105,19 @@ def _resample(x: np.ndarray, sr_in: int, sr_out: int) -> np.ndarray:
     return np.interp(dst, src, x).astype("float32")
 
 
+def check_available(cache_dir: str = DEFAULT_CACHE) -> None:
+    """Raise `DependencyMissing` if Kokoro cannot be built, without building it."""
+    import importlib.util
+
+    if importlib.util.find_spec("kokoro_onnx") is None:
+        raise DependencyMissing("kokoro-onnx is not installed.  ->  uv sync --extra kokoro")
+    model, voices = model_paths(cache_dir)
+    if not (os.path.exists(model) and os.path.exists(voices)):
+        raise DependencyMissing("Kokoro model files missing.  ->  webnovel-audio models fetch")
+    from ..espeak import require_usable
+    require_usable("cannot render:")
+
+
 class KokoroSynth:
     sample_rate = 24000
 
@@ -116,13 +131,13 @@ class KokoroSynth:
         try:
             from kokoro_onnx import Kokoro
         except ModuleNotFoundError as exc:  # pragma: no cover
-            raise SystemExit(
+            raise DependencyMissing(
                 "kokoro-onnx is not installed.  ->  uv sync --extra kokoro"
             ) from exc
 
         model, voices = model_paths(cache_dir)
         if not (os.path.exists(model) and os.path.exists(voices)):
-            raise SystemExit(
+            raise DependencyMissing(
                 "Kokoro model files missing.  ->  webnovel-audio models fetch"
             )
         # Kokoro builds the espeak phonemizer here. If the data path is too

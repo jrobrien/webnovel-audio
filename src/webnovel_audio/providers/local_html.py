@@ -5,6 +5,8 @@ parser reads it; otherwise a generic best-effort reading is used.
 """
 from __future__ import annotations
 
+from ..errors import ContentError
+
 from ..document import Document, stamp_provenance
 from . import html as H
 from .base import ChapterRef, FetchContext, Provider
@@ -14,7 +16,7 @@ def parse_generic(raw: str, *, url: str = "") -> Document:
     soup = H.soup_of(raw)
     content = H.guess_content_container(soup)
     if content is None:
-        raise SystemExit("could not locate chapter content in the page")
+        raise ContentError("could not locate chapter content in the page")
     H.strip_hidden(content, H.hidden_class_names(soup))
     title = H.meta_content(soup, "og:title", "twitter:title")
     if not title:

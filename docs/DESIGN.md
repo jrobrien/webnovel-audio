@@ -413,3 +413,9 @@ exit 1 for "ran, but some chapters errored") or a one-line message otherwise.
 The UI's `$::RUNNING` guard still exists (it avoids even spawning a second
 process from the same window) but the lock is what actually prevents two
 processes from racing for the same 8 cores, which `$::RUNNING` alone couldn't.
+
+## Sync and browser fetch
+
+The stage runner's flow (`run_stage`), the `grab` loop and its protocol with the
+extension, with diagrams, source links and the known failure modes, are in
+[SYNC-AND-FETCH.md](SYNC-AND-FETCH.md). The same two diagrams are in the README.

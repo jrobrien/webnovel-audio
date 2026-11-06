@@ -1,10 +1,9 @@
 {
   "manifest_version": 3,
   "name": "webnovel-audio page grabber",
-  "version": "0.4.0",
-  "description": "Read Royal Road chapters in this tab for `webnovel-audio` (grab, save pages), and close the tab when a run finishes.",
+  "version": "0.5.0",
+  "description": "Reads Royal Road pages in this tab for `webnovel-audio grab`: loads the page the program names, sends it back, shows its status.",
   "permissions": [
-    "downloads",
     "storage"
   ],
   "host_permissions": [

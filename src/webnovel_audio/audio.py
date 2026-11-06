@@ -2,6 +2,8 @@
 loudness-normalize, encode to Opus."""
 from __future__ import annotations
 
+from .errors import DependencyMissing
+
 import json
 import os
 import re
@@ -156,7 +158,7 @@ def assemble(segments, renders, sr: int, *, lead_ms: int = 400, tail_ms: int = 9
 def _ffmpeg() -> str:
     exe = shutil.which("ffmpeg")
     if not exe:
-        raise SystemExit("ffmpeg not found on PATH")
+        raise DependencyMissing("ffmpeg not found on PATH")
     return exe
 
 

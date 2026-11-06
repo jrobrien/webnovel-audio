@@ -18,6 +18,8 @@ walk covers the whole list.
 """
 from __future__ import annotations
 
+from ..errors import ContentError
+
 import datetime as _dt
 import math
 import re
@@ -170,7 +172,7 @@ def parse_chapter(html: str, *, url: str = "") -> Document:
     soup = H.soup_of(html)
     content = soup.select_one("#chp_raw, div.chp_raw")
     if content is None:
-        raise SystemExit("could not locate chapter content (#chp_raw) in the page")
+        raise ContentError("could not locate chapter content (#chp_raw) in the page")
     H.strip_hidden(content, H.hidden_class_names(soup))
     H.drop_matching(content, r"authornotes|modern-footnotes-footnote")
     # the site's editor wraps tables in `div.tbl_of`, and authors wrap runs of

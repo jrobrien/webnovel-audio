@@ -35,6 +35,8 @@ call into the library, because calling into it is the thing that aborts.
 """
 from __future__ import annotations
 
+from .errors import DependencyMissing
+
 import os
 import subprocess
 import sys
@@ -129,7 +131,7 @@ def require_usable(where: str = "") -> None:
     point there is nothing to catch: espeak exits the interpreter itself.
     """
     if problem := too_long():
-        raise SystemExit(f"{where}{'\n' if where else ''}{problem}")
+        raise DependencyMissing(f"{where}{'\n' if where else ''}{problem}")
 
 
 def probe() -> tuple[bool, str]:

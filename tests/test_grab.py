@@ -357,7 +357,7 @@ def test_the_page_catcher_hands_back_the_one_page(series):
         if catcher.port:
             break
         time.sleep(0.02)
-    assert result["url"].endswith(f"#wa-run={catcher.port}:{catcher.token}")
+    assert result["url"].endswith(f"#wa={catcher.port}:{catcher.token}")
     b = Browser(catcher)
     assert b.call("POST", "/page", {"html": "<p>the page</p>"})[1]["ok"]
     assert b.call("GET", "/next")[1]["action"] == "done"
@@ -464,3 +464,182 @@ def test_a_missing_or_old_extension_is_named_in_the_log(series):
         t.join(10)
     old = [e["message"] for e in events if "is 0.0.1" in e.get("message", "")]
     assert len(old) == 1 and grab.extension_version() in old[0]
+
+
+def test_next_is_held_while_waiting_and_carries_the_text_to_show(series):
+    """Protocol 2: the extension has no polling loop. /next?wait= is held until the
+    answer is not "wait", and every answer says what to display."""
+    cfg, ids = series
+    loop = GrabLoop(cfg, "salvage-run", 2, emit=lambda d: None, render=_fake_render(cfg, 0.6))
+    t = _start(loop)
+    b = Browser(loop)
+    try:
+        nxt = b.call("GET", "/next")[1]
+        assert nxt["action"] == "fetch" and nxt["say"].startswith("Next series: ")
+        b.call("POST", "/page", {"html": _series_page()})
+        first = b.call("GET", "/next")[1]
+        assert first["action"] == "fetch" and first["say"].startswith("Next: #1 ")
+        b.call("POST", "/page", {"html": _page(ids[0])})
+        # the render takes ~0.6 s: an unheld ask says wait, a held one comes back with the next chapter
+        assert b.call("GET", "/next")[1]["action"] == "wait"
+        t0 = time.time()
+        held = b.call("GET", "/next?wait=5")[1]
+        assert held["action"] == "fetch" and held["number"] == 2
+        assert 0.1 < time.time() - t0 < 4
+        # a held request that runs out of time answers wait, with text
+        b.call("POST", "/page", {"html": _page(ids[1])})
+        late = b.call("GET", "/next?wait=0.1")[1]
+        assert late["action"] in ("wait", "done") and late["say"]
+    finally:
+        loop.finish("test over")
+        t.join(10)
+
+
+def test_next_ignores_a_bad_wait(series):
+    cfg, ids = series
+    loop = GrabLoop(cfg, "salvage-run", 1, emit=lambda d: None, render=_fake_render(cfg))
+    t = _start(loop)
+    try:
+        assert Browser(loop).call("GET", "/next?wait=soon")[0] == 200
+    finally:
+        loop.finish("test over")
+        t.join(10)
+
+
+# -- failures: what a run does when something is wrong ---------------------------
+
+
+def _run_to_done(loop, b, seconds=8):
+    """Ask /next the way the extension would, until the server says done."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        nxt = b.call("GET", "/next?wait=1")[1]
+        if nxt["action"] == "done":
+            return nxt
+    raise AssertionError("never said done")
+
+
+def test_a_render_that_blows_up_ends_the_run_with_the_reason(series):
+    """The tagger-missing wedge: a render that raises SystemExit used to leave the
+    chapter 'parsed' and the loop answering 'wait: rendering' for ever."""
+    cfg, ids = series
+
+    def render(series_id, number):
+        raise SystemExit("the POS tagger (en_core_web_sm) is not installed")
+
+    events = []
+    loop = GrabLoop(cfg, "salvage-run", 2, emit=events.append, render=render)
+    t = _start(loop)
+    b = Browser(loop)
+    _open_series(b)
+    b.call("GET", "/next")
+    b.call("POST", "/page", {"html": _page(ids[0])})
+    nxt = _run_to_done(loop, b)
+    assert nxt["clean"] is False and "POS tagger" in nxt["reason"]
+    t.join(10)
+    assert not t.is_alive()
+
+
+def test_another_series_leftovers_do_not_hold_the_fetch(series):
+    """Pacing is the loop's own backlog, not a count of rows in the database."""
+    cfg, ids = series
+    loop = GrabLoop(cfg, "salvage-run", 2, emit=lambda d: None, render=_fake_render(cfg))
+    t = _start(loop)
+    b = Browser(loop)
+    try:
+        _open_series(b)
+        db = DB(cfg.library.state_db)
+        sid = db.get_series("salvage-run")["id"]
+        row = db.con.execute("SELECT id FROM chapters WHERE series_id=? AND ord=5", (sid,)).fetchone()
+        db.mark(row["id"], "parsed")                      # a chapter nothing is rendering
+        db.close()
+        assert b.call("GET", "/next")[1]["action"] == "fetch"
+    finally:
+        loop.finish("test over")
+        t.join(10)
+
+
+def test_an_errored_chapter_that_is_held_is_retried_once_per_run(series, tmp_path):
+    cfg, ids = series
+    db = DB(cfg.library.state_db)
+    sid = db.get_series("salvage-run")["id"]
+    row = db.con.execute("SELECT id FROM chapters WHERE series_id=? AND ord=0", (sid,)).fetchone()
+    raw = tmp_path / "held.html"
+    raw.write_text("<html></html>")
+    db.mark(row["id"], "error", error="boom", error_stage="render", raw_path=str(raw))
+    db.close()
+    calls = []
+    inner = _fake_render(cfg, 0.05)
+
+    def render(series_id, number):
+        calls.append(number)
+        return inner(series_id, number)
+
+    loop = GrabLoop(cfg, "salvage-run", 1, emit=lambda d: None, render=render)
+    t = _start(loop)
+    b = Browser(loop)
+    _open_series(b)
+    deadline = time.time() + 5
+    while 1 not in calls and time.time() < deadline:
+        time.sleep(0.05)
+    loop.finish("test over")
+    t.join(10)
+    assert calls.count(1) == 1
+
+
+def test_a_render_that_never_returns_is_given_up_on(series):
+    cfg, ids = series
+    gate = threading.Event()
+
+    def render(series_id, number):
+        gate.wait(30)
+
+    events = []
+    loop = GrabLoop(cfg, "salvage-run", 2, emit=events.append, render=render, stall_timeout=0.6)
+    t = _start(loop)
+    b = Browser(loop)
+    try:
+        _open_series(b)
+        b.call("GET", "/next")
+        b.call("POST", "/page", {"html": _page(ids[0])})
+        nxt = _run_to_done(loop, b)
+        assert nxt["clean"] is False and nxt["reason"] == "render stalled"
+        t.join(10)
+        assert not t.is_alive()
+        assert any("made no progress" in e.get("message", "") for e in events)
+    finally:
+        gate.set()
+
+
+def test_a_broken_environment_stops_before_the_browser_is_opened(series, monkeypatch):
+    from webnovel_audio.errors import DependencyMissing
+
+    cfg, ids = series
+
+    def broken(self):
+        raise DependencyMissing("the POS tagger (en_core_web_sm) is not installed")
+
+    monkeypatch.setattr(GrabLoop, "_real_preflight", broken)
+    events, opened = [], []
+    loop = GrabLoop(cfg, "salvage-run", 1, emit=events.append)
+    assert loop.run(on_ready=opened.append) == 1
+    assert opened == []
+    assert any("cannot render" in e.get("message", "") for e in events)
+
+
+def test_the_series_page_grab_opened_is_not_asked_for_again(series):
+    """`grab` opens the first series page itself and the browser sends it unprompted;
+    the next instruction is then a chapter, not the same page again (which a browser
+    would treat as a fragment navigation and not load)."""
+    cfg, ids = series
+    loop = GrabLoop(cfg, "salvage-run", 2, emit=lambda d: None, render=_fake_render(cfg))
+    t = _start(loop)
+    b = Browser(loop)
+    try:
+        code, got = b.call("POST", "/page", {"html": _series_page()})
+        assert got["ok"] and got["kind"] == "series"
+        nxt = b.call("GET", "/next")[1]
+        assert nxt["action"] == "fetch" and nxt["kind"] == "chapter" and nxt["number"] == 1
+    finally:
+        loop.finish("test over")
+        t.join(10)

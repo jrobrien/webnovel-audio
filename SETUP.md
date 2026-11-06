@@ -254,36 +254,23 @@ web page, so the first install is the Load unpacked step.
 
 ### Saving pages by hand
 
-If Royal Road's Cloudflare check turns the tool away (a 403 "Cloudflare challenge"
-message, or the Anubis one), read the chapters in Chrome and hand the pages over:
+If you would rather not run the extension, save a page yourself ("Save page as…", HTML)
+into `~/Downloads/webnovel-audio/` and file it:
 
-1. `chrome://extensions` → turn on Developer mode → **Load unpacked** →
-   `extension/royalroad-grabber/` in this repo.
-2. Open the chapter you are up to on royalroad.com. A small panel appears at the
-   bottom right: set a number and press **Start**. The tab saves this chapter and
-   steps through **Next** by itself, a few seconds apart, as if you were reading,
-   so Royal Road moves your reading position along too. It stops at the number,
-   at the last chapter, on a page with no chapter text (a bot-check), or on **Stop**.
-3. Pages land in `~/Downloads/webnovel-audio/`. Then:
+```sh
+uv run webnovel-audio ingest              # files them into the raw cache
+uv run webnovel-audio sync                # parse and render as usual
+```
 
-   ```sh
-   uv run webnovel-audio ingest              # files them into the raw cache
-   uv run webnovel-audio sync                # parse and render as usual
-   ```
+`ingest` matches each page to a tracked chapter by the ids inside the page, refuses
+bot-check pages, and moves what it has dealt with to `done/`. A chapter you already hold
+is left alone unless `--force`. If it says a chapter is unknown, run `series refresh`
+first (or save that series' page: its chapter list and status are read like `series
+refresh` would). The control UI's **Ingest** button does the same.
 
-   `ingest` matches each page to a tracked chapter by the ids inside the page (so
-   a plain "Save page as" works too), refuses bot-check pages, and moves what it has
-   dealt with to `done/`. A chapter you already hold is left alone unless `--force`.
-   If it says a chapter is unknown, run `series refresh` first (or save that series'
-   page, below).
-
-The control UI's **Ingest** button does the `ingest` step (it lists each page's
-result in the log and refreshes the lists). It also starts the extension for you. Right-click a chapter → **Open in
-browser** (just the page) or **Open in browser and save the next 10** (the extension
-starts at once and walks 10 chapters). Right-click a series → **Open source page and
-save it**: the extension saves the series page, and `ingest` reads its chapter list
-and status like `series refresh` would, and reports where the site has you up to.
-The page opens in your default browser, which must be the one with the extension.
+The extension no longer has a mode of its own for this: it only works for `grab`, which
+tells it which page to load. Right-click a chapter → **Open in browser** just opens the
+page in your default browser.
 
 ### Fetch, ingest and render in one loop: `grab`
 
@@ -304,9 +291,10 @@ anything you do not want fetched.
 
 For each series, in turn, the browser is sent to its series page first (the chapter
 list, and where the site has you up to), then to each chapter in order. `grab` runs a
-small server on the loopback address only (a random port, a one-time token passed in the
-page address after the `#`, nothing accepted from web pages, a protocol-version check).
-The extension sends each page it loads; `grab` files it, renders that chapter, and only
+small server on the loopback address only (a random port, a one-time token carried in the
+page address after the `#` as `#wa=<port>:<token>`, nothing accepted from web pages, a
+protocol-version check). The extension keeps no state: every page the server sends it to
+carries that hash, and a page without it is left alone. It sends each page it loads; `grab` files it, renders that chapter, and only
 when the render is finished tells the browser which chapter to load next, so fetching is
 paced by rendering. `--ahead K` lets K chapters wait unrendered (default 0). Chapters an
 earlier run fetched but never rendered are rendered first. It stops when every series is

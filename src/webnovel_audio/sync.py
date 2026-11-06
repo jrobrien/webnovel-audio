@@ -21,6 +21,7 @@ from . import bundle, pipeline, providers
 from .config import Config
 from .db import DB
 from .document import stamp_provenance
+from .errors import DependencyMissing
 from .normalize import short_title
 from .providers import ChapterRef
 from .safepath import safe_slug
@@ -1134,6 +1135,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
     pool = ThreadPoolExecutor(max_workers=jobs) if stage == "rendered" and not dry_run and jobs > 1 \
         else None
     pending: list[tuple] = []                     # (_Deferred, slug, number, started_at)
+    checked = False                               # the environment, checked before the first chapter
 
     def finish_ok(c, slug, num, t0, ev):
         res.rendered += 1
@@ -1233,6 +1235,9 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                            "title": c["title"], "result": "would-run", "stage": stage})
                     res.skipped += 1
                     continue
+                if stage == "rendered" and not checked:
+                    pipeline.preflight(cfg, backend)
+                    checked = True
                 _emit({"event": "chapter_begin", "slug": slug, "number": num,
                        "title": c["title"], "stage": stage})
                 t0 = time.time()
@@ -1256,6 +1261,15 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
         _emit({"event": "done", "stage": stage, "done": res.rendered,
                "errors": res.errors, "skipped": res.skipped})
         return res
+    except DependencyMissing as exc:
+        # the environment, not a chapter: finish what is already mastering so it is
+        # not stranded, mark nothing, and stop with the message
+        try:
+            drain()
+        except DependencyMissing:
+            pass
+        _emit({"event": "abort", "stage": stage, "reason": str(exc)})
+        raise
     finally:
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)

@@ -154,7 +154,7 @@ def test_ingest_button_lists_each_page_and_reports_failure(tmp_path):
 
 
 @needs_display
-def test_chapter_and_series_pages_open_in_the_browser_with_the_extension_marker(tmp_path):
+def test_chapter_page_opens_in_the_browser(tmp_path):
     out = tmp_path / "open.log"
     r = _run(os.path.join(ROOT, "tests", "ui", "open_chapter.tcl"), str(out),
              ui_conf=tmp_path / "ui.conf")

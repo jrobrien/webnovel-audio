@@ -44,7 +44,7 @@ Setup, deployment, automation, troubleshooting: [`SETUP.md`](SETUP.md).
 
 ```sh
 git clone <this-repo> ~/Projects/webnovel-audio && cd ~/Projects/webnovel-audio
-uv sync --extra kokoro                 # venv + deps + Kokoro TTS + the POS tagger
+uv sync --extra kokoro                 # venv + deps (incl. POS tagger) + Kokoro TTS
 uv run webnovel-audio models fetch     # ~400 MB, once
 cp config.example.toml config.toml
 ```
@@ -174,6 +174,87 @@ flowchart TD
 `sync` is just `series refresh` + `render` with an implicit range, over every
 enabled series — the daily driver, not a special code path.
 
+### How `sync` runs
+
+Every stage goes through one runner. A chapter that raises is marked `error` and
+retried next time; the run carries on. Full write-up, with source links and the
+known problems: [docs/SYNC-AND-FETCH.md](docs/SYNC-AND-FETCH.md).
+
+```mermaid
+flowchart TD
+    START(["webnovel-audio sync / render / fetch / parse"]) --> LOCK{"sync_lock<br/>free?"}
+    LOCK -- "no" --> BUSY(["exit: another sync is running"])
+    LOCK -- "yes" --> TARGETS["targets = one series, or every enabled series"]
+    TARGETS --> NEXTS{"another series?"}
+    NEXTS -- "no" --> DRAIN["drain pending mastering jobs"]
+    DRAIN --> BUNDLE["sync_bundle per touched series"]
+    BUNDLE --> DONE(["emit done: ok / errors"])
+    NEXTS -- "yes" --> BO{"provider is<br/>browser_only?"}
+    BO -- "no" --> REFRESH["refresh chapter list over HTTP<br/>(if sync)"]
+    BO -- "yes" --> HELD["todo = only chapters the browser already<br/>brought (raw file exists, or fetched/parsed);<br/>log how many still need grab"]
+    REFRESH --> TODO["todo = outstanding(stage) or explicit range"]
+    TODO --> CHAP
+    HELD --> CHAP{"another chapter in todo?"}
+    CHAP -- "no" --> NEXTS
+    CHAP -- "yes" --> ADV["_advance(): fetch -> parse -> render<br/>up to the requested stage"]
+    ADV --> OK{"result"}
+    OK -- "ok" --> MARK["mark_stage(rendered); emit chapter ok"]
+    OK -- "raises Exception<br/>(incl. ContentError)" --> ERR["finish_err: status = error,<br/>error_stage = stage; retried next run"]
+    OK -- "raises DependencyMissing<br/>(tagger, TTS, ffmpeg)" --> ESC["settle in-flight masters, emit abort,<br/>mark nothing, stop the run"]
+    MARK --> CHAP
+    ERR --> CHAP
+    ESC --> DONE2(["caller sees the message"])
+```
+
+### How the browser fetch works (`grab`)
+
+Royal Road is read through your own browser. `grab` runs a loopback server and
+the extension asks it what to load next; the next chapter is released only
+when the previous one has rendered.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant UI as Control UI / CLI
+    participant G as grab main thread<br/>(GrabLoop.run)
+    participant S as grab HTTP thread<br/>(next_action / take_page)
+    participant X as Extension<br/>(content.js, stateless)
+    participant RR as royalroad.com
+    participant DB as state.db
+
+    UI->>G: grab --limit N
+    G->>G: sync_lock, build pending series list
+    G->>S: start server (port, token)
+    G->>X: open series URL + #wa=port:token
+    Note over X: no storage: the run is the URL hash,<br/>put on every page the server sends us to
+    X->>S: POST /page {html}
+    S->>DB: ingest_raw -> _ingest_series_page (chapter list, reading position)
+    S->>S: queue any chapter already fetched/parsed<br/>(left over from an earlier run)
+    S-->>X: {ok}
+    loop until the server says done
+        X->>S: GET /next?wait=20
+        Note over S: held open while the answer would be wait
+        alt backlog not drained
+            S-->>X: {action: wait, say: Waiting: rendering}
+        else a new chapter is outstanding
+            S-->>X: {action: fetch, url, say}
+            X->>X: sleep 4-6 s (be polite)
+            X->>RR: location.href = url + #wa=port:token
+            RR-->>X: chapter page
+            X->>S: POST /page {html}
+            S->>DB: ingest_raw: mark_stage(fetched), write .raw
+            S->>G: queue (series, number)
+            S-->>X: {ok}
+        else nothing left, or a stop
+            S-->>X: {action: done, say, clean}
+            X->>X: close tab if clean
+        end
+        G->>G: dequeue, run_stage(rendered, one chapter)
+        G->>DB: mark_stage(rendered) or error
+    end
+    G->>UI: done: N ok, M error(s)
+```
+
 ## Calling convention
 
 Every pipeline verb takes the same two flags (there are no positional
@@ -216,7 +297,7 @@ first.
 | `compounds [--scope S] [--range R] [--top N] [--all]` | closed compounds the TTS may mispronounce, across the whole library (or one series / range): words not in a dictionary that split into two common words, phonemized whole and as halves, flagged where they differ or where two sounds fuse at the join (`night`+`shade` → "ch"). **Never writes**; fix with `lex add` |
 | `render --target T [--range R]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only. Reports how many segments came from cache. A chapter whose audio recipe (segments + audio settings) is unchanged is left alone; `--force` re-renders it anyway |
 | `sync [--scope S] [--limit N]` | refresh + render everything outstanding; shows a size estimate and confirms first (`-y` to skip) |
-| `tagger status` \| `install` \| `test` | the spaCy POS tagger the rules resolve against. **Required to render**, so `--extra kokoro` installs it and the small model; `install --model en_core_web_md` (or `_lg`) upgrades |
+| `tagger status` \| `install` \| `test` | the spaCy POS tagger the rules resolve against. **Required to render**, so it is a core dependency (small model included); `install --model en_core_web_md` (or `_lg`) upgrades |
 | `progress [--scope S] [--watch [N]] [--recent]` | what a running sync is doing, from the live state DB. **Read-only**, safe mid-render |
 
 **Series** (porcelain):

@@ -533,24 +533,13 @@ proc open_source {} {
     if {![regexp {^https?://} $url]} { log "! $slug has no source page recorded" ; return }
     open_url $url
 }
-;# The chapter page, in the browser that has the grabber extension. With `grab`
-;# the extension starts reading from it at once: that many chapters, saved for
-;# `ingest`, with Royal Road's own position following along.
-proc open_chapter {{grab 0}} {
+;# The chapter page, in the default browser (just the page; fetching is `grab`).
+proc open_chapter {} {
     set sel [.bl.tv selection]
     if {[llength $sel] != 1} return
     set url [expr {[info exists ::MD([lindex $sel 0],url)] ? $::MD([lindex $sel 0],url) : ""}]
     if {![regexp {^https?://} $url]} { log "! no page recorded for that chapter" ; return }
-    if {$grab} { append url "#wa-grab=$grab" }
     open_url $url
-}
-
-;# The series page, which the extension saves for `ingest` (chapter list, status).
-proc open_source_and_save {} {
-    set slug [selected_series]
-    set url [expr {[info exists ::SURL($slug)] ? $::SURL($slug) : ""}]
-    if {![regexp {^https?://} $url]} { log "! $slug has no source page recorded" ; return }
-    open_url "$url#wa-index"
 }
 
 proc open_url {url} {
@@ -679,11 +668,8 @@ proc chapter_ctx {X Y x y} {
     .ctx entryconfigure 7 -label "Update cast from selection ($n)"
     .ctx entryconfigure 0 -state [expr {$n == 1 ? "normal" : "disabled"}]
     .ctx entryconfigure 1 -state [expr {$n == 1 ? "normal" : "disabled"}]
-    ;# the two browser entries are the last two; menus take no "end-1"
-    set last [.ctx index end]
-    foreach i [list [expr {$last - 1}] $last] {
-        .ctx entryconfigure $i -state [expr {$n == 1 ? "normal" : "disabled"}]
-    }
+    ;# the browser entry is the last one
+    .ctx entryconfigure [.ctx index end] -state [expr {$n == 1 ? "normal" : "disabled"}]
     tk_popup .ctx $X $Y
 }
 
@@ -1844,7 +1830,6 @@ menu .sctx -tearoff 0
 .sctx add command -label "Set priority…" -command dlg_priority
 .sctx add command -label "Rename…" -command dlg_rename
 .sctx add command -label "Open source page" -command open_source
-.sctx add command -label "Open source page and save it" -command open_source_and_save
 .sctx add command -label "Fetch in browser…" -command {
     if {[selected_series] ne ""} { dlg_grab [selected_series] }
 }
@@ -1892,7 +1877,6 @@ menu .ctx -tearoff 0
 .ctx add command -label "Reset errors" -command do_reset_errors
 .ctx add separator
 .ctx add command -label "Open in browser" -command open_chapter
-.ctx add command -label "Open in browser and save the next 10" -command {open_chapter 10}
 
 # -- notebook: Cast | Lexicon | Markdown | Segments | Log
 ttk::notebook .br

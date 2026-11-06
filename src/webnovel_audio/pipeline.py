@@ -1,6 +1,8 @@
 """text file -> segment script -> per-segment synthesis (cached) -> mastered .opus"""
 from __future__ import annotations
 
+from .errors import DependencyMissing
+
 import hashlib
 import json
 import os
@@ -175,7 +177,7 @@ def _load_lexicon(cfg: Config) -> Lexicon | None:
     base = resolve_data_path(getattr(cfg.general, "base_lexicon", ""))
     if base:
         if not os.path.exists(base):
-            raise SystemExit(
+            raise DependencyMissing(
                 f"base lexicon not found: {base}\n"
                 f"  (from general.base_lexicon = "
                 f"{getattr(cfg.general, 'base_lexicon', '')!r})\n"
@@ -202,10 +204,32 @@ def _load_nlp(cfg: Config):
     model = getattr(cfg.general, "tagger", "") or tagger.DEFAULT_MODEL
     nlp = tagger.load(model)
     if nlp is None:
-        raise SystemExit(
+        raise DependencyMissing(
             f"the POS tagger ({model}) is not installed, and pronunciation "
             f"rules need it.\n  install it with: webnovel-audio tagger install")
     return nlp
+
+
+def preflight(cfg: Config, backend: str | None = None) -> None:
+    """Check, once and cheaply, that a render can work at all.
+
+    Raises `DependencyMissing` naming the first thing that is missing. A run calls
+    this before its first chapter, so a broken environment stops it with one
+    message instead of failing (or hanging on) every chapter.
+    """
+    from . import tagger
+    from .audio import _ffmpeg
+
+    _ffmpeg()
+    _load_lexicon(cfg)                       # raises if the configured base lexicon is gone
+    model = getattr(cfg.general, "tagger", "") or tagger.DEFAULT_MODEL
+    if not tagger.available(model):
+        raise DependencyMissing(
+            f"the POS tagger ({model}) is not installed, and pronunciation "
+            f"rules need it.\n  install it with: webnovel-audio tagger install")
+    if (backend or cfg.synth.backend) == "kokoro":
+        from .synth.kokoro import check_available
+        check_available(cfg.general.models_dir)
 
 
 def build_script(source: str | Document, cfg: Config):

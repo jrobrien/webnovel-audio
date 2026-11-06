@@ -2476,7 +2476,12 @@ def main(argv=None) -> int:
         argv = ["--help"]                 # bare invocation -> help, never the UI
 
     args = _build_parser().parse_args(argv)
-    return args.func(args)
+    from .errors import ContentError
+    try:
+        return args.func(args)
+    except ContentError as exc:               # one bad page: a message, not a traceback
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
 
 
 def _build_parser():

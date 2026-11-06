@@ -15,6 +15,8 @@ chapters, so there is no stored login either.
 """
 from __future__ import annotations
 
+from ..errors import ContentError
+
 import json
 import re
 
@@ -267,7 +269,7 @@ def parse_chapter(html: str, *, url: str = "") -> Document:
     soup = H.soup_of(html)
     content = _chapter_container(soup)
     if content is None:
-        raise SystemExit("could not locate chapter content in the page")
+        raise ContentError("could not locate chapter content in the page")
 
     H.strip_hidden(content, H.hidden_class_names(soup))
     H.drop_matching(content, "author-note")

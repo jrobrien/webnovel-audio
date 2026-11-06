@@ -28,6 +28,7 @@ import secrets
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 from . import providers, sync
 from .config import Config
@@ -37,7 +38,9 @@ MAX_BODY = 16 * 1024 * 1024        # a chapter page is under 1 MB; this is a cei
 #: what the extension and this server say to each other. Bump it when a message
 #: changes shape, together with PROTOCOL in background.js under extension/;
 #: a browser running the other number is told so instead of failing obscurely.
-PROTOCOL = 1
+PROTOCOL = 2
+#: longest a /next request is held open, seconds
+MAX_HOLD = 25.0
 
 
 # -- the extension that ships with this tool -----------------------------------
@@ -137,14 +140,21 @@ def extension_page() -> bytes:
 
 class GrabLoop:
     def __init__(self, cfg: Config, scope: str | None = None, limit: int | None = None, *,
-                 ahead: int = 0, idle_timeout: float = 300.0, emit=None, render=None):
+                 ahead: int = 0, idle_timeout: float = 300.0, stall_timeout: float = 1800.0,
+                 emit=None, render=None):
         self.cfg = cfg
         self.limit = limit if limit and limit > 0 else None
         #: fetched-but-not-yet-rendered chapters allowed when the next is released
         self.ahead = max(0, ahead)
         self.idle_timeout = idle_timeout
+        #: seconds with a render in flight and nothing finished or begun before the run
+        #: gives up on it. Generous: a cold model load or a long chapter is not a stall.
+        self.stall_timeout = stall_timeout
         self._emit = emit or (lambda _d: None)
         self._render = render or self._render_chapter
+        self._preflight = self._real_preflight if render is None else (lambda: None)
+        self._last_progress = time.monotonic()
+        self._stalled = False
         self.token = secrets.token_urlsafe(24)
         self.port = 0
         self.rendered = 0
@@ -218,12 +228,6 @@ class GrabLoop:
             self.say(f"the browser extension is {ext_version}; {latest} is bundled: "
                      f"update it at http://127.0.0.1:{self.port}/extension")
 
-    def _unrendered(self, db) -> int:
-        q = ",".join("?" * len(self.series_ids))
-        return db.con.execute(
-            f"SELECT COUNT(*) FROM chapters WHERE series_id IN ({q}) "
-            "AND status IN ('fetched','parsed')", self.series_ids).fetchone()[0]
-
     def _begin_series(self, db, s: dict) -> None:
         chs = db.chapters(s["id"])
         todo = db.outstanding(s["id"], "rendered", self.limit)
@@ -241,20 +245,22 @@ class GrabLoop:
                 while True:
                     if self.finished:
                         return {"action": "done", "reason": self.finished,
+                                "say": self.finished[:1].upper() + self.finished[1:],
                                 "clean": self.finished == "every series done",
                                 "latest": extension_version()}
                     if self._handed:                # asked again before the page arrived
-                        return {"action": "fetch", **self._handed,
-                                "latest": extension_version()}
+                        return self._fetch_action()
                     if self._cur is None:
                         if not self._pending:
                             if self._inflight:      # fetched everything; renders still going
+                                why = ("finishing the last render"
+                                       f"{'s' if self._inflight > 1 else ''}")
                                 return {"action": "wait", "latest": extension_version(),
-                                        "reason": f"finishing the last render"
-                                                  f"{'s' if self._inflight > 1 else ''}"}
+                                        "reason": why, "say": "Waiting: " + why}
                             self.finished = "every series done"
                             return {"action": "done", "reason": self.finished,
-                                    "clean": True, "latest": extension_version()}
+                                    "say": "Every series done", "clean": True,
+                                    "latest": extension_version()}
                         self._cur = {**self._pending.pop(0), "phase": "index", "n": 0}
                         self._handed = {"url": self._cur["url"], "kind": "series",
                                         "number": 0, "title": self._cur["title"]}
@@ -263,9 +269,9 @@ class GrabLoop:
                     if self.limit and cur["n"] >= self.limit:
                         self._cur = None
                         continue
-                    if self._unrendered(db) > self.ahead:
+                    if self._inflight > self.ahead:
                         return {"action": "wait", "reason": "rendering",
-                                "latest": extension_version()}
+                                "say": "Waiting: rendering", "latest": extension_version()}
                     row = next((r for r in db.con.execute(
                         "SELECT * FROM chapters WHERE series_id=? AND status='new' "
                         "ORDER BY ord", (cur["id"],))
@@ -279,6 +285,12 @@ class GrabLoop:
         finally:
             db.close()
 
+    def _fetch_action(self) -> dict:
+        h = self._handed
+        say = (f"Next series: {h['title']}" if h["kind"] == "series"
+               else f"Next: #{h['number']} {h['title']}")
+        return {"action": "fetch", **h, "say": say, "latest": extension_version()}
+
     def take_page(self, html: str) -> dict:
         db = sync._db(self.cfg)
         try:
@@ -288,7 +300,12 @@ class GrabLoop:
             if ok and r.get("kind") == "series":
                 s = db.get_series(r["series"])
                 for c in db.chapters(s["id"]):       # work left from an earlier run
-                    if c["status"] in ("fetched", "parsed"):
+                    # `error` with its page already held is a render or parse that
+                    # failed: tried again, once per run (`_queued`), in case it was
+                    # ephemeral. An error with no page is left alone.
+                    if c["status"] in ("fetched", "parsed") or (
+                            c["status"] == "error" and c["raw_path"]
+                            and os.path.exists(c["raw_path"]) and c["unlocked"]):
                         queue_these.append((s["id"], c["ord"] + 1))
                 self._begin_series(db, s)
             elif ok and r.get("kind") == "chapter":
@@ -307,6 +324,11 @@ class GrabLoop:
                 self._handed = None
                 if r.get("kind") == "series" and self._cur:
                     self._cur["phase"] = "chapters"
+                elif (r.get("kind") == "series" and self._cur is None and self._pending
+                        and self._pending[0]["slug"] == r.get("series")):
+                    # the page `grab` opened itself: it is this series' page already,
+                    # so do not ask the browser to load it a second time
+                    self._cur = {**self._pending.pop(0), "phase": "chapters", "n": 0}
                 elif r.get("kind") == "chapter":
                     if r["result"] == "ingested":
                         self.ingested += 1
@@ -326,6 +348,7 @@ class GrabLoop:
         """Each chapter is its own one-chapter run, which announces itself with a
         start, a series line and a done. This process says those once for the whole
         loop, so only the per-chapter events pass."""
+        self._last_progress = time.monotonic()
         if d.get("event") not in ("start", "series", "done"):
             self.emit(d)
 
@@ -339,8 +362,18 @@ class GrabLoop:
                               backend=self.cfg.synth.backend, log=lambda *_: None,
                               emit=self._render_emit)
 
+    def _real_preflight(self) -> None:
+        from . import pipeline
+        pipeline.preflight(self.cfg, self.cfg.synth.backend)
+
     def run(self, on_ready=None) -> int:
         """Serve and render until done. `on_ready(url)` is told the address to open."""
+        try:
+            self._preflight()
+        except SystemExit as exc:                  # the environment: no point opening the browser
+            self.say(f"cannot render: {exc}")
+            self.emit({"event": "done", "stage": "rendered", "done": 0, "errors": 1, "skipped": 0})
+            return 1
         if not self._pending:
             self.say("no series to fetch: " + (
                 "none are enabled and read through the browser"))
@@ -356,7 +389,7 @@ class GrabLoop:
         if self.skipped_other:
             self.say("not read through the browser (use sync): " + ", ".join(self.skipped_other))
         if on_ready:
-            on_ready(f"{self._pending[0]['url']}#wa-run={self.port}:{self.token}")
+            on_ready(f"{self._pending[0]['url']}#wa={self.port}:{self.token}")
         beat = started = time.monotonic()
         hinted = False
         try:
@@ -370,9 +403,9 @@ class GrabLoop:
                 except queue.Empty:
                     key = None
                 if key is not None:
-                    self._render_one(*key)
+                    self._render_watched(*key)
                     continue
-                if self.finished and self._queue.empty():
+                if self._stalled or (self.finished and self._queue.empty()):
                     break
                 if time.monotonic() - self._last_contact > self.idle_timeout:
                     self.finish("the browser went quiet")
@@ -389,16 +422,38 @@ class GrabLoop:
         return 1 if self.errors else 0
 
     def _render_one(self, series_id: int, number: int) -> None:
+        self._last_progress = time.monotonic()
         try:
             res = self._render(series_id, number)
             self.rendered += getattr(res, "rendered", 0) or 0
             self.errors += getattr(res, "errors", 0) or 0
         except (Exception, SystemExit) as exc:
+            # A bad chapter is marked `error` inside the render and never gets here.
+            # What does is the environment (or something unexpected): every further
+            # chapter would fail the same way, so end the run and say why.
             self.errors += 1
             self.say(f"render of #{number} failed: {exc}")
+            self.finish(f"render failed: {str(exc).splitlines()[0] if str(exc) else type(exc).__name__}")
         finally:
+            self._last_progress = time.monotonic()
             with self._lock:
                 self._inflight -= 1
+
+    def _render_watched(self, series_id: int, number: int) -> None:
+        """Render on a worker thread so a render that never returns can be noticed.
+        The run gives up on it (`render stalled`) once nothing has begun or finished
+        for `stall_timeout`; the worker is a daemon, abandoned at exit."""
+        w = threading.Thread(target=self._render_one, args=(series_id, number), daemon=True)
+        w.start()
+        while w.is_alive():
+            w.join(0.5)
+            if time.monotonic() - self._last_progress > self.stall_timeout:
+                self._stalled = True
+                self.errors += 1
+                self.say(f"render of #{number} made no progress for "
+                         f"{int(self.stall_timeout // 60)} min: giving up on it")
+                self.finish("render stalled")
+                return
 
 
 class PageCatcher:
@@ -439,7 +494,7 @@ class PageCatcher:
         threading.Thread(target=httpd.serve_forever, daemon=True).start()
         try:
             if on_ready:
-                on_ready(f"{url}#wa-run={self.port}:{self.token}")
+                on_ready(f"{url}#wa={self.port}:{self.token}")
             deadline = time.monotonic() + self.idle_timeout
             while not self.finished and time.monotonic() < deadline:
                 time.sleep(0.1)
@@ -523,8 +578,21 @@ def _server(loop) -> ThreadingHTTPServer:
                 return self._bytes(extension_zip(), "application/zip", "page-grabber.zip")
             if self._refuse("get"):
                 return
-            if self.path == "/next":
-                self._send(200, loop.next_action())
+            route, _, query = self.path.partition("?")
+            if route == "/next":
+                # long-poll: hold the request while the answer is "wait", so the
+                # extension has nothing to sleep on or count
+                try:
+                    hold = min(MAX_HOLD, float(parse_qs(query).get("wait", ["0"])[0]))
+                except ValueError:
+                    hold = 0.0
+                deadline = time.monotonic() + hold
+                while True:
+                    a = loop.next_action()
+                    if a.get("action") != "wait" or time.monotonic() >= deadline:
+                        break
+                    time.sleep(0.25)
+                self._send(200, a)
             else:
                 self._send(404, {"error": "no such path"})
 
