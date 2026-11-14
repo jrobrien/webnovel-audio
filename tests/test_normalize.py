@@ -107,10 +107,10 @@ def test_allcaps_shouting_is_calmed():
     assert normalize_text("Help US, please.") == "Help us, please."
     assert normalize_text("GET OUT OF MY HOUSE.") == "get out of my house."
     assert normalize_text("I said IT, not US.") == "I said it, not us."
-    # real acronyms and roman numerals survive (lone, 3+ letters / numeral chars)
+    # real acronyms survive (lone, 3+ letters); labelled numerals become words
     assert normalize_text("The FBI called about a USB drive.") == \
         "The FBI called about a USB drive."
-    assert "IV" in normalize_text("Chapter IV: The Return")
+    assert normalize_text("Chapter IV: The Return") == "Chapter four: The Return"
     # stat boxes keep their acronyms
     assert "DR" in normalize_system("DR: 5  Block: 10")
 
@@ -200,3 +200,18 @@ def test_rank_abbreviations_are_spoken_as_the_rank():
     # a bare word that merely looks like a rank is left alone
     assert normalize_text("Col Sanders, the col of data, He is a Major.") == \
         "Col Sanders, the col of data, He is a Major."
+
+
+def test_roman_numerals_after_labels_and_in_parens():
+    n = normalize_text
+    assert n("a Class I, Class II and Class V threat") == "a Class one, Class two and Class five threat"
+    assert n("Mark IV, level II, Chapter IX") == "Mark four, level two, Chapter nine"
+    assert n("Mark I-D, Model III-D") == "Mark one D, Model three D"
+    assert n("Class I--catalogues") == "Class one — catalogues"
+    # titles: a part number in parentheses, up through the high twenties and beyond
+    assert n("Dread and Quiet (VII)") == "Dread and Quiet (seven)"
+    assert n("Part (XXVII)") == "Part (twenty-seven)"
+    # the pronoun and non-numerals are left alone
+    assert n("Might I suggest it") == "Might I suggest it"
+    assert n("the level I reached; Class I'd") == "the level I reached; Class I'd"
+    assert n("(IIII) (VX)") == "(IIII) (VX)"

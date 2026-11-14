@@ -125,6 +125,53 @@ def _ranks(s: str) -> str:
     return _RANK_RE.sub(_rank_word, s)
 
 
+_ROMAN_VALUES = {"I": 1, "V": 5, "X": 10}
+
+
+def _roman_value(r: str) -> int:
+    """Value of a canonical I/V/X roman numeral (1-39), else 0 (not a numeral)."""
+    total = 0
+    for i, ch in enumerate(r):
+        v = _ROMAN_VALUES[ch]
+        total += -v if i + 1 < len(r) and _ROMAN_VALUES[r[i + 1]] > v else v
+    if not 0 < total < 40:
+        return 0
+    # Reject non-canonical runs ("IIII", "VX", "IXI"): rebuild and compare.
+    out = "X" * (total // 10)
+    d = total % 10
+    out += ("", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX")[d]
+    return total if out == r else 0
+
+
+_ROMAN_BODY = r"[IVX]{1,6}"
+# A numeral after a label: "Class II", "Mark IV", "Model III-D", "level V".
+# "II" and up take the label in any case; a bare "I" is also the pronoun, so it needs
+# a capitalised label ("Class I", not "the class I joined") and may not be a contraction.
+_LABEL_ROMAN_RE = re.compile(
+    rf"\b((?:[Mm]ark|[Mm]odel|[Cc]lass|[Ll]evel|[Cc]hapter)\s+)({_ROMAN_BODY})(?:-(?=[A-Z]\b)|(?![\w'’]))")
+_LABEL_CAP_RE = re.compile(r"(?:Mark|Model|Class|Level|Chapter)\s+\Z")
+# A numeral standing alone in parentheses, as chapter titles part-number: "(VII)".
+_PAREN_ROMAN_RE = re.compile(rf"\(({_ROMAN_BODY})\)")
+
+
+def _roman_label(m: re.Match[str]) -> str:
+    n = _roman_value(m.group(2))
+    if not n or (n == 1 and not _LABEL_CAP_RE.match(m.group(1))):
+        return m.group(0)
+    # "Mark I-D": the variant letter is its own word, not hyphenated onto the number
+    return m.group(1) + int_to_words(n) + (" " if m.group(0).endswith("-") else "")
+
+
+def _roman_paren(m: re.Match[str]) -> str:
+    n = _roman_value(m.group(1))
+    return f"({int_to_words(n)})" if n else m.group(0)
+
+
+def _romans(s: str) -> str:
+    s = _LABEL_ROMAN_RE.sub(_roman_label, s)
+    return _PAREN_ROMAN_RE.sub(_roman_paren, s)
+
+
 _MD_ITALIC_RE = re.compile(r"(?<!\*)\*(?!\*)([^*\n]+?)\*(?!\*)")
 _EMOJI_RE = re.compile(
     "[\U0001F000-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF←-⇿"
@@ -340,6 +387,7 @@ def normalize_text(s: str, *, dampen_caps: bool = True) -> str:
     s = _dequote(s)
     s = _stars(s)
     s = _ranks(s)
+    s = _romans(s)
     s = _MD_ITALIC_RE.sub(r"\1", s)
     if dampen_caps:
         s = _dampen_caps(s)
