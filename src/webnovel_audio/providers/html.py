@@ -220,6 +220,30 @@ def meta_content(soup: BeautifulSoup, *names: str) -> str:
     return ""
 
 
+_BR_PARA_RE = re.compile(r"\n[ \t]*\n\s*")
+
+
+def _split_br_paragraphs(raw: str, spans: list[tuple[int, int]]) -> list[tuple[str, list[tuple[int, int]]]]:
+    """Split one element's text at a blank line (`<br><br>`) into separate paragraphs.
+
+    Some authors put a whole chapter in a single `<p>` and mark paragraphs with a double
+    `<br>`; left whole, the chapter is one wall of text. Italic spans are re-based onto
+    each piece. A single `<br>` is a line break inside a paragraph and is kept."""
+    out: list[tuple[str, list[tuple[int, int]]]] = []
+    start = 0
+    for m in [*_BR_PARA_RE.finditer(raw), None]:
+        end = m.start() if m else len(raw)
+        if raw[start:end].strip():
+            lo = start + (len(raw[start:end]) - len(raw[start:end].lstrip()))
+            piece = raw[lo:end].rstrip()
+            hi = lo + len(piece)
+            sub = [(max(a, lo) - lo, min(b, hi) - lo) for a, b in spans if a < hi and b > lo]
+            out.append((piece, [(a, b) for a, b in sub if b > a]))
+        if m:
+            start = m.end()
+    return out
+
+
 def blocks_from_container(content: Tag) -> list[Block]:
     blocks: list[Block] = []
     children = [c for c in content.find_all(recursive=False) if isinstance(c, Tag)]
@@ -244,34 +268,39 @@ def blocks_from_container(content: Tag) -> list[Block]:
             continue
 
         raw, spans = text_with_italics(el)
-        if not raw.strip():
-            continue
+        whole = collapse_inline_ws(raw)
+        boxed = (name in _SYSTEM_TAGS or _SYSTEM_HINT_RE.search(whole)
+                 or (whole.startswith("[") and whole.endswith("]")))
+        # a stat box keeps its blank lines (one system block); prose is split into paragraphs
+        for raw, spans in ([(raw, spans)] if boxed else _split_br_paragraphs(raw, spans)):
+            if not raw.strip():
+                continue
 
-        flat = collapse_inline_ws(raw)
-        if _BREAK_GLYPHS_RE.match(flat):
-            blocks.append(Block("scene_break"))
-            continue
+            flat = collapse_inline_ws(raw)
+            if _BREAK_GLYPHS_RE.match(flat):
+                blocks.append(Block("scene_break"))
+                continue
 
-        header = _HEADER_RE.match(flat)
-        if header:      # `<<ATTRIBUTES>>`: a stat-box section title
-            title = header.group(1)
-            blocks.append(Block("system", (title.title() if title.isupper() else title) + "."))
-            continue
+            header = _HEADER_RE.match(flat)
+            if header:      # `<<ATTRIBUTES>>`: a stat-box section title
+                title = header.group(1)
+                blocks.append(Block("system", (title.title() if title.isupper() else title) + "."))
+                continue
 
-        bracketed = flat.startswith("[") and flat.rstrip().endswith("]")
-        chat = parse_chat(flat)
-        if chat:
-            blocks.append(Block("chat", chat["message"],
-                                meta={"user": chat["user"], "location": chat["location"],
-                                      "bracket": raw}))
-            continue
+            bracketed = flat.startswith("[") and flat.rstrip().endswith("]")
+            chat = parse_chat(flat)
+            if chat:
+                blocks.append(Block("chat", chat["message"],
+                                    meta={"user": chat["user"], "location": chat["location"],
+                                          "bracket": raw}))
+                continue
 
-        if name in _SYSTEM_TAGS or bracketed or _SYSTEM_HINT_RE.search(flat):
-            blocks.append(Block("system", system_clause_text(raw).strip("[]").strip(),
-                                meta={"bracket": raw} if bracketed else {}))
-            continue
+            if name in _SYSTEM_TAGS or bracketed or _SYSTEM_HINT_RE.search(flat):
+                blocks.append(Block("system", system_clause_text(raw).strip("[]").strip(),
+                                    meta={"bracket": raw} if bracketed else {}))
+                continue
 
-        blocks.append(Block("paragraph", raw, italic=spans))
+            blocks.append(Block("paragraph", raw, italic=spans))
     return _stat_runs_are_system(blocks)
 
 

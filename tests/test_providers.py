@@ -124,3 +124,14 @@ def test_stat_box_nested_tables_are_read_once():
     blocks = blocks_from_container(BeautifulSoup(html, "lxml").div)
     assert [b.kind for b in blocks] == ["paragraph", "system", "system", "paragraph"]
     assert [b.text for b in blocks[1:3]] == ["Sub-Adult Rank: D", "Health 650/650"]
+
+
+def test_double_br_in_one_p_splits_prose_into_paragraphs():
+    # stray-cat-strut: a whole chapter in one <p>, paragraphs marked by <br><br>
+    html = ("<div><p><strong>Chapter One</strong><br><br>First paragraph here.<br><br>"
+            "The <em>second</em> one,<br>with a line break.<br><br>Third.</p></div>")
+    blocks = blocks_from_container(BeautifulSoup(html, "lxml").div)
+    assert [b.text for b in blocks] == [
+        "Chapter One", "First paragraph here.", "The second one,\nwith a line break.", "Third."]
+    second = blocks[2]
+    assert [second.text[a:b] for a, b in second.italic] == ["second"]
