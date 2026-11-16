@@ -132,6 +132,16 @@ def build_feed(series, chapters, base_url: str, *, self_url: str = "",
 
     now = _dt.datetime.now(_dt.timezone.utc)
     guid = _guid_prefix(series)
+    # Podcast apps (AntennaPod) only apply "new episode" actions to an item whose
+    # pubDate is >= the feed's newest existing one, so a re-dated or inserted
+    # non-chapter (cover/volume separator) would silence every chapter after it.
+    # Cap each date at the earliest date of any later item: non-decreasing in order.
+    pub_dates: dict[int, str] = {}
+    ceiling = None
+    for c in rendered:                                    # newest first
+        dt = _parse_iso(c["published_at"]) or now
+        ceiling = dt if ceiling is None else min(ceiling, dt)
+        pub_dates[id(c)] = email.utils.format_datetime(ceiling)
     items = []
     for c in rendered:
         vid = _col(c, "volume_source_id")
@@ -150,7 +160,7 @@ def build_feed(series, chapters, base_url: str, *, self_url: str = "",
             "    <item>\n"
             f"      <title>{escape(title)}</title>\n"
             f"      <guid isPermaLink=\"false\">{escape(guid)}-{escape(str(c['source_id']))}</guid>\n"
-            f"      <pubDate>{rfc822(c['published_at'], now)}</pubDate>\n"
+            f"      <pubDate>{pub_dates[id(c)]}</pubDate>\n"
             f"      <itunes:episode>{episode}</itunes:episode>\n"
             + (f"      <itunes:season>{vol['index']}</itunes:season>\n" if vol else "")
             + f"      <itunes:title>{escape(title)}</itunes:title>\n"

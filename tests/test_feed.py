@@ -53,6 +53,23 @@ def test_build_feed_structure(tmp_path):
     assert items[1].findtext("guid") == "rr-1000"
 
 
+def test_pubdates_never_decrease_in_chapter_order(tmp_path):
+    # A re-dated cover page (ord 0) must not make later chapters look "older than
+    # the newest episode": apps skip new-episode actions for those.
+    chapters = [_chapter(tmp_path, i) for i in range(4)]
+    chapters[0]["published_at"] = "2024-01-26T00:00:00Z"
+    chapters[1]["published_at"] = "2021-05-01T00:00:00Z"
+    chapters[2]["published_at"] = "2021-05-03T00:00:00Z"
+    chapters[3]["published_at"] = "2021-05-02T00:00:00Z"   # out of order too
+    root = ET.fromstring(build_feed(_series(), chapters, "http://h"))
+    from email.utils import parsedate_to_datetime
+    dates = [parsedate_to_datetime(i.findtext("pubDate"))
+             for i in root.findall("./channel/item")]       # newest first
+    assert dates == sorted(dates, reverse=True)
+    assert dates[-1].year == 2021                           # cover page pulled back
+    assert max(dates).day == 2                              # real dates kept where valid
+
+
 def test_ffmeta_chapters_are_cumulative():
     marks = [(0, 1000, "One"), (1000, 3500, "Two; a=b")]
     meta = _ffmeta("Book", "Auth", marks)
