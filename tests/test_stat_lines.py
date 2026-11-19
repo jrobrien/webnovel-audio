@@ -73,3 +73,11 @@ def test_an_ellipsis_only_line_is_a_pause_not_speech():
     # an ellipsis inside a sentence is untouched
     segs = build_segments(_blocks("Wait... what?"), Config())
     assert any("…" in s.text for s in segs if s.kind == "speech")
+
+
+def test_a_stray_quote_mark_is_silence_not_an_unsynthesizable_segment():
+    # source typo: a single opening quote in front of the double one
+    segs = build_segments(_blocks("Oliver shook her once again. ‘“What the fuck were you doing?”"),
+                          Config())
+    assert not [s for s in segs if s.kind == "speech" and not any(c.isalnum() for c in s.text)]
+    assert [s.text for s in segs if s.kind == "speech"][-1].startswith("What")

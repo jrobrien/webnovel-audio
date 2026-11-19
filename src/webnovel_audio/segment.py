@@ -352,12 +352,18 @@ _ONLY_ELLIPSIS_RE = re.compile(r"[\s.…]+")
 def _ellipsis_lines_are_pauses(segs: list[Segment], cfg) -> list[Segment]:
     """A line that is only `…` (a `[...]` divider in a stat readout, a silent
     `"..."` reply) is a beat, not something to say: synthesized it comes out as a
-    breath or a click. Keep its place in the timeline as silence."""
+    breath or a click. Keep its place in the timeline as silence.
+
+    Any other line with no letter or digit in it (a stray `'` left by a typo like
+    `\u2018\u201cWhat...`) has no phonemes and would fail the render ("produced no
+    phonemes"); it becomes silence of its own pause length."""
     out: list[Segment] = []
     for s in segs:
         if s.kind == "speech" and s.text and _ONLY_ELLIPSIS_RE.fullmatch(s.text):
             out.append(Segment("", "", kind="pause",
                                pause_after_ms=s.pause_after_ms + cfg.pauses.ellipsis_extra_ms))
+        elif s.kind == "speech" and s.text and not any(c.isalnum() for c in s.text):
+            out.append(Segment("", "", kind="pause", pause_after_ms=s.pause_after_ms))
         else:
             out.append(s)
     return out
