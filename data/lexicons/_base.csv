@@ -614,3 +614,15 @@ ringed,,ringd,g2p read -nged as -nj'd or -ng-gd
 banged,,bangd,g2p read -nged as -nj'd or -ng-gd
 automata,,aw-tomatuh,g2p stressed the 3rd syllable and flapped the t; it is aw-TOM-uh-tuh
 AA,,eigh-eigh,"dampen_caps lowercases 2-letter caps so it was read 'ah'; it is the letters A, A"
+rebar,,reebar,espeak stresses 2nd syllable (rib-AR)
+rebars,,reebars,plural of rebar
+boogieman,,boogie man,espeak soft g (boo-jee-man)
+boogiemen,,boogie men,plural of boogieman
+boogeyman,,boogie man,spelling variant
+bogeyman,,boogie man,spelling variant
+low-life,,lowlife,hyphen form got two full stresses (LOH-LYF)
+low-lifes,,lowlifes,plural
+lowlives,,lowlifes,plural of lowlife; g2p reads it low-livz (short i)
+low-lives,,lowlifes,hyphen form
+Icarus,,ikkerus,g2p reads EYE-kar-us; correct IK-uh-rus
+Icarus's,,ikkerus's,possessive
