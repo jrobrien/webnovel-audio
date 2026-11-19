@@ -167,6 +167,15 @@ def _roman_paren(m: re.Match[str]) -> str:
     return f"({int_to_words(n)})" if n else m.group(0)
 
 
+# "plastic-y", "same-y": a hyphenated -y suffix is read as the letter "why"
+# (plastic-w-y). Join it; a stem ending in c takes a k so it stays a hard c.
+_Y_SUFFIX_RE = re.compile(r"\b([A-Za-z]{3,}?)(c?)-y\b(?!-)")
+
+
+def _y_suffix(m: re.Match[str]) -> str:
+    return m.group(1) + m.group(2) + ("ky" if m.group(2) else "y")
+
+
 def _romans(s: str) -> str:
     s = _LABEL_ROMAN_RE.sub(_roman_label, s)
     return _PAREN_ROMAN_RE.sub(_roman_paren, s)
@@ -388,6 +397,7 @@ def normalize_text(s: str, *, dampen_caps: bool = True) -> str:
     s = _stars(s)
     s = _ranks(s)
     s = _romans(s)
+    s = _Y_SUFFIX_RE.sub(_y_suffix, s)
     s = _MD_ITALIC_RE.sub(r"\1", s)
     if dampen_caps:
         s = _dampen_caps(s)

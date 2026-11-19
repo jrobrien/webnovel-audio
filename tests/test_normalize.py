@@ -215,3 +215,9 @@ def test_roman_numerals_after_labels_and_in_parens():
     assert n("Might I suggest it") == "Might I suggest it"
     assert n("the level I reached; Class I'd") == "the level I reached; Class I'd"
     assert n("(IIII) (VX)") == "(IIII) (VX)"
+
+
+def test_hyphenated_y_suffix_is_joined():
+    assert normalize_text("a plastic-y taste") == "a plasticky taste"
+    assert normalize_text("same-y and citrus-y") == "samey and citrusy"
+    assert normalize_text("X-y and well-y-known") == "X-y and well-y-known"
