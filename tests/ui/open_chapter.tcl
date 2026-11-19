@@ -9,6 +9,8 @@ set ::OPENED {}
 proc open_url {url} { lappend ::OPENED $url }
 after 900 {
   if {[catch {
+    ;# the tree loads the real library; a click at (5,5) would hit one of its rows
+    .bl.tv delete [.bl.tv children {}]
     .bl.tv insert {} end -id chtest -values [list 9999 "" "Five" new "" ""] -tags new
     set ::MD(chtest,url) "https://www.royalroad.com/fiction/1/x/chapter/9/five"
     open_chapter
