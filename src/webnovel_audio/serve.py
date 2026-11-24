@@ -246,7 +246,11 @@ class _Handler(BaseHTTPRequestHandler):
                 bdir = self._bundle(slug) if slug and len(parts) > 1 else None
                 if not bdir:
                     return self._send(404, b"not found\n", "text/plain")
-                return self._file(bundle.artifact(bdir, "chapters", parts[-1]),
+                # /audio/<slug>/<file> is a chapter, /audio/<slug>/episodes/<file>
+                # a multi-chapter episode (episodes.py)
+                which = "episodes" if len(parts) == 3 and parts[1] == "episodes" \
+                    else "chapters"
+                return self._file(bundle.artifact(bdir, which, parts[-1]),
                                   root=bdir, fallback_mime="audio/ogg")
             if path.startswith("/cover/"):
                 slug = _safe_slug(path[len("/cover/"):].removesuffix(".jpg"), "")
@@ -438,9 +442,11 @@ class _Handler(BaseHTTPRequestHandler):
         base = self._base_url()
         cover_local = os.path.exists(bundle.artifact(
             bundle.bundle_dir(self.cfg, s), "covers", "cover.jpg"))
+        from . import episodes
         xml = build_feed(s, db.chapters(s["id"]), base,
-                             volumes=db.volume_map(s["id"]),
-                         self_url=f"{base}/feed/{dslug}.xml", cover_local=cover_local)
+                         volumes=db.volume_map(s["id"]),
+                         self_url=f"{base}/feed/{dslug}.xml", cover_local=cover_local,
+                         episodes=episodes.for_feed(self.cfg, db, s))
         db.close()
         self._send(200, xml.encode(), "application/rss+xml; charset=utf-8")
 

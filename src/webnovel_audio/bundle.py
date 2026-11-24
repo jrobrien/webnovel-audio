@@ -45,7 +45,7 @@ _CHAPTER_COLS = (
 _VOLUME_COLS = ("source_id", "title", "cover_url", "ord")
 _SERIES_COLS = ("source_id", "provider", "slug", "title", "author", "url",
                 "cover_url", "enabled", "tags", "warnings", "status", "rating",
-                "added_at", "uuid", "provider_state")
+                "added_at", "uuid", "provider_state", "author_url", "support_urls")
 
 #: schema-1 state.json key -> current column
 _LEGACY_KEYS = {"rr_id": "source_id", "volume_rr_id": "volume_source_id"}
@@ -91,6 +91,7 @@ LAYOUT = {
     "config": "config.toml",
     "lexicon": "lexicon.csv",
     "chapters": "chapters",
+    "episodes": "episodes",       # multi-chapter feed episodes (episodes.py)
     "covers": "covers",
     "raw": ".raw",
     "cache": ".cache",

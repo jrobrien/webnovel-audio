@@ -832,6 +832,11 @@ proc handle_event {ev {raw ""}} {
         done {
             log "done: [json::get $ev done] ok, [json::get $ev errors] error(s)"
         }
+        episodes {
+            log "  [json::get $ev slug]: [json::get $ev episodes] episode(s) of\
+                [json::get $ev per_episode] chapters, [json::get $ev built] built,\
+                [json::get $ev removed] removed"
+        }
         default { if {$raw ne ""} { log $raw } }
     }
 }

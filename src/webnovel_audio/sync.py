@@ -13,6 +13,7 @@ import fcntl
 import os
 import json
 import re
+import subprocess
 import time
 import tomllib
 from dataclasses import dataclass
@@ -403,6 +404,10 @@ def pin_defaults_text(cfg: Config, slug: str, lead: str = "male", title: str = "
     if cfg.chat.voices:
         pool = ", ".join(f'"{x}"' for x in cfg.chat.voices)
         lines += ["", "[chat]", f"voices = [{pool}]"]
+    lines += ["", "[feed]",
+              "# join this many consecutive chapters into one podcast episode (short",
+              "# chapters); then `webnovel-audio episodes --scope <slug>`. 1 = one per chapter.",
+              "# chapters_per_episode = 5"]
     lines += ["", "[cast.voices]",
               "# speaker -> voice. `cast update <slug> <range>` appends new ones;",
               '# an empty "" means "found, not yet assigned" -> [cast] default.', ""]
@@ -755,6 +760,7 @@ def make_book(cfg: Config, key: str, *, first: int | None = None, last: int | No
 
 def write_feeds(cfg: Config, key: str | None = None, out_dir: str | None = None,
                 base_url: str = "", log=print) -> list[str]:
+    from . import episodes
     from .feed import build_feed
 
     db = _db(cfg)
@@ -774,7 +780,8 @@ def write_feeds(cfg: Config, key: str | None = None, out_dir: str | None = None,
             xml = build_feed(s, db.chapters(s["id"]), base or "http://localhost:8080",
                              volumes=db.volume_map(s["id"]),
                              self_url=f"{base}/feed/{dslug}.xml" if base else "",
-                             cover_local=cover_local)
+                             cover_local=cover_local,
+                             episodes=episodes.for_feed(cfg, db, s))
             path = os.path.join(out_dir, f"{dslug}.xml")
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(xml)
@@ -951,6 +958,11 @@ def _do_parse(cfg, db, prov, ctx, bdir, c, raw_path, *, force=False) -> str:
     md_path = stem + ".md"
     if force or not os.path.exists(md_path):
         doc = _load_doc(prov, ctx, c, raw_path)
+        # a chapter page names the author too; it corrects a series credited to
+        # the wrong person by an older parser
+        if doc.author:
+            db.set_series_credits(c["series_id"], doc.author, doc.meta.get("author_url", ""),
+                                  doc.meta.get("support_urls"))
         os.makedirs(os.path.dirname(md_path), exist_ok=True)
         pipeline.write_markdown(doc, stem, stage="parse", md_meta=_md_extra(prov, c))
     db.mark_stage(c["id"], "parsed",
@@ -1256,8 +1268,17 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                     finish_err(c, slug, num, exc)
         drain()
         if not dry_run:
+            from . import episodes
             for row in filter(None, (db.series_by_id(k) for k in touched)):
                 bundle.sync_bundle(cfg, db, row)
+                if stage == "rendered":
+                    try:
+                        r = episodes.build(cfg, db, row, log=log)
+                    except (SystemExit, OSError, subprocess.CalledProcessError) as exc:
+                        log(f"    ! episodes for {row['slug']}: {exc}")
+                    else:
+                        if r["built"] or r["removed"]:
+                            _emit({"event": "episodes", **r})
         _emit({"event": "done", "stage": stage, "done": res.rendered,
                "errors": res.errors, "skipped": res.skipped})
         return res

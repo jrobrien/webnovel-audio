@@ -163,6 +163,71 @@ def _jsonld_author(soup) -> tuple[str, str]:
     return "", ""
 
 
+def _in_menu(tag) -> bool:
+    """Inside the site's navigation or a dropdown menu (the signed-in user's own
+    "My Profile" link lives in one)."""
+    return any(p.name in ("nav", "header") or p.get("role") == "menu"
+               or p.has_attr("data-rr-dropdown-content") for p in tag.parents)
+
+
+def _author_link(soup) -> tuple[str, str]:
+    """(name, profile URL) of the fiction's author.
+
+    Not simply the first `/profile/` link: a page fetched in a signed-in browser
+    carries the reader's own "My Profile" link in the top menu, ahead of the
+    author's, and that is what 13 series ended up credited to."""
+    def found(a):
+        href = a.get("href", "")
+        return a.get_text(" ", strip=True), (BASE + href if href.startswith("/") else href)
+
+    # the redesigned author card: <a href="/profile/N"><h4>Name</h4></a>
+    for a in soup.select('a[href*="/profile/"]'):
+        if a.find("h4") and not _in_menu(a):
+            return found(a)
+    # the older header: <h4>by <a href="/profile/N">Name</a></h4>
+    for a in soup.select('h4 a[href*="/profile/"]'):
+        if not _in_menu(a):
+            return found(a)
+    name, url = _jsonld_author(soup)
+    if name:
+        return name, url
+    for a in soup.select('a[href*="/profile/"]'):
+        if not _in_menu(a) and a.get_text(strip=True) and \
+                not re.fullmatch(r"/profile/\d+/\w+", a.get("href", "").replace(BASE, "")):
+            return found(a)
+    return "", ""
+
+
+_TRACKING_PARAM_RE = re.compile(r"^(utm_[a-z]+)$")
+
+
+def _support_links(soup) -> list[str]:
+    """The author's own donation links: the "Donate" menu by the author card
+    (Patreon, PayPal, Ko-fi, ...), tracking parameters removed."""
+    import urllib.parse
+    out: list[str] = []
+    for icon in soup.select("i.fa-hands-holding-dollar"):
+        box = icon
+        for _ in range(6):                 # up from the button to the dropdown holder
+            box = box.parent
+            if box is None:
+                break
+            links = box.select("[data-rr-dropdown-content] a[href]")
+            if links:
+                for a in links:
+                    u = urllib.parse.urlsplit(a["href"].strip())
+                    if u.scheme not in ("http", "https") or not u.netloc:
+                        continue
+                    q = [(k, v) for k, v in urllib.parse.parse_qsl(u.query)
+                         if not _TRACKING_PARAM_RE.match(k)]
+                    clean = urllib.parse.urlunsplit(
+                        (u.scheme, u.netloc, u.path, urllib.parse.urlencode(q), ""))
+                    if clean not in out:
+                        out.append(clean)
+                break
+    return out
+
+
 def parse_fiction(html: str, url: str = "") -> SeriesInfo:
     soup = BeautifulSoup(html, "lxml")
     rr_id, slug = _fiction_id_slug(soup, url)
@@ -176,12 +241,7 @@ def parse_fiction(html: str, url: str = "") -> SeriesInfo:
         h1 = soup.find("h1")
         title = h1.get_text(strip=True) if h1 else ""
 
-    author = author_url = ""
-    a = soup.select_one('h4 a[href^="/profile/"], a[href^="/profile/"]')
-    if a:
-        author, author_url = a.get_text(strip=True), BASE + a["href"]
-    if not author:      # the redesigned page links absolute URLs; its JSON-LD still names the author
-        author, author_url = _jsonld_author(soup)
+    author, author_url = _author_link(soup)
     cover = ""
     og_img = soup.find("meta", property="og:image")
     if og_img and og_img.get("content"):
@@ -232,7 +292,7 @@ def parse_fiction(html: str, url: str = "") -> SeriesInfo:
     chapters.sort(key=lambda c: c.order)
     return SeriesInfo(
         source_id=rr_id, slug=slug, title=title, author=author, author_url=author_url,
-        cover_url=cover, url=url or f"{BASE}/fiction/{rr_id}/{slug}", chapters=chapters,
+        support_urls=_support_links(soup), cover_url=cover, url=url or f"{BASE}/fiction/{rr_id}/{slug}", chapters=chapters,
         tags=_parse_tags(soup), warnings=_parse_warnings(soup),
         status=_parse_status(soup), rating=_parse_rating(soup),
         volumes=_parse_volumes(html), provider="royalroad",
@@ -282,12 +342,15 @@ def parse_chapter(html: str, *, url: str = "") -> Document:
         chapter_title = h1.get_text(" ", strip=True) if h1 else ""
     blocks = H.drop_title_echo(blocks, chapter_title)
 
-    a = soup.select_one('.fic-header a[href*="/profile/"], a[href*="/profile/"]')
+    author, author_url = _author_link(soup)
+    support = _support_links(soup)
     return Document(
         blocks=blocks,
         fiction_title=fiction_title,
         chapter_title=chapter_title,
-        author=a.get_text(" ", strip=True) if a else "",
+        author=author,
+        meta={k: v for k, v in (("author_url", author_url),
+                                ("support_urls", support)) if v},
         url=url or H.meta_content(soup, "og:url"),
         next_url=H.next_link_by_text(soup),
     )

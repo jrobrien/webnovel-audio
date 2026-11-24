@@ -47,6 +47,9 @@ class SeriesInfo:
     title: str
     author: str = ""
     author_url: str = ""
+    #: the author's own support/donation pages (Patreon, Ko-fi, ...), in the
+    #: order the site lists them
+    support_urls: list[str] = field(default_factory=list)
     cover_url: str = ""
     url: str = ""
     chapters: list[ChapterRef] = field(default_factory=list)

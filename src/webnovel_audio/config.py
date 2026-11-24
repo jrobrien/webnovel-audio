@@ -144,6 +144,22 @@ class Serve:
 
 
 @dataclass
+class Feed:
+    """How a series' podcast feed is cut into episodes.
+
+    `chapters_per_episode` > 1 joins that many consecutive rendered chapters into
+    one episode file (no re-encode, chapter marks inside), for series whose
+    chapters are only a few minutes long. A fixed count, not a target length:
+    an episode's identity must never change once published, and lengths shift
+    whenever a chapter is re-rendered. Episodes never cross a volume boundary.
+    """
+    chapters_per_episode: int = 1
+    # the last, not-yet-full episode is held back until its newest chapter is
+    # this old (a finished series, or one on hiatus, still gets its tail)
+    partial_after_days: int = 7
+
+
+@dataclass
 class Book:
     bitrate: str = "64k"           # AAC bitrate for .m4b packaging
 
@@ -186,7 +202,7 @@ def _build(dc, data: dict | None):
 
 
 _CORE_SECTIONS = {"general", "voices", "cast", "chat", "synth", "pauses", "audio",
-                  "library", "serve", "book", "dsp", "metadata"}
+                  "library", "serve", "book", "feed", "dsp", "metadata"}
 
 
 def _provider_sections(data: dict) -> dict:
@@ -232,6 +248,7 @@ class Config:
     library: Library = field(default_factory=Library)
     serve: Serve = field(default_factory=Serve)
     book: Book = field(default_factory=Book)
+    feed: Feed = field(default_factory=Feed)
     dsp: dict = field(default_factory=lambda: _merge_dsp(None))
     female_lead: dict = field(default_factory=dict)   # [voices.female_lead] overrides
     metadata: dict = field(default_factory=dict)
@@ -267,7 +284,7 @@ class Config:
         for name, sub in (("general", c.general), ("voices", c.voices), ("cast", c.cast),
                           ("chat", c.chat), ("synth", c.synth), ("pauses", c.pauses),
                           ("audio", c.audio), ("library", c.library),
-                          ("serve", c.serve), ("book", c.book)):
+                          ("serve", c.serve), ("book", c.book), ("feed", c.feed)):
             allowed = {f.name for f in fields(sub)}
             for k, v in (data.get(name) or {}).items():
                 if k in allowed:
@@ -306,6 +323,7 @@ class Config:
             library=library,
             serve=_build(Serve, data.get("serve")),
             book=_build(Book, data.get("book")),
+            feed=_build(Feed, data.get("feed")),
             dsp=_merge_dsp(data.get("dsp")),
             female_lead=dict((data.get("voices") or {}).get("female_lead") or {}),
             metadata=data.get("metadata", {}) or {},

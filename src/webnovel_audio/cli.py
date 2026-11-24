@@ -2467,6 +2467,36 @@ def _cmd_feed(args) -> int:
     return 0
 
 
+def _cmd_episodes(args) -> int:
+    from . import episodes, sync
+
+    cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
+    checked = _series_or_all(cfg, args.scope, want_json)
+    if isinstance(checked, int):
+        return checked
+    db = sync._db(cfg)
+    results = []
+    try:
+        rows = [db.get_series(checked)] if checked else db.list_series()
+        for s in filter(None, rows):
+            try:
+                r = episodes.build(cfg, db, s, log=(lambda *_: None) if want_json else print)
+            except SystemExit as exc:
+                return _fail("bad_config", f"{s['slug']}: {exc}", json_mode=want_json)
+            results.append(r)
+            if not want_json and (checked or r["per_episode"] > 1 or r["removed"]):
+                unit = (f"{r['episodes']} episode(s) of {r['per_episode']} chapters"
+                        if r["per_episode"] > 1 else "one episode per chapter")
+                print(f"{r['slug']}: {unit}; {r['built']} built, {r['kept']} up to date, "
+                      f"{r['removed']} removed")
+    finally:
+        db.close()
+    if want_json:
+        _jprint({"ok": True, "series": results})
+    return 0
+
+
 def main(argv=None) -> int:
     import sys
 
@@ -2929,6 +2959,13 @@ def _build_parser():
                     help="where to write the .xml (default: the configured feed dir)")
     _cfg_json(fd)
     fd.set_defaults(func=_cmd_feed)
+
+    ep = sub.add_parser("episodes",
+                        help="join chapters into multi-chapter feed episodes "
+                             "([feed] chapters_per_episode)")
+    _series_pos(ep, required=False, what="build episodes for")
+    _cfg_json(ep)
+    ep.set_defaults(func=_cmd_episodes)
 
     # -- cache -------------------------------------------------------------
     ca = sub.add_parser("cache", help="segment-cache status and maintenance")

@@ -365,6 +365,8 @@ first.
 | `voices list` / `voices demo` | the 28 ids / a chaptered audition file |
 
 **Delivery + misc:** `serve [--host H] [--port N]`, `feed [--scope S]`,
+`episodes [--scope S]` (join `[feed] chapters_per_episode` chapters into one
+feed episode; sync does this after rendering),
 `book --scope S [--range R] [-o FILE]`, `retag [--scope S]` (refresh Opus tags
 with no re-encode), `schema` (the command surface as JSON), `models fetch|path`,
 `grab`, `ingest`, `ui`.
@@ -777,7 +779,14 @@ head (`[Scan complete…]`) stay `system` — the in-fiction AI.
   server sends no CORS headers, so another website cannot write through a
   visitor's browser.
 - `/feed/<slug>.xml` is a live RSS 2.0 + iTunes feed (a renamed series's old URL answers 301 to the new one); `/audio/…` and `/cover/…`
-  serve files with single-range support. Opus-in-Ogg works in AntennaPod /
+  serve files with single-range support.
+- A series with short chapters can list several chapters per episode: set
+  `[feed] chapters_per_episode = 5` in its `config.toml`. The chapters are
+  joined without re-encoding into `<bundle>/episodes/`, with a chapter mark
+  per chapter (AntennaPod shows them). Groups are a fixed count so an episode's
+  GUID never changes, restart at each volume, and only a leading run of fully
+  rendered groups is published; the short last one waits
+  `partial_after_days` (7). Rendering, fixes and `--range` stay per chapter. Opus-in-Ogg works in AntennaPod /
   Podcast Addict / gPodder; Apple Podcasts and Overcast don't — use `book` for
   a `.m4b`.
 

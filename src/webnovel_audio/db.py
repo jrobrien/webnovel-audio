@@ -158,7 +158,8 @@ class DB:
         for name, decl in (("tags", "TEXT"), ("warnings", "TEXT"),
                            ("status", "TEXT"), ("rating", "REAL"),
                            ("uuid", "TEXT"), ("path", "TEXT"),
-                           ("priority", "INTEGER DEFAULT 100")):
+                           ("priority", "INTEGER DEFAULT 100"),
+                           ("author_url", "TEXT"), ("support_urls", "TEXT")):
             if name not in scols:
                 self.con.execute(f"ALTER TABLE series ADD COLUMN {name} {decl}")
 
@@ -245,23 +246,50 @@ class DB:
             # is likewise set once, from the title: the site's own slug follows
             # every retitle and carries promo text, and this is the handle the
             # CLI, feeds and directory names hang off.
+            # author_url / support_urls: a page layout that does not show them
+            # keeps what an earlier page gave, rather than erasing it
             """INSERT INTO series (source_id, provider, slug, title, author, url, cover_url,
-                                   tags, warnings, status, rating, added_at, uuid)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                                   tags, warnings, status, rating, added_at, uuid,
+                                   author_url, support_urls)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(provider, source_id) DO UPDATE SET
                  title=excluded.title,
                  author=excluded.author, url=excluded.url, cover_url=excluded.cover_url,
                  tags=excluded.tags, warnings=excluded.warnings,
-                 status=excluded.status, rating=excluded.rating""",
+                 status=excluded.status, rating=excluded.rating,
+                 author_url=COALESCE(NULLIF(excluded.author_url, ''), series.author_url),
+                 support_urls=COALESCE(NULLIF(excluded.support_urls, '[]'),
+                                       series.support_urls)""",
             (fi.source_id, fi.provider, slug or series_slug(fi.title, fi.slug), fi.title,
              fi.author, fi.url, fi.cover_url, tags, warnings,
-             fi.status, fi.rating, now, str(uuid.uuid4())),
+             fi.status, fi.rating, now, str(uuid.uuid4()),
+             getattr(fi, "author_url", "") or "",
+             json.dumps(getattr(fi, "support_urls", None) or [])),
         )
         row = self.find_series(fi.provider, fi.source_id)
         if fi.state is not None:
             self.set_provider_state(row["id"], fi.state)
         self.con.commit()
         return row["id"]
+
+    def set_series_credits(self, series_id: int, author: str, author_url: str = "",
+                           support_urls=None) -> bool:
+        """Correct a series' author and support links from a chapter page (which
+        carries the same author card). Empty values change nothing. True if
+        anything changed."""
+        row = self.series_by_id(series_id)
+        if row is None:
+            return False
+        new = {"author": author or row["author"],
+               "author_url": author_url or row["author_url"],
+               "support_urls": json.dumps(support_urls) if support_urls
+               else row["support_urls"]}
+        if all(new[k] == row[k] for k in new):
+            return False
+        self.con.execute("UPDATE series SET author=?, author_url=?, support_urls=? WHERE id=?",
+                         (new["author"], new["author_url"], new["support_urls"], series_id))
+        self.con.commit()
+        return True
 
     def find_series(self, provider: str, source_id: str):
         return self.con.execute(

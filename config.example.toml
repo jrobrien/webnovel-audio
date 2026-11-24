@@ -163,6 +163,10 @@ qr   = true                                             # print a scannable QR o
 [book]
 bitrate = "64k"                                         # AAC bitrate for `webnovel-audio book` (.m4b)
 
+[feed]
+chapters_per_episode = 1                                # >1 joins that many chapters per feed episode
+partial_after_days = 7                                  # hold a short last episode until it is this old
+
 [metadata]
 artist = "webnovel-audio (Kokoro)"
 genre  = "Audiobook"

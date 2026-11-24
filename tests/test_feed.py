@@ -121,3 +121,21 @@ def test_show_notes_without_volume_or_voice():
     assert "Demo" in plain and "Source:" not in plain
     assert "Narrated by webnovel-audio" in plain
     assert html.startswith("<p>")
+
+
+def test_show_notes_credit_the_author_and_link_their_support_pages(tmp_path):
+    import json
+    s = _series() | {"author_url": "https://www.royalroad.com/profile/222",
+                     "support_urls": json.dumps(["https://www.patreon.com/RealA",
+                                                 "https://paypal.me/RealA"])}
+    root = ET.fromstring(build_feed(s, [_chapter(tmp_path, 0)], "http://h"))
+    item = root.find("./channel/item")
+    desc = item.findtext("description")
+    assert "Author: Jo — https://www.royalroad.com/profile/222" in desc
+    assert "Patreon https://www.patreon.com/RealA" in desc and "PayPal" in desc
+    html = item.findtext("{http://purl.org/rss/1.0/modules/content/}encoded")
+    assert '<a href="https://www.patreon.com/RealA">Patreon</a>' in html
+    assert "Support the author" in root.findtext("./channel/description")
+    # a series with no credits has no empty "Support" line
+    bare = ET.fromstring(build_feed(_series(), [_chapter(tmp_path, 0)], "http://h"))
+    assert "Support" not in bare.find("./channel/item").findtext("description")

@@ -132,3 +132,42 @@ def test_tags_are_read_from_a_browser_saved_series_page():
     from bs4 import BeautifulSoup
     from webnovel_audio.providers import royalroad
     assert royalroad._parse_tags(BeautifulSoup(html, "lxml")) == ["LitRPG", "Female Lead"]
+
+
+# The redesigned layout, as served to a signed-in browser: the reader's own
+# "My Profile" link (in the account dropdown) comes before the author card.
+_SIGNED_IN_PAGE = """<html><head><meta property="og:title" content="7. Seven - Demo"></head><body>
+<header><div data-rr-dropdown-content role="menu">
+  <a href="/profile/111">My Profile</a><a href="/profile/111/fictions">Fictions</a></div></header>
+<div class="chapter-inner chapter-content"><p>Text.</p></div>
+<div class="card"><a href="/profile/222"><img src="a.png"></a>
+  <div><a href="/profile/222"><h4>Real Author</h4></a>
+  <div data-rr-dropdown><button><span><i class="fas fa-hands-holding-dollar mr-1"></i>Donate</span></button>
+    <div data-rr-dropdown-content role="menu">
+      <a href="https://patreon.com/RealA?utm_medium=unknown&utm_source=join_link">Patreon</a>
+      <a href="https://paypal.me/RealA">PayPal</a>
+      <a href="javascript:alert(1)">bad</a></div></div></div>
+  <a href="/profile/222/fictions">3 Fictions</a></div>
+<div class="author-note"><a href="https://www.patreon.com/posts/teaser-1">teaser</a></div>
+</body></html>"""
+
+
+def test_author_is_the_card_not_the_signed_in_readers_menu_link():
+    from webnovel_audio.providers.royalroad import parse_chapter
+    doc = parse_chapter(_SIGNED_IN_PAGE, url="https://www.royalroad.com/fiction/9/d/chapter/7/s")
+    assert doc.author == "Real Author"
+    assert doc.meta["author_url"] == "https://www.royalroad.com/profile/222"
+    # the Donate menu only, tracking parameters dropped, no non-web links, and
+    # not a Patreon *post* linked from an author's note
+    assert doc.meta["support_urls"] == ["https://patreon.com/RealA",
+                                        "https://paypal.me/RealA"]
+    fi = parse_fiction(_SIGNED_IN_PAGE, url="https://www.royalroad.com/fiction/9/d")
+    assert fi.author == "Real Author" and fi.support_urls == doc.meta["support_urls"]
+
+
+def test_old_layout_author_still_found():
+    html = ('<html><body><a href="/profile/1">Someone in a sidebar</a>'
+            '<div class="fic-title"><h4><span>by </span><a href="/profile/7">Old Author</a>'
+            '</h4></div></body></html>')
+    fi = parse_fiction(html, url="https://www.royalroad.com/fiction/9/d")
+    assert fi.author == "Old Author" and fi.support_urls == []
