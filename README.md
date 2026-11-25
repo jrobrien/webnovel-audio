@@ -299,6 +299,7 @@ first.
 | `sync [--scope S] [--limit N]` | refresh + render everything outstanding; shows a size estimate and confirms first (`-y` to skip) |
 | `tagger status` \| `install` \| `test` | the spaCy POS tagger the rules resolve against. **Required to render**, so it is a core dependency (small model included); `install --model en_core_web_md` (or `_lg`) upgrades |
 | `progress [--scope S] [--watch [N]] [--recent]` | what a running sync is doing, from the live state DB. **Read-only**, safe mid-render |
+| `stale [--scope S] [--range R] [--tags] [--why] [--json]` | what is out of date and why, with the command that fixes each: chapter `.md` text (missing, raw newer, front matter differs), audio (recomputed recipe ≠ `.recipe`: text/lexicon, cast/voice, `[audio]`, `[dsp]`, synth model…), Opus tags with `--tags` (ffprobe vs the DB), multi-chapter episodes. `--why` lists each chapter with the changed segments. **Read-only**; the whole library takes ~3 min |
 
 **Series** (porcelain):
 

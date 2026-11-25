@@ -853,6 +853,49 @@ def _cmd_retag(args) -> int:
     return 1 if r["failed"] else 0
 
 
+def _cmd_stale(args) -> int:
+    """What is out of date, why, and the command that fixes it. Read-only."""
+    import sys
+
+    from . import stale
+
+    cfg = Config.load(args.config)
+    want_json = getattr(args, "json", False)
+    try:
+        spans = _parse_range(args.range)
+    except ValueError:
+        return _fail("bad_range", f"not a chapter range: {args.range!r}",
+                     hint="N | N-M | N- | -M | 1-3,7", json_mode=want_json)
+    try:
+        db = stale.open_db(cfg)
+    except FileNotFoundError as exc:
+        return _fail("no_state_db", f"no state database at {exc}",
+                     hint="track a series first: webnovel-audio series add <url>",
+                     json_mode=want_json)
+    tty = sys.stderr.isatty()
+
+    def progress(slug, i, n):
+        if tty and (i % 10 == 0 or i == n):
+            print(f"\r  checking {slug}: {i}/{n}\x1b[K", end="" if i < n else "\n",
+                  file=sys.stderr, flush=True)
+        elif not tty and i == n:
+            print(f"  checked {slug}: {n} chapter(s)", file=sys.stderr, flush=True)
+
+    try:
+        key = None if args.scope in (None, "", _SCOPE_ALL) else args.scope
+        if key and not db.get_series(key):
+            return _no_series(key, want_json)
+        results = stale.report(cfg, key, spans=spans, tags=args.tags, why=args.why,
+                               progress=progress, db=db)
+    finally:
+        db.con.close()
+    if want_json:
+        _jprint({"ok": True, "series": results})
+    else:
+        print(stale.render_text(results, why=args.why))
+    return 0
+
+
 def _cmd_schema(args) -> int:
     """Emit the command surface as JSON.
 
@@ -3004,6 +3047,17 @@ def _build_parser():
     _dry(rt, what="be retagged", short=False)
     _cfg_json(rt)
     rt.set_defaults(func=_cmd_retag)
+
+    st = sub.add_parser("stale", help="what is out of date, why, and what fixes it "
+                                      "(read-only)")
+    _series_pos(st, required=False, what="check")
+    _range_pos(st, default_means="every chapter")
+    st.add_argument("--tags", action="store_true",
+                    help="also compare each file's Opus tags with the DB (slower: ffprobe)")
+    st.add_argument("--why", action="store_true",
+                    help="list every stale chapter, with the changed segments")
+    _cfg_json(st)
+    st.set_defaults(func=_cmd_stale)
 
     pg = sub.add_parser("progress", help="what a running sync is doing (read-only)")
     pg.add_argument("--scope", dest="scope", default="", metavar="SERIES",
