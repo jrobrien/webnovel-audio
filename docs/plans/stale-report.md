@@ -1,6 +1,6 @@
 # Plan: stale report (read-only artifact graph)
 
-Status: **in progress** (2026-11-25).
+Status: **done** (2026-11-25).
 
 ## Why
 
@@ -117,3 +117,32 @@ webnovel-audio stale [--scope S] [--range R] [--tags] [--why] [--json]
 README command list; `fix-pronunciation` skill step 6: after the fix, run
 `webnovel-audio stale --scope <slug>` to see which rendered chapters it
 affects and the render command that updates them.
+
+## Outcome (2026-11-25)
+
+`webnovel-audio stale` (`src/webnovel_audio/stale.py`, tests in
+`tests/test_stale.py`). Differences from the plan above:
+
+- Script changes are reported as `text/lexicon` and/or `cast/voice` instead
+  of one `segments` reason: `.recipe` parts also carry `segs_text` and
+  `segs_voice` hashes (not part of the overall hash). The `--why` diff aligns
+  segments on their text and groups voice changes by speaker
+  (`voice Mira: af_bella → af_nova (23 segments)`).
+- For one-line `.recipe` files the report adds what it can still name:
+  `synth model` (the DB records the fingerprint each chapter was made with)
+  and the script halves, from `segments.json`.
+- Front matter: `title` and `fiction` come from the page, not the DB, so they
+  are compared with a fresh parse of the raw page; comparing them with the DB
+  would report differences no re-parse can fix (a series retitled since).
+  `author`, `chapter`, `published`, `provider`, `source_id` are compared with
+  the DB.
+- `--tags` ignores `RENDERED_AT` (a render stamps its start, the DB its end)
+  and maps ffmpeg's renamed keys (`TRACKNUMBER` is read back as `track`).
+- `toc` is not reported: the DB does not record when a chapter list was last
+  checked.
+- Speed: spaCy tagging is ~85% of the cost (~0.6 s per chapter), so chapters
+  are checked on forked workers (half the logical CPUs), each inheriting the
+  lexicon and spaCy pipeline loaded once per series. Whole library, read-only:
+  2336 chapters in 10 enabled series, 2 min 46 s on 8 workers.
+- Episodes left over when `chapters_per_episode = 1` are reported as orphans
+  too (`episodes.build` deletes them).

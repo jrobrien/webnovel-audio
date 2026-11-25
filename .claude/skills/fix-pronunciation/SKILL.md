@@ -153,5 +153,15 @@ Re-run the same sentence from step 1 through `pron --scope`:
 ```
 webnovel-audio pron "<the sentence from step 1>" --scope <slug>
 ```
-Confirm the `with lexicon` block now shows the corrected reading. Report
-the file and line changed; don't commit or push unless asked.
+Confirm the `with lexicon` block now shows the corrected reading.
+
+Then see which already-rendered chapters the fix affects:
+```
+webnovel-audio stale --scope <slug>
+```
+The `audio:` line counts the chapters whose script changed (reason
+`text/lexicon`) and ends with the `render --target <slug> --range …` command
+that updates them; `--why` shows each changed segment. It is read-only. Pass
+that render command on to the user rather than running it unasked: it
+re-synthesizes audio. Report the file and line changed; don't commit or push
+unless asked.

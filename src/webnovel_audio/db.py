@@ -134,6 +134,15 @@ class DB:
             self._migrate()
             self.con.commit()
 
+    @classmethod
+    def wrap(cls, con: sqlite3.Connection) -> "DB":
+        """The query methods over a connection opened elsewhere, with no schema
+        pass and no pragmas: for a read-only handle (`progress.open_ro`), so a
+        report can use `chapters()`/`select()`/... and still never write."""
+        db = cls.__new__(cls)
+        db.con = con
+        return db
+
     def _cols(self, table: str) -> set[str]:
         return {r["name"] for r in self.con.execute(f"PRAGMA table_info({table})")}
 

@@ -232,13 +232,25 @@ def preflight(cfg: Config, backend: str | None = None) -> None:
         check_available(cfg.general.models_dir)
 
 
-def build_script(source: str | Document, cfg: Config):
+#: `build_script(lexicon=...)` default: load the lexicon from `cfg`
+_LOAD = object()
+
+
+def build_script(source: str | Document, cfg: Config, *, lexicon=_LOAD, nlp=None):
+    """(blocks, segments, tags, doc) for a chapter: the script a render speaks.
+
+    `lexicon` and `nlp` are loaded from `cfg` unless given. A caller walking many
+    chapters of one series (`stale`) loads them once and passes them in; they
+    must be what `_load_lexicon(cfg)` / `_load_nlp(cfg)` return, or the script
+    is not the one a render would build.
+    """
     if isinstance(source, Document):
         doc = source
         blocks, meta = document_script(doc, cfg)
     else:
         blocks, meta, doc = load_document(source, cfg)
-    segs = build_segments(blocks, cfg, _load_lexicon(cfg), _load_nlp(cfg))
+    lex = _load_lexicon(cfg) if lexicon is _LOAD else lexicon
+    segs = build_segments(blocks, cfg, lex, nlp if nlp is not None else _load_nlp(cfg))
     return blocks, segs, meta, doc
 
 
@@ -259,37 +271,80 @@ class Job:
     loud: tuple = (-19.0, -3.0, 11.0)
     mastering: str = "fast"
     recipe: str = ""
+    recipe_parts: dict = field(default_factory=dict)
     prepare_seconds: float = 0.0
+
+
+#: the parts of a recipe, in `.recipe` order; `stale` names a changed one
+RECIPE_PARTS = ("segs", "audio", "dsp", "pauses", "sr", "backend", "fp")
+#: a Segment's fields, as what is said and who says it how
+SEG_TEXT_FIELDS = ("text", "kind", "pause_after_ms")
+SEG_VOICE_FIELDS = ("voice", "style", "rate", "pitch", "speaker")
+
+
+def _digest(obj) -> str:
+    return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()[:32]
+
+
+def audio_recipe_parts(segs: list[Segment], cfg: Config, backend: str,
+                       fingerprint: str) -> tuple[str, dict]:
+    """(`audio_recipe`, a hash per part of it). The overall hash is computed
+    exactly as before parts existed, so a `.recipe` written then still matches."""
+    audio = asdict(cfg.audio)
+    audio.pop("master_jobs", None)                 # how it is scheduled, not how it sounds
+    material = {"v": 1, "segs": [asdict(s) for s in segs], "audio": audio, "dsp": cfg.dsp,
+                "pauses": asdict(cfg.pauses), "sr": cfg.synth.sample_rate,
+                "backend": backend, "fp": fingerprint}
+    parts = {k: _digest(material[k]) for k in RECIPE_PARTS}
+    # the script split in two, so a changed one says whether the words or the
+    # voices changed (a lexicon fix vs a cast change); not part of the hash
+    for name, fields in (("segs_text", SEG_TEXT_FIELDS), ("segs_voice", SEG_VOICE_FIELDS)):
+        parts[name] = _digest([[d[f] for f in fields] for d in material["segs"]])
+    return _digest(material), parts
 
 
 def audio_recipe(segs: list[Segment], cfg: Config, backend: str, fingerprint: str) -> str:
     """A hash of everything that decides what a chapter's audio sounds like: the
     segment script plus every setting between it and the file. If it matches the
     one stored beside the .opus, re-rendering would produce the same audio."""
-    audio = asdict(cfg.audio)
-    audio.pop("master_jobs", None)                 # how it is scheduled, not how it sounds
-    material = {"v": 1, "segs": [asdict(s) for s in segs], "audio": audio, "dsp": cfg.dsp,
-                "pauses": asdict(cfg.pauses), "sr": cfg.synth.sample_rate,
-                "backend": backend, "fp": fingerprint}
-    return hashlib.sha256(json.dumps(material, sort_keys=True, default=str).encode()).hexdigest()[:32]
+    return audio_recipe_parts(segs, cfg, backend, fingerprint)[0]
 
 
 def _recipe_path(out_path: str) -> str:
     return os.path.splitext(out_path)[0] + ".recipe"
 
 
-def _recipe_matches(out_path: str, recipe: str) -> bool:
+def read_recipe(out_path: str) -> tuple[str, dict] | None:
+    """The stored (overall hash, parts) beside `out_path`, or None without a
+    `.recipe`. `.recipe` is the overall hash on its first line, then the parts
+    as JSON on the second; a file from before parts has only the first line,
+    and its parts come back empty."""
     try:
         with open(_recipe_path(out_path), encoding="utf-8") as fh:
-            return os.path.exists(out_path) and fh.read().strip() == recipe
+            lines = fh.read().splitlines()
     except OSError:
-        return False
+        return None
+    parts: dict = {}
+    if len(lines) > 1:
+        try:
+            parts = json.loads(lines[1])
+        except ValueError:
+            parts = {}
+    return (lines[0].strip() if lines else ""), (parts if isinstance(parts, dict) else {})
 
 
-def _write_recipe(out_path: str, recipe: str) -> None:
+def _recipe_matches(out_path: str, recipe: str) -> bool:
+    """Only the first line counts: the parts line is for explaining a mismatch."""
+    stored = read_recipe(out_path)
+    return stored is not None and os.path.exists(out_path) and stored[0] == recipe
+
+
+def _write_recipe(out_path: str, recipe: str, parts: dict | None = None) -> None:
     tmp = _recipe_path(out_path) + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(recipe + "\n")
+        if parts:
+            fh.write(json.dumps(parts, sort_keys=True) + "\n")
     os.replace(tmp, _recipe_path(out_path))
 
 
@@ -334,14 +389,14 @@ def prepare(
         return Job(out_path, Report(len(blocks), len(segs), len(speech), est_seconds, 0.0, 0.0,
                                     script_path))
 
-    recipe = audio_recipe(segs, cfg, backend, fingerprint)
+    recipe, parts = audio_recipe_parts(segs, cfg, backend, fingerprint)
     if skip_unchanged and fingerprint and _recipe_matches(out_path, recipe):
         log("unchanged: the audio recipe matches, not re-rendering")
         return Job(out_path, Report(len(blocks), len(segs), len(speech), 0.0, 0.0, 0.0,
                                     script_path, out_path=out_path,
                                     size_bytes=os.path.getsize(out_path),
                                     cached_segments=len(speech), total_segments=len(speech),
-                                    skipped=True), recipe=recipe)
+                                    skipped=True), recipe=recipe, recipe_parts=parts)
 
     # ONNX Runtime already parallelises across all cores, so extra worker threads
     # just oversubscribe the 8-core APU (measured: jobs>1 raises wall time and heat
@@ -415,7 +470,7 @@ def prepare(
         meta={**cfg.metadata, "title": default_title, **doc_meta, **(tags or {})},
         bitrate=cfg.audio.opus_bitrate,
         loud=(cfg.audio.loudness_i, cfg.audio.loudness_tp, cfg.audio.loudness_lra),
-        mastering=cfg.audio.mastering, recipe=recipe, prepare_seconds=time.time() - t0,
+        mastering=cfg.audio.mastering, recipe=recipe, recipe_parts=parts, prepare_seconds=time.time() - t0,
     )
 
 
@@ -429,7 +484,7 @@ def master(job: Job) -> Report:
     write_opus(job.wav, job.sr, job.out_path, bitrate=job.bitrate, loud=job.loud,
                meta=job.meta, mastering=job.mastering)
     if job.recipe:
-        _write_recipe(job.out_path, job.recipe)
+        _write_recipe(job.out_path, job.recipe, job.recipe_parts)
     wall = job.prepare_seconds + (time.time() - t0)
     rep.wall_seconds = wall
     rep.realtime_factor = rep.audio_seconds / wall if wall else 0.0
