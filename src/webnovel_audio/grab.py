@@ -30,7 +30,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs
 
-from . import providers, sync
+from . import pools, providers, sync
 from .config import Config
 
 MAX_BODY = 16 * 1024 * 1024        # a chapter page is under 1 MB; this is a ceiling
@@ -141,7 +141,7 @@ def extension_page() -> bytes:
 class GrabLoop:
     def __init__(self, cfg: Config, scope: str | None = None, limit: int | None = None, *,
                  ahead: int = 0, idle_timeout: float = 300.0, stall_timeout: float = 1800.0,
-                 emit=None, render=None):
+                 emit=None, render=None, wait: bool = True):
         self.cfg = cfg
         self.limit = limit if limit and limit > 0 else None
         #: fetched-but-not-yet-rendered chapters allowed when the next is released
@@ -150,6 +150,13 @@ class GrabLoop:
         #: seconds with a render in flight and nothing finished or begun before the run
         #: gives up on it. Generous: a cold model load or a long chapter is not a stall.
         self.stall_timeout = stall_timeout
+        #: queue for `synth` (the default) or refuse; a refusal ends the run and
+        #: is kept in `busy` for the caller to report
+        self.wait = wait
+        self.busy: Exception | None = None
+        #: a render queued for a pool: the stall clock is paused meanwhile, since
+        #: another job's render is progress, just not ours
+        self._waiting_pool = ""
         self._emit = emit or (lambda _d: None)
         self._render = render or self._render_chapter
         self._preflight = self._real_preflight if render is None else (lambda: None)
@@ -347,9 +354,17 @@ class GrabLoop:
     def _render_emit(self, d: dict) -> None:
         """Each chapter is its own one-chapter run, which announces itself with a
         start, a series line and a done. This process says those once for the whole
-        loop, so only the per-chapter events pass."""
+        loop, so only the per-chapter events pass.
+
+        Waiting for a pool (`waiting` .. `acquired`) pauses the stall clock: the
+        render is queued behind another job, which is not a stall."""
+        ev = d.get("event")
+        if ev == "waiting":
+            self._waiting_pool = d.get("pool") or "?"
+        elif ev == "acquired":
+            self._waiting_pool = ""
         self._last_progress = time.monotonic()
-        if d.get("event") not in ("start", "series", "done"):
+        if ev not in ("start", "series", "done"):
             self.emit(d)
 
     def _render_chapter(self, series_id: int, number: int):
@@ -360,7 +375,7 @@ class GrabLoop:
             db.close()
         return sync.run_stage(self.cfg, "rendered", slug, lo=number, hi=number,
                               backend=self.cfg.synth.backend, log=lambda *_: None,
-                              emit=self._render_emit)
+                              wait=self.wait, emit=self._render_emit)
 
     def _real_preflight(self) -> None:
         from . import pipeline
@@ -423,10 +438,15 @@ class GrabLoop:
 
     def _render_one(self, series_id: int, number: int) -> None:
         self._last_progress = time.monotonic()
+        self._waiting_pool = ""
         try:
             res = self._render(series_id, number)
             self.rendered += getattr(res, "rendered", 0) or 0
             self.errors += getattr(res, "errors", 0) or 0
+        except pools.PoolBusy as exc:            # --no-wait, and another job has synth
+            self.busy = exc
+            self.say(f"render of #{number} not started: {exc}")
+            self.finish(f"{exc.pool} is busy")
         except (Exception, SystemExit) as exc:
             # A bad chapter is marked `error` inside the render and never gets here.
             # What does is the environment (or something unexpected): every further
@@ -435,6 +455,7 @@ class GrabLoop:
             self.say(f"render of #{number} failed: {exc}")
             self.finish(f"render failed: {str(exc).splitlines()[0] if str(exc) else type(exc).__name__}")
         finally:
+            self._waiting_pool = ""
             self._last_progress = time.monotonic()
             with self._lock:
                 self._inflight -= 1
@@ -442,12 +463,20 @@ class GrabLoop:
     def _render_watched(self, series_id: int, number: int) -> None:
         """Render on a worker thread so a render that never returns can be noticed.
         The run gives up on it (`render stalled`) once nothing has begun or finished
-        for `stall_timeout`; the worker is a daemon, abandoned at exit."""
+        for `stall_timeout`, not counting time queued for a pool; the worker is a
+        daemon, abandoned at exit."""
         w = threading.Thread(target=self._render_one, args=(series_id, number), daemon=True)
         w.start()
         while w.is_alive():
             w.join(0.5)
-            if time.monotonic() - self._last_progress > self.stall_timeout:
+            if self._waiting_pool and self.finished:
+                # stopped while queued: nothing started, so leave the worker
+                # blocked (a daemon; its wait ends with the process)
+                self.say(f"render of #{number} not started: {self.finished}")
+                return
+            if self._waiting_pool:
+                self._last_progress = time.monotonic()      # queued: the clock is paused
+            elif time.monotonic() - self._last_progress > self.stall_timeout:
                 self._stalled = True
                 self.errors += 1
                 self.say(f"render of #{number} made no progress for "

@@ -22,6 +22,7 @@ import os
 import sqlite3
 import time
 
+from . import pools
 from .config import Config
 from .sync import (MIN_COST_SAMPLES, RENDER_COST_RATIO, _FALLBACK_CHAPTER_SECONDS,
                    _dir_slug, _lock_path, human_duration)
@@ -56,30 +57,18 @@ def open_ro(cfg: Config) -> sqlite3.Connection:
 
 
 def sync_running(cfg: Config) -> bool:
-    """Is a sync holding the lock? Probe it without disturbing the holder.
+    """Is a job running against this library (the `library` pool held)?
 
-    `flock` is advisory and per-open-file-description: taking it and dropping
-    it immediately tells us whether someone else has it, and if nobody does we
-    have held it for microseconds in a process that is about to let go.
-    """
-    import fcntl
+    Read from /proc/locks where there is one, so the probe never takes the lock
+    itself: taking it even for microseconds could make a `--no-wait` job that
+    starts in that instant refuse."""
+    lib = next(p for p in pools.status(cfg) if p["pool"] == pools.LIBRARY)
+    return bool(lib["held"])
 
-    path = _lock_path(cfg)
-    if not os.path.exists(path):
-        return False
-    try:
-        fh = open(path, "r")
-    except OSError:
-        return False
-    try:
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        return True                       # somebody else holds it: a sync is live
-    else:
-        fcntl.flock(fh, fcntl.LOCK_UN)
-        return False
-    finally:
-        fh.close()
+
+def pool_status(cfg: Config) -> list[dict]:
+    """Every pool: free, or who holds it since when, and how many queue for it."""
+    return pools.status(cfg)
 
 
 def _series_rows(con, key: str | None):
@@ -196,10 +185,12 @@ def snapshot(cfg: Config, key: str | None = None, *,
 
         run_wall = (now - run_started) if run_started else 0.0
         run_audio = sum(c["duration_s"] or 0 for c in run)
+        pool_list = pool_status(cfg)
         return {
             "now": time.strftime(TS),
-            "running": sync_running(cfg),
+            "running": any(p["held"] for p in pool_list if p["pool"] == pools.LIBRARY),
             "lock": _lock_path(cfg),
+            "pools": pool_list,
             "run": {"started_at": time.strftime(TS, time.localtime(run_started))
                     if run_started else None,
                     "chapters": len(run), "wall_seconds": round(run_wall, 1),
@@ -223,8 +214,18 @@ def snapshot(cfg: Config, key: str | None = None, *,
 def render_text(snap: dict) -> str:
     """The human view. One screen, newest first."""
     out: list[str] = []
-    state = "sync RUNNING" if snap["running"] else "idle (no sync holds the lock)"
+    state = "job RUNNING" if snap["running"] else "idle (no job holds the library)"
     out.append(f"{snap['now']}   {state}")
+    busy = [p for p in snap.get("pools", []) if p["held"] or p.get("waiting")]
+    if busy:
+        out.append("pools:")
+        for p in snap.get("pools", []):
+            if p["held"]:
+                who = "; ".join(pools.describe(h) for h in p["holders"]) or "held (holder unknown)"
+            else:
+                who = "free"
+            q = f"   {p['waiting']} waiting" if p.get("waiting") else ""
+            out.append(f"  {p['pool']:<18} {who}{q}")
 
     r = snap["run"]
     if r["chapters"]:

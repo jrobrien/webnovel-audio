@@ -10,7 +10,7 @@ Source files (line numbers are as of this writing):
 |---|---|
 | chapter state machine | [`db.py`](../src/webnovel_audio/db.py) `STAGES`, `outstanding` (:532), `mark_stage` (:553) |
 | stage runner (`sync`, `render`, `fetch`, `parse`) | [`sync.py`](../src/webnovel_audio/sync.py) `run_stage` (:1110), `_advance` (:1077) |
-| one-process-at-a-time lock | [`sync.py`](../src/webnovel_audio/sync.py) `sync_lock` (:47) |
+| resource pools (library, browser, synth, net-*) | [`pools.py`](../src/webnovel_audio/pools.py) `hold`, `claim_chapter`, `status`; see [section 4](#4-resource-pools) |
 | page ingest from a browser | [`sync.py`](../src/webnovel_audio/sync.py) `ingest_raw` (:873), `_ingest_series_page` (:837) |
 | `grab` loop and its HTTP server | [`grab.py`](../src/webnovel_audio/grab.py) `GrabLoop` (:138), `next_action` (:236), `take_page` (:282), `run` (:342), `_server` (:460) |
 | extension | [`content.js`](../extension/royalroad-grabber/content.js) `serverStep` (:165), [`background.js`](../extension/royalroad-grabber/background.js) |
@@ -40,8 +40,10 @@ new -> fetched -> parsed -> rendered          (the ordered path, STAGES)
 
 ```mermaid
 flowchart TD
-    START(["webnovel-audio sync / render / fetch / parse"]) --> LOCK{"sync_lock<br/>free?"}
-    LOCK -- "no" --> BUSY(["exit: another sync is running"])
+    START(["webnovel-audio sync / render / fetch / parse"]) --> LOCK{"library pool<br/>(shared) free?"}
+    LOCK -- "busy, no-wait" --> BUSY(["exit 2: locked event, pool + holder"])
+    LOCK -- "busy" --> QUEUE["emit waiting, block until acquired"]
+    QUEUE --> TARGETS
     LOCK -- "yes" --> TARGETS["targets = one series, or every enabled series"]
     TARGETS --> NEXTS{"another series?"}
     NEXTS -- "no" --> DRAIN["drain pending mastering jobs"]
@@ -54,7 +56,10 @@ flowchart TD
     TODO --> CHAP
     HELD --> CHAP{"another chapter in todo?"}
     CHAP -- "no" --> NEXTS
-    CHAP -- "yes" --> ADV["_advance(): fetch -> parse -> render<br/>up to the requested stage"]
+    CHAP -- "yes" --> CLAIM{"declarative, and another run<br/>has it claimed or done?"}
+    CLAIM -- "yes" --> SKIP["emit chapter skipped"]
+    SKIP --> CHAP
+    CLAIM -- "no" --> ADV["_advance(): fetch (net-provider pool) -> parse -><br/>render (synth pool), up to the requested stage"]
     ADV --> OK{"result"}
     OK -- "ok" --> MARK["mark_stage(rendered); emit chapter ok"]
     OK -- "raises Exception<br/>(incl. ContentError)" --> ERR["finish_err: status = error,<br/>error_stage = stage; retried next run"]
@@ -102,7 +107,7 @@ sequenceDiagram
     participant DB as state.db
 
     UI->>G: grab --limit N
-    G->>G: sync_lock, build pending series list
+    G->>G: library pool (shared) + browser pool, build pending series list
     G->>S: start server (port, token)
     G->>X: open series URL + #wa=port:token
     Note over X: no storage: the run is the URL hash,<br/>put on every page the server sends us to
@@ -128,7 +133,7 @@ sequenceDiagram
             S-->>X: {action: done, say, clean}
             X->>X: close tab if clean
         end
-        G->>G: dequeue, run_stage(rendered, one chapter)
+        G->>G: dequeue, run_stage(rendered, one chapter)<br/>(queues for the synth pool)
         G->>DB: mark_stage(rendered) or error
     end
     G->>UI: done: N ok, M error(s)
@@ -144,10 +149,59 @@ Rules that matter:
   every `/next` and `/page`. `idle_timeout` (300 s) ends the run only if the
   browser goes *silent*. An extension that keeps asking `/next` (each held up to
   25 s) never trips it.
+- **Waiting is not stalling.** A render queued for the `synth` pool (another
+  job is synthesizing) pauses the `stall_timeout` clock from its `waiting`
+  event to its `acquired` event.
 - **Stopping**: `/stop` from the page, Stop in the UI, or a closed output pipe.
 - **State lives in two places**: the DB (durable) and the grab process (the queue,
   `_queued`, `_inflight`, `_handed`, `_given`: gone when it exits). Since protocol 2
   the extension holds none: the run is the `#wa=<port>:<token>` hash on each page.
+
+## 4. Resource pools
+
+Jobs queue for the resources they share instead of refusing each other
+([`pools.py`](../src/webnovel_audio/pools.py); the plan is
+[plans/resource-pools.md](plans/resource-pools.md)). Each pool is an `flock` on
+a file beside the state DB, released when its holder exits, crash or not.
+
+| pool | kind | taken by | for |
+|---|---|---|---|
+| `library` (`sync.lock`) | shared / exclusive | every job shared (`render`, `sync`, `fetch`, `parse`, `grab`); `cache prune`/`clear` and `series rename` exclusive | the whole command |
+| `browser` (`locks/browser.lock`) | exclusive | `grab` | the whole run |
+| `synth` (`locks/synth.lock`) | exclusive | `run_stage`, stage `rendered` | one chapter's synthesis + assembly; not its mastering |
+| `net-<provider>` (`locks/net-<provider>.lock`) | exclusive | `_do_fetch` | one page fetch |
+
+**Lock order**: `library` -> `browser` -> `synth` -> `net-*`. Nothing waits for an
+earlier pool while holding a later one; `pools.hold` raises `RuntimeError` if
+asked to, and also refuses to wait for a pool its own thread already holds.
+
+- **Waiting vs `--no-wait`.** By default a job that finds a pool busy emits
+  `{"event": "waiting", "pool", "holder": {pid, command, what, since}}`, logs
+  `waiting for synth (held by render x #3, pid N, since 14:02)`, blocks, then
+  emits `{"event": "acquired", "pool", "waited_s"}`. `render`, `fetch`,
+  `parse`, `sync` and `grab` take `--no-wait` for the old behaviour: exit 2 and a
+  `{"event": "locked", "pool", "holder", "path"}` line. With `--no-wait` a
+  render-type job also checks `synth` before starting, so it refuses at once
+  rather than at its first chapter. `cache prune`/`clear` wait only at a
+  terminal; from a pipe or the UI they refuse (exit 2, `cache_locked`).
+  `series rename` always refuses: it is quick, and the UI waits on its answer.
+- **Holder records.** A holder writes one JSON line into the lock file once it
+  has the lock (the file is opened without truncating, so a waiter never erases
+  it); shared holders each keep a line. `progress` lists every pool, its
+  holders, and how many wait for it (from `/proc/locks`, which it reads instead
+  of probing, so it cannot make a `--no-wait` job refuse).
+- **Chapter claims.** Two declarative runs over the same series computed the
+  same work list. Each run claims a chapter (a byte-range lock on
+  `locks/chapters.lock` at the chapter's id) from before its fetch until it is
+  settled, mastering included, and a declarative run skips one claimed by
+  another run, or that reached the stage since its list was made (checked again
+  once `synth` is held): event `chapter` with `result: "skipped"` and a
+  `reason`. The claim is needed as well as the re-check: mastering runs after
+  `synth` is released, so a re-check alone sees the chapter not yet rendered.
+  An explicit range claims what it can but never skips.
+- **The DB is not a pool.** It is SQLite in WAL mode; every `DB` write method
+  commits before returning (a test holds that), so no write transaction is open
+  across a fetch, a synthesis or ffmpeg.
 
 ## Known problems
 
@@ -174,3 +228,7 @@ fixed the same day; the plan is [plans/grab-robustness.md](plans/grab-robustness
    cut-off, a polling loop, a second manual mode). *Fixed in protocol 2, extension 0.5.0.*
 6. **Still true:** within one run a chapter is attempted once (`_queued`); in-process
    state (`_queued`, `_inflight`, `_handed`, `_given`) is not recorded anywhere durable.
+7. **One lock for everything** (2026-11-25): `sync.sync_lock` was a single exclusive,
+   non-blocking lock held for a whole command, so `render` of one chapter refused while a
+   `grab` ran for an hour, and a `grab` waiting on the browser kept anything else from
+   synthesizing. *Fixed:* [section 4](#4-resource-pools).

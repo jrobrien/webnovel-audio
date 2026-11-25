@@ -336,7 +336,8 @@ def test_a_series_page_resumes_chapters_fetched_but_never_rendered(series):
     try:
         _open_series(b)
         deadline = time.time() + 5
-        while 1 not in rendered and time.time() < deadline:
+        # settled, not merely begun: the loop counts it done after render returns
+        while (1 not in rendered or loop._inflight) and time.time() < deadline:
             time.sleep(0.05)
         assert rendered == [1]
         nxt = b.call("GET", "/next")[1]

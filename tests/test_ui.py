@@ -140,7 +140,13 @@ def test_ui_handles_every_event_shape(tmp_path):
     assert "#6 ERROR: boom" in log, log
     # a dry run must not claim the work happened
     assert "#7 would rendered" in log, log
-    assert "refused: another render/sync holds the lock" in log, log
+    # --no-wait: an older CLI's event (no pool), and one naming the pool + holder
+    assert "refused: the lock is held by another job" in log, log
+    assert "refused: synth is held by render x #3, pid 42, since 14:02" in log, log
+    # the default: queued, then on its way
+    assert "waiting for synth (held by render x #3, pid 42, since 14:02)" in log, log
+    assert "got synth after 12.5s" in log, log
+    assert "#9 skipped — done by another run" in log, log
 
 
 @needs_display
