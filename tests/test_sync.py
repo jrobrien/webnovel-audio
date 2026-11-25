@@ -179,12 +179,12 @@ def test_cmd_sync_refuses_when_locked(tmp_path, capsys):
     dbp = tmp_path / "s.db"
     cfgp.write_text(f'[library]\nstate_db = "{dbp}"\n')
     cfg = Config.load(str(cfgp))
-    with sync.sync_lock(cfg):
+    with sync.sync_lock(cfg):                            # e.g. a cache clear
         rc = cli._cmd_sync(types.SimpleNamespace(
             config=str(cfgp), scope=None, limit=None, dry_run=False,
-            no_refresh=False, json=True))
+            no_refresh=False, json=True, no_wait=True))
     out = json.loads(capsys.readouterr().out)
-    assert rc == 2 and out["event"] == "locked"
+    assert rc == 2 and out["event"] == "locked" and out["pool"] == "library"
 
 
 def test_skip_through_variants():

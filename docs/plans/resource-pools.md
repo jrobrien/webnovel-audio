@@ -1,6 +1,8 @@
 # Plan: resource pools instead of one sync lock
 
-Status: **in progress** (2026-11-25).
+Status: **done** (2026-11-25). Described as built in
+[SYNC-AND-FETCH.md section 4](../SYNC-AND-FETCH.md#4-resource-pools); where the
+build differs from this plan, see [As built](#as-built) at the end.
 
 ## Why
 
@@ -119,3 +121,38 @@ against the real library**: the user's UI and `serve` are live on it.
 ## Docs
 
 README / SYNC-AND-FETCH: the pools, waiting vs `--no-wait`, and lock order.
+
+## As built
+
+Where the implementation went beyond or differs from the above:
+
+- **Chapter claims.** Re-reading the row after acquiring `synth` was not enough:
+  mastering runs after `synth` is released, so the second run saw the chapter
+  still `parsed` and rendered it again (measured: every chapter twice). Each
+  run now also claims a chapter (`pools.claim_chapter`, a byte-range lock at
+  the chapter id on `locks/chapters.lock`, one descriptor per process) from
+  before its fetch until it is settled; a declarative run skips a claimed
+  chapter. Explicit ranges claim what they can but never skip, so a `grab`
+  render (explicit, one chapter) is still skipped by a concurrent `sync`.
+  Claims are never waited on, so they sit outside the lock order.
+- **`--no-wait` checks `synth` up front** for `render`, `sync` and `grab`, so the
+  refusal comes at once rather than after fetching/parsing the first chapter.
+  If `synth` is taken later in the run, the run stops with exit 2 after
+  settling what is already mastering (`grab` keeps it in `GrabLoop.busy`).
+- **`parse` and `fetch`** take `library` shared too (they write the library), so
+  they also get `--no-wait`; before, `fetch`/`parse` took no lock at all.
+- **`series rename` never waits**: it refuses (exit 2) as before. It is quick,
+  and the UI calls it synchronously, so queueing behind an hour-long render
+  would freeze the UI.
+- **Shared holder records.** Several `library` holders each keep a JSON line;
+  rewrites are serialised by a tiny leaf lock (`locks/records.mutex`), and dead
+  pids are dropped.
+- **`progress` reads `/proc/locks`** (matched by inode: on btrfs `stat`'s device
+  is not the one `/proc/locks` shows) for held and waiting counts, instead of
+  taking the lock to probe it, which could make a `--no-wait` job starting that
+  instant refuse. Falls back to the probe where there is no `/proc/locks`.
+- **Guards.** `pools.hold` raises `RuntimeError` on an out-of-order acquire and
+  on waiting for a pool the same thread already holds (a self-deadlock).
+- Not taken: the `browser` pool for `series add` through the browser
+  (`PageCatcher`), and `net-*` around `series refresh` and cover fetches; the
+  plan's table names only `grab` and `_do_fetch`.

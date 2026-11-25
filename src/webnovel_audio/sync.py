@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import contextlib
 import copy
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor
+from concurrent.futures import wait as _futures_wait
 from dataclasses import dataclass
-import fcntl
 import os
 import json
 import re
@@ -18,7 +18,7 @@ import time
 import tomllib
 from dataclasses import dataclass
 
-from . import bundle, pipeline, providers
+from . import bundle, pipeline, pools, providers
 from .config import Config
 from .db import DB
 from .document import stamp_provenance
@@ -32,43 +32,22 @@ def _db(cfg: Config) -> DB:
     return DB(cfg.library.state_db)
 
 
-class SyncLocked(Exception):
-    """Another `sync` is already running against this state DB."""
-
-    def __init__(self, path: str):
-        super().__init__(f"another sync is already running (lock: {path})")
-        self.path = path
+#: a busy pool, raised by `pools.hold(..., wait=False)`. The old name for the one
+#: lock there used to be; `except SyncLocked` catches a busy pool of any name.
+SyncLocked = pools.PoolBusy
 
 
 def _lock_path(cfg: Config) -> str:
-    db_path = os.path.abspath(os.path.expanduser(cfg.library.state_db))
-    return os.path.join(os.path.dirname(db_path) or ".", "sync.lock")
+    """The `library` pool's file (`sync.lock`, the name it always had)."""
+    return pools.lock_path(cfg, pools.LIBRARY)
 
 
-@contextlib.contextmanager
-def sync_lock(cfg: Config):
-    """Exclusive, non-blocking lock so only one `sync` runs per state DB at a time.
-
-    One state DB == one library; two `sync` runs against it race for the same
-    CPU and can pile up (UI double-click, a stray terminal invocation, ...) —
-    harmless to the data (chapter writes are idempotent) but wasteful to watch.
-    `flock` is per-open-file-description and advisory: it's released the instant
-    the holding process exits, crash or not, so there's never a stale lock file
-    to clean up by hand.
-    """
-    path = _lock_path(cfg)
-    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-    fh = open(path, "w")
-    try:
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        fh.close()
-        raise SyncLocked(path) from None
-    try:
-        yield
-    finally:
-        fcntl.flock(fh, fcntl.LOCK_UN)
-        fh.close()
+def sync_lock(cfg: Config, *, wait: bool = False, shared: bool = False, what: str = "",
+              emit=None, log=None):
+    """The `library` pool (see `pools`): exclusive and non-blocking by default,
+    which is what this lock was before there were pools. Jobs take it shared."""
+    return pools.hold(cfg, pools.LIBRARY, what=what, wait=wait, shared=shared,
+                      emit=emit, log=log)
 
 
 def _series_provider(source: str) -> providers.Provider:
@@ -215,7 +194,8 @@ def _skip_through(chapters, start: str) -> int:
 class SyncResult:
     rendered: int = 0
     errors: int = 0
-    skipped: int = 0
+    skipped: int = 0            # dry run: would have run
+    elsewhere: int = 0          # left to (or already done by) another run
 
 
 MAX_SEED_CAST_ENTRIES = 15
@@ -639,7 +619,7 @@ def add_series(cfg: Config, url: str, start: str = "latest", log=print,
 
 
 def rename_series(cfg: Config, db: DB, key: str, new_slug: str, *, move: bool = False,
-                  dry_run: bool = False) -> dict:
+                  dry_run: bool = False, wait: bool = False) -> dict:
     """Give a tracked series a new slug.
 
     The slug is the CLI handle and the feed/player URL segment; the bundle
@@ -647,7 +627,8 @@ def rename_series(cfg: Config, db: DB, key: str, new_slug: str, *, move: bool = 
     changes. `move` also renames the directory to match. The old slug is kept as an
     alias, so an existing podcast subscription to /feed/<old>.xml still resolves.
     Refuses while a sync or render is running: it would be writing to the paths
-    this changes."""
+    this changes: it takes the `library` pool exclusively, and by default does not
+    queue for it (a rename is quick, and the UI waits on its answer)."""
     s = db.get_series(key)
     if not s:
         raise SlugError("no_such_series", f"no tracked series matching {key!r}")
@@ -663,7 +644,8 @@ def rename_series(cfg: Config, db: DB, key: str, new_slug: str, *, move: bool = 
             "moved": bool(moving), "from": old_dir, "to": new_dir if moving else old_dir}
     if dry_run or (old == new_slug and not moving):
         return plan
-    with sync_lock(cfg):
+    with pools.hold(cfg, pools.LIBRARY, what=f"series rename {old} -> {new_slug}",
+                    wait=wait):
         if moving and os.path.isdir(old_dir):
             os.rename(old_dir, new_dir)
             db.set_bundle(s["id"], new_dir)
@@ -832,12 +814,20 @@ def _md_extra(prov, c) -> dict:
             "provider": prov.name, "source_id": c["source_id"]}
 
 
-def _do_fetch(cfg, db, prov, ctx, bdir, c, *, force=False) -> str:
+def _no_pool(_name, _what=""):
+    return contextlib.nullcontext()
+
+
+def _do_fetch(cfg, db, prov, ctx, bdir, c, *, force=False, hold=_no_pool) -> str:
     path = _raw_path(bdir, prov, c)
     if force or not os.path.exists(path):
-        # an account problem surfaces here, where it's actionable
-        prov.check_fetchable(_ref(c), ctx)
-        _write_raw(path, prov.fetch(_ref(c), ctx))
+        # one page at a time per site across every job (`net-<provider>`: the
+        # site's politeness budget); an account problem surfaces here, where
+        # it's actionable
+        with hold(pools.net_pool(prov.name), f"fetch #{c['ord'] + 1}"):
+            prov.check_fetchable(_ref(c), ctx)
+            text = prov.fetch(_ref(c), ctx)
+        _write_raw(path, text)
     db.mark_stage(c["id"], "fetched", raw_path=path)
     return path
 
@@ -1087,10 +1077,20 @@ def _status_of(db, chapter_id: int) -> str:
     return row["status"] if row else ""
 
 
+class _DoneElsewhere(Exception):
+    """Another run brought this chapter to the stage while this one waited."""
+
+
 def _advance(cfg, db, prov, ctx, scfg, bdir, c, *, upto, force=False, backend="kokoro",
-             series_row=None, vol_map=None, master_pool=None, skip_unchanged=False):
+             series_row=None, vol_map=None, master_pool=None, skip_unchanged=False,
+             hold=_no_pool, recheck=None):
     """Walk one chapter up to `upto`. Returns an event dict for the caller, or a
-    `_Deferred` when mastering was handed to `master_pool`."""
+    `_Deferred` when mastering was handed to `master_pool`.
+
+    `hold(pool, what)` is the context holding a resource pool: `net-*` around
+    the page fetch, `synth` around synthesis + assembly (not mastering, which
+    runs on `master_pool`). `recheck(c)`, asked once `synth` is held, is true
+    when another run rendered the chapter meanwhile (raises `_DoneElsewhere`)."""
     from .db import stage_rank
 
     have = stage_rank(c["status"])
@@ -1100,7 +1100,8 @@ def _advance(cfg, db, prov, ctx, scfg, bdir, c, *, upto, force=False, backend="k
     raw = c["raw_path"] if c["raw_path"] and os.path.exists(c["raw_path"]) else None
     if want >= stage_rank("fetched"):
         if raw is None or (force and upto == "fetched"):
-            raw = _do_fetch(cfg, db, prov, ctx, bdir, c, force=force and upto == "fetched")
+            raw = _do_fetch(cfg, db, prov, ctx, bdir, c, force=force and upto == "fetched",
+                            hold=hold)
             ev["fetched"] = True
         elif have < stage_rank("fetched"):
             db.mark_stage(c["id"], "fetched", raw_path=raw)
@@ -1111,8 +1112,13 @@ def _advance(cfg, db, prov, ctx, scfg, bdir, c, *, upto, force=False, backend="k
             ev["text_path"] = md
     if want >= stage_rank("rendered"):
         vol = (vol_map or {}).get(c["volume_source_id"]) if c["volume_source_id"] else None
-        rj = _prepare_render(cfg, db, prov, ctx, scfg, bdir, c, raw, backend=backend,
-                             series_row=series_row, vol_info=vol, skip_unchanged=skip_unchanged)
+        slug = f"{series_row['slug']} " if series_row is not None else ""
+        with hold("synth", f"render {slug}#{c['ord'] + 1}"):
+            if recheck is not None and recheck(c):
+                raise _DoneElsewhere()
+            rj = _prepare_render(cfg, db, prov, ctx, scfg, bdir, c, raw, backend=backend,
+                                 series_row=series_row, vol_info=vol,
+                                 skip_unchanged=skip_unchanged)
         if master_pool is not None and rj.job.wav is not None:
             return _Deferred(ev, c, rj, master_pool.submit(pipeline.master, rj.job))
         _fill_render_event(ev, db, c, rj, pipeline.master(rj.job))
@@ -1125,7 +1131,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
               limit: int | None = None,
               backend: str | None = None, dry_run: bool = False,
               refresh_first: bool = False, force_render: bool = False,
-              log=print, emit=None) -> SyncResult:
+              wait: bool = True, log=print, emit=None) -> SyncResult:
     """Run one pipeline stage over a series (or every enabled series).
 
     An explicit range is imperative: those exact chapters, whatever their state.
@@ -1135,8 +1141,29 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
     thread of ffmpeg) the next is already synthesizing, up to `[audio] master_jobs`
     in flight. A chapter whose audio recipe is unchanged is left alone unless
     `force_render`.
+
+    Resources are held per chapter (`pools`): `synth` around each chapter's
+    synthesis, `net-<provider>` around each page fetch; `wait=False` raises
+    `pools.PoolBusy` instead of queueing. Each chapter is claimed while it is
+    worked on, and a declarative run skips one another run has claimed or has
+    finished since this run made its list, so two `sync`s do the work once.
+    The caller holds the `library` pool.
     """
     _emit = emit or (lambda _d: None)
+    from .db import stage_rank
+
+    def hold(name, what=""):
+        return pools.hold(cfg, name, what=what, wait=wait, emit=_emit, log=log)
+
+    claimed: set[int] = set()
+
+    def unclaim(chapter_id):
+        if chapter_id in claimed:
+            claimed.discard(chapter_id)
+            pools.release_chapter(cfg, chapter_id)
+
+    def reached(chapter_id) -> bool:
+        return stage_rank(_status_of(db, chapter_id)) >= stage_rank(stage)
     if spans is None:
         spans = [(lo, hi)] if (lo is not None or hi is not None) else []
     explicit = bool(spans)
@@ -1150,6 +1177,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
     checked = False                               # the environment, checked before the first chapter
 
     def finish_ok(c, slug, num, t0, ev):
+        unclaim(c["id"])
         res.rendered += 1
         ev["was"], ev["status"] = c["status"], _status_of(db, c["id"])
         hit, tot = ev.get("cached_segments"), ev.get("total_segments")
@@ -1165,11 +1193,19 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
 
     def finish_err(c, slug, num, exc):
         db.mark(c["id"], "error", error=str(exc)[:400], error_stage=stage)
+        unclaim(c["id"])
         res.errors += 1
         log(f"    ! error: {exc}")
         _emit({"event": "chapter", "slug": slug, "number": num,
                "title": c["title"], "result": "error", "stage": stage,
                "was": c["status"], "status": "error", "error": str(exc)[:400]})
+
+    def elsewhere(c, slug, num, why):
+        unclaim(c["id"])
+        res.elsewhere += 1
+        log(f"  #{num} skipped: {why}")
+        _emit({"event": "chapter", "slug": slug, "number": num, "title": c["title"],
+               "result": "skipped", "stage": stage, "reason": why})
 
     def settle(item):
         d, slug, num, t0 = item
@@ -1191,7 +1227,7 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                 continue
             if len(pending) <= limit:
                 return
-            wait([p[0].fut for p in pending], return_when=FIRST_COMPLETED)
+            _futures_wait([p[0].fut for p in pending], return_when=FIRST_COMPLETED)
 
     try:
         if key:
@@ -1250,6 +1286,22 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                 if stage == "rendered" and not checked:
                     pipeline.preflight(cfg, backend)
                     checked = True
+                # Claimed until it is settled, mastering included. An explicit
+                # range works on its chapters regardless; a declarative run
+                # leaves one that another run is on, or finished since this run
+                # made its list.
+                if pools.claim_chapter(cfg, c["id"]):
+                    claimed.add(c["id"])
+                elif not explicit:
+                    elsewhere(c, slug, num, "being done by another run")
+                    continue
+                if not explicit:
+                    fresh = db.con.execute("SELECT * FROM chapters WHERE id=?",
+                                           (c["id"],)).fetchone()
+                    if fresh is None or reached(c["id"]):
+                        elsewhere(c, slug, num, "done by another run")
+                        continue
+                    c = fresh
                 _emit({"event": "chapter_begin", "slug": slug, "number": num,
                        "title": c["title"], "stage": stage})
                 t0 = time.time()
@@ -1258,12 +1310,18 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
                     r = _advance(cfg, db, prov, ctx, scfg, bdir, c, upto=stage,
                                  force=explicit, backend=backend, series_row=s,
                                  vol_map=vol_map, master_pool=pool,
-                                 skip_unchanged=not force_render)
+                                 skip_unchanged=not force_render, hold=hold,
+                                 recheck=None if explicit else (lambda ch: reached(ch["id"])))
                     if isinstance(r, _Deferred):
                         pending.append((r, slug, num, t0))
                         drain(limit=jobs)          # the next chapter synthesizes meanwhile
                     else:
                         finish_ok(c, slug, num, t0, r)
+                except _DoneElsewhere:
+                    elsewhere(c, slug, num, "done by another run")
+                except pools.PoolBusy:
+                    unclaim(c["id"])
+                    raise                          # --no-wait: stop the run, not just this chapter
                 except Exception as exc:  # noqa: BLE001 - keep the batch going
                     finish_err(c, slug, num, exc)
         drain()
@@ -1291,18 +1349,24 @@ def run_stage(cfg: Config, stage: str, key: str | None = None, *,
             pass
         _emit({"event": "abort", "stage": stage, "reason": str(exc)})
         raise
+    except pools.PoolBusy:
+        drain()                  # what is already mastering is finished and recorded
+        raise
     finally:
         if pool is not None:
             pool.shutdown(wait=False, cancel_futures=True)
+        for cid in list(claimed):
+            unclaim(cid)
         db.close()
 
 
 def run_sync(cfg: Config, key: str | None = None, *, limit: int | None = None,
              dry_run: bool = False, backend: str = "kokoro", refresh_first: bool = True,
-             log=print, emit=None) -> SyncResult:
+             wait: bool = True, log=print, emit=None) -> SyncResult:
     """The daily driver: refresh chapter lists, then render everything outstanding."""
     return run_stage(cfg, "rendered", key, limit=limit, backend=backend,
-                     dry_run=dry_run, refresh_first=refresh_first, log=log, emit=emit)
+                     dry_run=dry_run, refresh_first=refresh_first, wait=wait,
+                     log=log, emit=emit)
 
 
 # Seconds of wall time per second of rendered audio — only the fallback for a

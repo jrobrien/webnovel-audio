@@ -793,11 +793,40 @@ proc live_chapter {ev} {
 ;# Split out of cmd_readable so it can be driven directly with synthetic events.
 ;# It used to be reachable only through a live subprocess, which is how a broken
 ;# `expr` in the success branch survived: the tests never completed a chapter.
+;# who holds a pool, from a waiting/locked event's holder record
+proc pool_holder {ev} {
+    set h [json::get $ev holder]
+    set who [json::get $h what]
+    if {$who eq ""} { set who [json::get $h command] }
+    if {$who eq ""} { return "another job" }
+    set pid [json::get $h pid]
+    set since [json::get $h since]
+    if {$pid ne ""} { append who ", pid $pid" }
+    if {[string length $since] >= 16} { append who ", since [string range $since 11 15]" }
+    return $who
+}
+
 proc handle_event {ev {raw ""}} {
     switch -- [json::get $ev event] {
         start  { log "start: [json::get $ev stage], [json::get $ev series] series" }
-        locked { log "! refused: another render/sync holds the lock"
-                 status "refused — another run is active" }
+        locked {
+            ;# only with --no-wait: by default a job queues (waiting/acquired)
+            set pool [json::get $ev pool]
+            if {$pool eq ""} { set pool "the lock" }
+            log "! refused: $pool is held by [pool_holder $ev]"
+            status "refused — $pool is busy"
+        }
+        waiting {
+            set msg "waiting for [json::get $ev pool] (held by [pool_holder $ev])"
+            log "  $msg"
+            set ::WAIT_PREV $::STATUS
+            status $msg
+        }
+        acquired {
+            set w [json::get $ev waited_s]
+            log "  got [json::get $ev pool][expr {$w ne "" ? " after ${w}s" : ""}]"
+            if {[info exists ::WAIT_PREV]} { status $::WAIT_PREV ; unset ::WAIT_PREV }
+        }
         grab   { if {[json::get $ev quiet] ne "1"} { log "  [json::get $ev message]" } }
         series { log "  [json::get $ev title]: [json::get $ev pending] to do"
                  live live_series $ev }
@@ -814,6 +843,8 @@ proc handle_event {ev {raw ""}} {
                 log "    #$n ERROR: [json::get $ev error]"
             } elseif {$r eq "would-run"} {
                 log "    #$n would [json::get $ev stage] — [json::get $ev title]"
+            } elseif {$r eq "skipped"} {
+                log "    #$n skipped — [json::get $ev reason]"
             } elseif {[json::get $ev unchanged] eq "1"} {
                 log "    #$n unchanged — nothing that affects the audio changed, left as it was"
             } else {
@@ -848,6 +879,7 @@ proc cmd_finish {} {
         if {[string trim $tail] ne ""} { log "— $tail —" }
     }
     set ::RUNNING 0 ; ui_busy 0
+    catch {unset ::WAIT_PREV}
     status "ready"
     refresh_series ; refresh_chapters
     if {$::FINISH ne ""} { uplevel #0 $::FINISH ; set ::FINISH "" }
@@ -856,6 +888,13 @@ proc cmd_finish {} {
 proc stop_cmd {} {
     if {!$::RUNNING} return
     log "stopping…"
+    ;# Closing the pipe stops a job at its next line of output. A job queued for
+    ;# a pool writes nothing until it gets it, and would then start work nobody
+    ;# is watching, so it is told to stop now (it holds nothing yet but a wait).
+    if {[info exists ::WAIT_PREV]} {
+        catch {exec kill -TERM {*}[pid $::PIPE]}
+        unset ::WAIT_PREV
+    }
     catch {close $::PIPE}
     set ::RUNNING 0 ; ui_busy 0 ; status "stopped"
 }

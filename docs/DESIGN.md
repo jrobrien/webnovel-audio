@@ -400,19 +400,21 @@ Chapter provenance reaches the Opus stream as Vorbis comments — `SOURCE_URL`,
 ffmpeg output that custom keys survive libopus; note ffmpeg normalises
 `TRACKNUMBER` to `track`, and Ogg carries them as stream tags, not format tags.
 
-## Sync lock
+## Resource pools (was: sync lock)
 
-`sync.sync_lock(cfg)` holds a non-blocking `flock` on `<state-db-dir>/sync.lock`
-for the duration of a `sync` run — one state DB (one library) gets at most one
-`sync` at a time. It's advisory and per-open-file-description, so it's released
-automatically if the holder is killed; nothing to clean up by hand. A second
-`sync` — from the UI, a second UI window, or a bare terminal invocation, doesn't
-matter which — gets `SyncLocked` immediately: `_cmd_sync` turns that into a
-`{"event": "locked", "path": ...}` line under `--json` (exit 2, distinct from
-exit 1 for "ran, but some chapters errored") or a one-line message otherwise.
-The UI's `$::RUNNING` guard still exists (it avoids even spawning a second
-process from the same window) but the lock is what actually prevents two
-processes from racing for the same 8 cores, which `$::RUNNING` alone couldn't.
+There used to be one lock, `sync.sync_lock(cfg)`: an exclusive, non-blocking
+`flock` on `<state-db-dir>/sync.lock` held for a whole `render`/`sync`/`grab`.
+It refused instead of queueing and was coarser than the resources, so a
+one-chapter `render` failed for as long as a `grab` ran. It is now a set of named
+pools in `pools.py` (`library`, `browser`, `synth`, `net-<provider>`), taken in
+that order, which jobs wait on by default (`waiting`/`acquired` events) and
+refuse with `--no-wait` (exit 2, a `locked` event naming the pool and holder,
+distinct from exit 1 for "ran, but some chapters errored"). `sync.lock` is
+still the file of the `library` pool, now shared by every job and exclusive for
+`cache prune`/`clear` and `series rename`; `sync.SyncLocked` is
+`pools.PoolBusy`. The flocks are advisory and per open file, so they are
+released automatically if the holder is killed. The full description is in
+[SYNC-AND-FETCH.md](SYNC-AND-FETCH.md#4-resource-pools).
 
 ## Sync and browser fetch
 

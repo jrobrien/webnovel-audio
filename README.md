@@ -182,8 +182,10 @@ known problems: [docs/SYNC-AND-FETCH.md](docs/SYNC-AND-FETCH.md).
 
 ```mermaid
 flowchart TD
-    START(["webnovel-audio sync / render / fetch / parse"]) --> LOCK{"sync_lock<br/>free?"}
-    LOCK -- "no" --> BUSY(["exit: another sync is running"])
+    START(["webnovel-audio sync / render / fetch / parse"]) --> LOCK{"library pool<br/>(shared) free?"}
+    LOCK -- "busy, no-wait" --> BUSY(["exit 2: locked event, pool + holder"])
+    LOCK -- "busy" --> QUEUE["emit waiting, block until acquired"]
+    QUEUE --> TARGETS
     LOCK -- "yes" --> TARGETS["targets = one series, or every enabled series"]
     TARGETS --> NEXTS{"another series?"}
     NEXTS -- "no" --> DRAIN["drain pending mastering jobs"]
@@ -196,7 +198,10 @@ flowchart TD
     TODO --> CHAP
     HELD --> CHAP{"another chapter in todo?"}
     CHAP -- "no" --> NEXTS
-    CHAP -- "yes" --> ADV["_advance(): fetch -> parse -> render<br/>up to the requested stage"]
+    CHAP -- "yes" --> CLAIM{"declarative, and another run<br/>has it claimed or done?"}
+    CLAIM -- "yes" --> SKIP["emit chapter skipped"]
+    SKIP --> CHAP
+    CLAIM -- "no" --> ADV["_advance(): fetch (net-provider pool) -> parse -><br/>render (synth pool), up to the requested stage"]
     ADV --> OK{"result"}
     OK -- "ok" --> MARK["mark_stage(rendered); emit chapter ok"]
     OK -- "raises Exception<br/>(incl. ContentError)" --> ERR["finish_err: status = error,<br/>error_stage = stage; retried next run"]
@@ -223,7 +228,7 @@ sequenceDiagram
     participant DB as state.db
 
     UI->>G: grab --limit N
-    G->>G: sync_lock, build pending series list
+    G->>G: library pool (shared) + browser pool, build pending series list
     G->>S: start server (port, token)
     G->>X: open series URL + #wa=port:token
     Note over X: no storage: the run is the URL hash,<br/>put on every page the server sends us to
@@ -296,9 +301,9 @@ first.
 | `check --target T [--range R]` | cast / heteronyms / unknown names report. **Never writes** |
 | `compounds [--scope S] [--range R] [--top N] [--all]` | closed compounds the TTS may mispronounce, across the whole library (or one series / range): words not in a dictionary that split into two common words, phonemized whole and as halves, flagged where they differ or where two sounds fuse at the join (`night`+`shade` → "ch"). **Never writes**; fix with `lex add` |
 | `render --target T [--range R]` | → mastered `.opus`. `-o` for a one-off file, `--dry-run` for segments only. Reports how many segments came from cache. A chapter whose audio recipe (segments + audio settings) is unchanged is left alone; `--force` re-renders it anyway |
-| `sync [--scope S] [--limit N]` | refresh + render everything outstanding; shows a size estimate and confirms first (`-y` to skip) |
+| `sync [--scope S] [--limit N]` | refresh + render everything outstanding; shows a size estimate and confirms first (`-y` to skip). Like `render`, `fetch`, `parse` and `grab`, it queues behind another job's use of the synthesizer or a site; `--no-wait` refuses instead (exit 2) |
 | `tagger status` \| `install` \| `test` | the spaCy POS tagger the rules resolve against. **Required to render**, so it is a core dependency (small model included); `install --model en_core_web_md` (or `_lg`) upgrades |
-| `progress [--scope S] [--watch [N]] [--recent]` | what a running sync is doing, from the live state DB. **Read-only**, safe mid-render |
+| `progress [--scope S] [--watch [N]] [--recent]` | what a running sync is doing, from the live state DB, and who holds each resource pool. **Read-only**, safe mid-render |
 | `stale [--scope S] [--range R] [--tags] [--why] [--json]` | what is out of date and why, with the command that fixes each: chapter `.md` text (missing, raw newer, front matter differs), audio (recomputed recipe ≠ `.recipe`: text/lexicon, cast/voice, `[audio]`, `[dsp]`, synth model…), Opus tags with `--tags` (ffprobe vs the DB), multi-chapter episodes. `--why` lists each chapter with the changed segments. **Read-only**; the whole library takes ~3 min |
 
 **Series** (porcelain):
@@ -306,7 +311,7 @@ first.
 | command | what |
 |---|---|
 | `series add --url U [--from N] [--slug S] [--lead auto\|male\|female] [-n]` | start tracking — metadata only; `--from` marks 1..N `skipped`. The slug (the CLI name, folder and feed URL) is derived from the title; `--slug` sets it, `-n` reads the page and reports the title, chapter count, slug and voice set without tracking anything. `--lead` picks which default voice set is pinned: `male` is `[voices]`, `female` is `[voices.female_lead]` (the inversion); `auto` (default) reads the source's Female Lead / Male Lead tag |
-| `series rename --scope S --slug NEW [--move] [-n]` | change the slug. The old one stays as an alias, so `--scope old` still works and `/feed/old.xml` redirects to the new URL; `--move` also renames the folder. Refused while a sync or render runs |
+| `series rename --scope S --slug NEW [--move] [-n]` | change the slug. The old one stays as an alias, so `--scope old` still works and `/feed/old.xml` redirects to the new URL; `--move` also renames the folder. Refused while any job (render, sync, grab, fetch, parse) runs |
 | `series list` | dashboard: per-stage counts, what's next, errors |
 | `series show --scope S` | one series in detail |
 | `series enable\|disable --scope S` | include / exclude from `sync` — the UI calls this Pause/Resume |
@@ -399,7 +404,8 @@ so it can't drift from the real parser — enough to plan against without readin
 ```
 
 so a caller branches on `code` instead of matching English. Exit codes are `0`
-ok, `1` failed, `2` another render/sync holds the lock. Everything that changes
+ok, `1` failed, `2` refused because another job holds a resource pool (see
+[Running jobs side by side](#running-jobs-side-by-side)). Everything that changes
 state has a non-interactive form — `cast set`, `lex add`, `lex ignore`,
 `state set`, `series enable|disable` — and `sync --estimate --json` reports the
 cost before committing to it.
@@ -427,10 +433,34 @@ shifts it. Show notes therefore name the volume but never assert a chapter
 number that would contradict the title.
 
 `--json` is available on `series`, `state`, `check`, `config`, and the pipeline
-verbs; `sync`/`fetch`/`render` stream one JSON event per line. Only one
-`sync`/`render` runs at a time per state DB (a `flock`), so a second one refuses
-with exit 2 rather than fighting for the CPU. Bare `webnovel-audio` prints help
-— it never launches the UI implicitly; use `webnovel-audio ui` for that.
+verbs; `sync`/`fetch`/`render` stream one JSON event per line. Bare
+`webnovel-audio` prints help — it never launches the UI implicitly; use
+`webnovel-audio ui` for that.
+
+### Running jobs side by side
+
+Jobs against one library queue for the resources they share rather than
+refusing each other, so `render --range 196` while a `grab` runs waits its turn
+for the synthesizer and then renders. The resources are named pools, each an
+`flock` beside the state DB (released if its holder dies):
+
+| pool | taken by | for |
+|---|---|---|
+| `library` | every job, shared; `cache prune`/`clear` and `series rename` exclusively | the whole command |
+| `browser` | `grab` | the whole run |
+| `synth` | rendering | one chapter's synthesis (not its mastering) |
+| `net-<provider>` | fetching | one page |
+
+They are always taken in that order (library, browser, synth, net), which rules
+out deadlock. A job that has to wait prints `waiting for synth (held by …, pid
+N, since 14:02)`, or under `--json` emits a `waiting` event and then an
+`acquired` one; the control UI shows it in the status line. `--no-wait` on
+`render`, `fetch`, `parse`, `sync` and `grab` refuses instead, with exit 2 and a
+`locked` event naming the pool and its holder. `cache prune`/`clear` wait only
+at a terminal, and `series rename` always refuses while a job runs. Two `sync`s
+over the same series share the work: each skips chapters the other has claimed
+or finished. `webnovel-audio progress` shows who holds each pool. Details:
+[docs/SYNC-AND-FETCH.md](docs/SYNC-AND-FETCH.md#4-resource-pools).
 
 ### Command-line examples
 

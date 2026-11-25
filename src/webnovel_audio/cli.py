@@ -132,7 +132,7 @@ def _parse_range(s):
 
     Comma lists matter for the UI: a treeview with `-selectmode extended` hands
     back scattered chapters, and this lets that become one command instead of a
-    serialized pile of them (the flock would refuse concurrent runs anyway).
+    serialized pile of them (concurrent runs would only queue on `synth` anyway).
     """
     spans: list[tuple[int | None, int | None]] = []
     for part in (s or "").replace(" ", "").split(","):
@@ -171,7 +171,7 @@ def _stage_cmd(stage: str):
         import json as _json
         import sys
 
-        from . import sync
+        from . import pools, sync
 
         cfg = Config.load(args.config)
         want_json = getattr(args, "json", False)
@@ -189,35 +189,47 @@ def _stage_cmd(stage: str):
         spans = _parse_range(getattr(args, "range", ""))
         emit = (lambda d: print(_json.dumps(d, ensure_ascii=False), flush=True)) \
             if want_json else None
+        log = (lambda *_: None) if want_json else print
+        wait = not getattr(args, "no_wait", False)
+        dry = getattr(args, "dry_run", False)
+        verb = {"fetched": "fetch", "parsed": "parse", "rendered": "render"}[stage]
+        what = f"{verb} {args.target}" + (f" {args.range}" if getattr(args, "range", "") else "")
         try:
-            with sync.sync_lock(cfg) if stage == "rendered" else _nullctx():
+            # the library shared for the whole command; synth and net-* are
+            # taken per chapter inside run_stage
+            with sync.sync_lock(cfg, shared=True, wait=wait, what=what,
+                                emit=emit, log=log):
+                if not wait and stage == "rendered" and not dry:
+                    pools.check_free(cfg, "synth")        # refuse now, not at chapter 1
                 res = sync.run_stage(
                     cfg, stage, args.target, spans=spans,
                     limit=getattr(args, "limit", None),
-                    dry_run=getattr(args, "dry_run", False),
+                    dry_run=dry,
                     force_render=getattr(args, "force", False),
-                    log=(lambda *_: None) if want_json else print, emit=emit)
+                    wait=wait, log=log, emit=emit)
         except sync.SyncLocked as exc:
-            if want_json:
-                print(_json.dumps({"event": "locked", "path": exc.path}), flush=True)
-            else:
-                print(f"! {exc} — wait for it to finish.")
-            return 2
+            return _pool_busy(exc, want_json)
         if not want_json:
             verb = {"fetched": "fetched", "parsed": "parsed", "rendered": "rendered"}[stage]
             print(f"\n{verb}: {res.rendered}, {res.errors} error(s)"
-                  + (f", {res.skipped} would-run" if res.skipped else ""))
+                  + (f", {res.skipped} would-run" if res.skipped else "")
+                  + (f", {res.elsewhere} left to another run" if res.elsewhere else ""))
         return 1 if res.errors else 0
 
     return run
 
 
-import contextlib  # noqa: E402
+def _pool_busy(exc, want_json: bool) -> int:
+    """`--no-wait` met a busy pool: say which and who holds it, exit 2."""
+    import json as _json
 
-
-@contextlib.contextmanager
-def _nullctx():
-    yield
+    if want_json:
+        print(_json.dumps({"event": "locked", "pool": exc.pool, "holder": exc.holder,
+                           "path": exc.path, "message": str(exc)}, ensure_ascii=False),
+              flush=True)
+    else:
+        print(f"! {exc}: wait for it to finish, or run without --no-wait to queue.")
+    return 2
 
 
 def _one_off(stage: str, args, cfg: Config) -> int:
@@ -957,8 +969,17 @@ def _cmd_schema(args) -> int:
                      "'exactly these, whatever their recorded state'",
             "json": "--json on series/state/cast/lex/check/config and the "
                     "pipeline verbs; sync/fetch/render stream one event per line",
-            "exit_codes": {"0": "ok", "1": "failed", "2": "another render/sync "
-                                                          "holds the lock"},
+            "exit_codes": {"0": "ok", "1": "failed",
+                           "2": "refused: a resource pool (library, browser, synth, "
+                                "net-<provider>) is held by another job. Pipeline "
+                                "verbs and grab only refuse with --no-wait (they "
+                                "queue by default, with waiting/acquired events); "
+                                "cache prune/clear refuse when not at a terminal, "
+                                "series rename always"},
+            "pools": "library (shared by every job; exclusive for cache "
+                     "prune/clear and series rename) -> browser (grab) -> synth "
+                     "(per chapter) -> net-<provider> (per page fetch); taken "
+                     "in that order. `progress` shows who holds each",
             "errors": "with --json a failure is "
                       '{"ok": false, "error": {"code", "message", "hint"}}',
         },
@@ -1735,12 +1756,18 @@ def _cmd_cache_destructive(args, cfg, db, bundle, cache, want_json: bool) -> int
             print("aborted.")
             return 0
 
+    # deleting segments must not race a job: the library pool, exclusively. A
+    # person at a terminal queues for it (and is told); a pipe, cron or the UI
+    # is refused, as it is without --yes
+    interactive = not want_json and sys.stdin.isatty()
     try:
-        with sync.sync_lock(cfg):
+        with sync.sync_lock(cfg, wait=interactive, what=f"cache {args.action}",
+                            log=print if interactive else None):
             res = run(False)
     except sync.SyncLocked as exc:
         return _fail("cache_locked", str(exc),
-                     hint="wait for the render to finish", json_mode=want_json, rc=2)
+                     hint="wait for the running job to finish", json_mode=want_json, rc=2,
+                     pool=exc.pool, holder=exc.holder)
     except cache.CacheError as exc:
         return _fail(exc.code, exc.message, hint=exc.hint, json_mode=want_json)
     if want_json:
@@ -2221,23 +2248,27 @@ def _cmd_sync(args) -> int:
             print("nothing outstanding.")
             return 0
 
+    from . import pools
+
+    wait = not getattr(args, "no_wait", False)
+    log = (lambda *_: None) if want_json else print
     try:
-        with sync.sync_lock(cfg):
+        with sync.sync_lock(cfg, shared=True, wait=wait, emit=emit, log=log,
+                            what=f"sync {args.scope or '@all'}"):
+            if not wait and not args.dry_run:
+                pools.check_free(cfg, "synth")
             res = sync.run_sync(cfg, args.scope, limit=args.limit, dry_run=args.dry_run,
                                 backend=cfg.synth.backend,
                                 refresh_first=not args.no_refresh,
-                                log=(lambda *_: None) if want_json else print, emit=emit)
+                                wait=wait, log=log, emit=emit)
     except sync.SyncLocked as exc:
-        if want_json:
-            emit({"event": "locked", "path": exc.path, "message": str(exc)})
-        else:
-            print(f"! {exc} — wait for it to finish (check `ps` for a stray `sync`).")
-        return 2
+        return _pool_busy(exc, want_json)
     if not want_json:
         if args.dry_run:
             print(f"\nsync (dry run): {res.skipped} chapter(s) would render")
         else:
-            print(f"\nsync: {res.rendered} rendered, {res.errors} error(s)")
+            print(f"\nsync: {res.rendered} rendered, {res.errors} error(s)"
+                  + (f", {res.elsewhere} left to another run" if res.elsewhere else ""))
     return 1 if res.errors else 0
 
 
@@ -2326,12 +2357,13 @@ def _cmd_ingest(args) -> int:
 def _cmd_grab(args) -> int:
     """Fetch, ingest and render through the browser (and its extension), one chapter
     at a time: `sync` for a site that will not talk to us. Scope works like
-    `sync`'s. Holds the sync lock throughout."""
+    `sync`'s. Holds the library pool (shared) and the browser pool throughout;
+    each chapter's render queues for `synth` like any other job's."""
     import json as _json
     import signal
     import sys
 
-    from . import sync
+    from . import pools, sync
     from .grab import GrabLoop, open_in_browser
 
     cfg = Config.load(args.config)
@@ -2349,6 +2381,8 @@ def _cmd_grab(args) -> int:
             print(_json.dumps(d, ensure_ascii=False), flush=True)
         elif d.get("event") == "grab" and not d.get("quiet"):
             print(d["message"], flush=True)
+        elif d.get("event") == "waiting":
+            print(f"waiting for {d['pool']} ({pools.describe(d.get('holder'))})", flush=True)
 
     def open_it(url):
         if args.no_open:
@@ -2356,21 +2390,26 @@ def _cmd_grab(args) -> int:
         else:
             open_in_browser(url)
 
+    wait = not getattr(args, "no_wait", False)
+    what = f"grab {checked or '@all'}"
     try:
-        with sync.sync_lock(cfg):
+        # lock order: library -> browser (whole run) -> synth (per chapter)
+        with sync.sync_lock(cfg, shared=True, wait=wait, what=what, emit=emit), \
+                pools.hold(cfg, "browser", wait=wait, what=what, emit=emit):
+            if not wait:
+                pools.check_free(cfg, "synth")
             try:
                 loop = GrabLoop(cfg, checked, args.limit, ahead=args.ahead,
-                                idle_timeout=args.timeout, emit=emit)
+                                idle_timeout=args.timeout, emit=emit, wait=wait)
             except SystemExit as exc:
                 return _fail("grab", str(exc), json_mode=want_json)
             signal.signal(signal.SIGTERM, lambda *_: loop.finish("stopped"))
-            return loop.run(on_ready=open_it)
+            rc = loop.run(on_ready=open_it)
+            if loop.busy is not None:              # --no-wait, and synth was taken mid-run
+                return _pool_busy(loop.busy, want_json)
+            return rc
     except sync.SyncLocked as exc:
-        if want_json:
-            emit({"event": "locked", "path": exc.path, "message": str(exc)})
-        else:
-            print(f"! {exc}")
-        return 2
+        return _pool_busy(exc, want_json)
 
 
 def _browser_page(url: str, want_json: bool, no_open: bool = False):
@@ -2549,7 +2588,9 @@ def main(argv=None) -> int:
         argv = ["--help"]                 # bare invocation -> help, never the UI
 
     args = _build_parser().parse_args(argv)
+    from . import pools
     from .errors import ContentError
+    pools.COMMAND = getattr(args, "cmd", "") or ""      # named in holder records
     try:
         return args.func(args)
     except ContentError as exc:               # one bad page: a message, not a traceback
@@ -2621,11 +2662,17 @@ def _build_parser():
         p.add_argument("--json", default=argparse.SUPPRESS, action="store_true",
                        help="machine-readable output")
 
+    def _no_wait(p):
+        p.add_argument("--no-wait", action="store_true",
+                       help="refuse (exit 2, a `locked` event under --json) instead of "
+                            "queueing when another job holds a pool this needs")
+
     def _stage_parser(name, help_):
         p = sub.add_parser(name, help=help_)
         _target_pos(p)
         _range_pos(p, default_means="whatever is outstanding")
         p.add_argument("--limit", type=int, help="stop after N chapters")
+        _no_wait(p)
         _cfg_json(p)
         return p
 
@@ -2682,6 +2729,7 @@ def _build_parser():
                     help="print how long it would take and exit (no rendering)")
     sy.add_argument("-y", "--yes", action="store_true",
                     help="skip the size estimate + confirmation (for scripts/timers)")
+    _no_wait(sy)
     _cfg_json(sy)
     sy.set_defaults(func=_cmd_sync)
 
@@ -3117,6 +3165,7 @@ def _build_parser():
                          "(default: %(default)s)")
     gr.add_argument("--no-open", action="store_true",
                     help="print the address instead of opening it")
+    _no_wait(gr)
     _cfg_json(gr)
     gr.set_defaults(func=_cmd_grab)
 
